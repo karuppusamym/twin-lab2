@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{{ item.name }} · TwinLab2{% endblock %}
+{% block content %}
+<h1>{{ item.name }}</h1>
+<p>{{ events | length }} events. Select the events and describe the outcome for the chosen demo app.</p>
+{% if apps %}
+  <form method="get" id="app-picker">
+    <label>Demo app
+      <select name="app_id" required>
+        <option value="">Choose an app</option>
+        {% for app in apps %}<option value="{{ app.id }}" {% if app.id == app_id %}selected{% endif %}>{{ app.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <button>Open assignment</button>
+  </form>
+  {% if app_id and apps | selectattr("id", "equalto", app_id) | list %}
+    <form method="post">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <input type="hidden" name="app_id" value="{{ app_id }}">
+      <label>Outcome and build notes <textarea name="notes" rows="4">{{ saved.notes if saved else '' }}</textarea></label>
+      {% for source, group in events | groupby("source", case_sensitive=true) %}
+        <fieldset>
+          <legend>{{ source }} ({{ group | length }})</legend>
+          <button type="button" hidden data-select-source>Select all</button>
+          <div class="events">
+            {% for event in group %}
+              <label><input type="checkbox" name="event" value="{{ event.seq }}" {% if event.seq in selected %}checked{% endif %}>
+                {{ event.seq }} · {{ event.action }}</label>
+            {% endfor %}
+          </div>
+        </fieldset>
+      {% endfor %}
+      <button>Save assignment</button>
+    </form>
+    <script src="{{ url_for('static', filename='recording.js') }}" defer></script>
+  {% endif %}
+{% else %}
+  <p>Create a demo app in the catalog to assign events.</p>
+{% endif %}
+{% endblock %}

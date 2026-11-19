@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ item.name }} · TwinLab2{% endblock %}
+{% block content %}
+<h1>{{ item.name }}</h1>
+<div class="columns">
+  <section>
+    <h2>Build brief</h2>
+    <form method="post">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <label>Git repository <input name="git_url" value="{{ item.git_url }}"></label>
+      <label>Requirements
+        <textarea name="requirements" rows="8" placeholder="Describe the demo screens, business rules, sample data, and expected outcomes.">{{ item.requirements }}</textarea>
+      </label>
+      <button>Save brief</button>
+    </form>
+    {% if item.requirements %}
+      <p><a href="{{ url_for('build_pack', app_id=item.id) }}">Download build pack</a></p>
+    {% endif %}
+    <h2>Releases</h2>
+    {% for release in releases %}
+      <p><a href="{{ url_for('release', release_id=release.id) }}">{{ release.version }}</a>
+        <code>{{ release.commit_sha[:12] }}</code></p>
+    {% else %}
+      <p>Register a committed demo with the release command in the project README.</p>
+    {% endfor %}
+  </section>
+  <section>
+    <h2>Linked recordings</h2>
+    {% for link in links %}
+      <h3><a href="{{ url_for('recording', recording_id=link.id, app_id=item.id) }}">{{ link.name }}</a></h3>
+      <p>{{ loads(link.selection) | length }} events selected</p>
+      {% if link.notes %}<p class="notes">{{ link.notes }}</p>{% endif %}
+    {% else %}
+      <p>Open a recording from the catalog to link its events to this app.</p>
+    {% endfor %}
+    <h2>Reviewed evidence</h2>
+    {% for file in attachments %}
+      <form method="post" action="{{ url_for('remove_attachment', app_id=item.id, attachment_id=file.id) }}">
+        <input type="hidden" name="token" value="{{ session.form_token }}">
+        <span>{{ file.kind }} · {{ file.title }}</span>
+        <button>Remove from brief</button>
+      </form>
+    {% endfor %}
+    <form method="post" enctype="multipart/form-data" action="{{ url_for('add_attachment', app_id=item.id) }}">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <label>Evidence title <input name="title" required></label>
+      <label>Evidence type
+        <select name="kind">{% for kind in kinds %}<option>{{ kind }}</option>{% endfor %}</select>
+      </label>
+      <label>File <input name="file" type="file" required></label>
+      <label class="check"><input name="reviewed" type="checkbox" value="yes" required>
+        Ready to share with the builder</label>
+      <button>Attach evidence</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

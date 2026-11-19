@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ item.name }} {{ release.version }} · TwinLab2{% endblock %}
+{% block content %}
+<p><a href="{{ url_for('demo', app_id=item.id) }}">{{ item.name }}</a></p>
+<h1>{{ item.name }} {{ release.version }}</h1>
+<p><a href="{{ url_for('download_release', release_id=release.id) }}">Download release ZIP</a></p>
+<dl class="release-details">
+  <dt>Git commit</dt><dd><code>{{ release.commit_sha }}</code></dd>
+  <dt>Build brief</dt><dd><a href="{{ url_for('download_brief', app_id=item.id, revision=release.revision) }}"><code>{{ release.revision }}</code></a></dd>
+  <dt>ZIP checksum</dt><dd><code>{{ release.archive_sha }}</code></dd>
+</dl>
+<section>
+  <h2>Deployments</h2>
+  {% for deployment in deployments %}
+    <h3>{{ deployment.environment }}</h3>
+    <p><a href="{{ deployment.url }}">Open demo</a></p>
+    {% if deployment.username %}<p>Demo username <code>{{ deployment.username }}</code></p>{% endif %}
+    {% if deployment.secret_ref %}<p>Demo secret reference <code>{{ deployment.secret_ref }}</code></p>{% endif %}
+  {% endfor %}
+  <form method="post">
+    <input type="hidden" name="token" value="{{ session.form_token }}">
+    <label>Environment <input name="environment" required placeholder="OpenShift demo"></label>
+    <label>Demo URL <input name="url" type="url" required></label>
+    <label>Demo username <input name="username"></label>
+    <label>Demo secret reference <input name="secret_ref" placeholder="vault:demo/billing"></label>
+    <button>Save deployment</button>
+  </form>
+</section>
+{% endblock %}

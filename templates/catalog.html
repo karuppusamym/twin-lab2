@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Demo catalog</h1>
+<div class="columns">
+  <section>
+    <h2>Demo apps</h2>
+    {% if apps %}<ul>{% for app in apps %}
+      <li><a href="{{ url_for('demo', app_id=app.id) }}">{{ app.name }}</a></li>
+    {% endfor %}</ul>{% else %}<p>No demo apps yet.</p>{% endif %}
+    <form action="{{ url_for('add_app') }}" method="post">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <label>Demo name <input name="name" required></label>
+      <button>Create demo app</button>
+    </form>
+  </section>
+  <section>
+    <h2>Recordings</h2>
+    {% if recordings %}<ul>{% for item in recordings %}
+      <li><a href="{{ url_for('recording', recording_id=item.id) }}">{{ item.name }}</a></li>
+    {% endfor %}</ul>{% else %}<p>No recordings imported yet.</p>{% endif %}
+    <form action="{{ url_for('import_recording') }}" method="post" enctype="multipart/form-data">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <label>Recording name <input name="name" required></label>
+      <label>Twin Lab steps.jsonl <input type="file" name="log" accept=".jsonl" required></label>
+      <button>Import recording</button>
+    </form>
+  </section>
+</div>
+{% endblock %}
