@@ -468,7 +468,9 @@ class QueueTest(unittest.TestCase):
 
         other = queue.add_file(self.session / "steps.jsonl", SESSION, "application/octet-stream")
         queue.file_of(other).write_bytes(b"changed")
-        self.assertEqual(queue.run(self.portal(), force=True)[-1]["state"], "failed")
+        queue.run(self.portal(), force=True)
+        self.assertEqual(queue.get(other["id"])["state"], "failed")
+        self.assertTrue(queue.file_of(other).is_file())  # kept for a person to look at
 
 
 class S3QueueTest(QueueTest):
