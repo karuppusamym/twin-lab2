@@ -161,7 +161,7 @@ def freeze(db, app_id, user, approved_sha256, note, version_path):
     summary = "\n".join(([note] if note else []) + lines)
     rev = (previous["rev"] if previous else 0) + 1
     at = audit.now()
-    db.execute("INSERT INTO briefs VALUES (?, ?, ?) ON CONFLICT (revision) DO NOTHING",
+    db.execute("INSERT INTO briefs(revision, app_id, manifest) VALUES (?, ?, ?) ON CONFLICT (revision) DO NOTHING",
                (current.revision, app_id, current.manifest))
     ref = put_package(db, app_id, current.revision, current.package)
     db.execute("""INSERT INTO builder_packages(app_id, rev, revision, sha256, size, storage_ref, approved_by,
