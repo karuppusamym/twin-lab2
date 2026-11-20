@@ -1,0 +1,3 @@
+{"seq": 1, "ts": "2026-11-20T09:00:00.500Z", "url": "about:blank", "action": "goto"}
+{"seq": 2, "ts": "2026-11-20T09:00:06.000Z", "url": "http://127.0.0.1:8080/login", "action": "type", "selector": "input#username"}
+{"seq": 3, "ts": "2026-11-20T09:00:07.000Z", "url": "http://127.0.0.1:8080/cases/C-100", "action": "click", "selector": "button#btnSave"}

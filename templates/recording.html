@@ -7,6 +7,7 @@
 <section>
   <h2>Recorded applications</h2>
   <p class="muted">Recorded on {{ refs.ref.machine or "a machine since revoked" }}{% if refs.session.started %}, {{ refs.session.started[:16] | replace("T", " ") }}{% endif %}{% if refs.session.ended %} to {{ refs.session.ended[11:16] }}{% endif %}{% if refs.ref.automation %} · for {{ refs.ref.automation }}{% endif %}{% if refs.session.state == "recovered" %} · recovered after the recorder stopped{% endif %}. The recording stays on that machine at <code>recordings/{{ refs.session.id }}</code>.</p>
+  {% if refs.contract %}<p class="muted">Sent by {{ refs.contract.recorder }} {{ refs.contract.recorder_version }} · recorder contract {{ refs.contract.contract_version }}{% if refs.contract.twinlab_commit %} · Twin Lab <code>{{ refs.contract.twinlab_commit[:12] }}</code>{% endif %}.</p>{% endif %}
   <ol class="timeline">{% for run in refs.timeline %}
     <li class="{{ 'presence' if run.app == 'presence' else '' }}">{{ run.name }} <span class="muted">{{ run.steps }} step{{ "s" if run.steps != 1 }}</span></li>
   {% endfor %}</ol>

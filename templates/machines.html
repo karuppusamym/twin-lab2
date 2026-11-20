@@ -18,7 +18,7 @@
   {% for m in machines %}
     <div class="row">
       <strong>{{ m.name }}</strong>
-      <span class="muted">paired {{ m.paired_at[:16] | replace("T", " ") }} by {{ m.paired_by }}{% if m.last_seen %} · seen {{ m.last_seen[:16] | replace("T", " ") }}{% endif %}{% if m.recorder %} · {{ m.recorder }}{% endif %}</span>
+      <span class="muted">paired {{ m.paired_at[:16] | replace("T", " ") }} by {{ m.paired_by }}{% if m.last_seen %} · seen {{ m.last_seen[:16] | replace("T", " ") }}{% endif %}{% if m.recorder %} · {{ m.recorder }}{% endif %}{% if m.contract_version %} · contract {{ m.contract_version }}{% endif %}</span>
       {% if m.revoked_at %}<span class="badge not_replicated">revoked</span>{% else %}
       <form method="post" action="{{ url_for('revoke', machine_id=m.id) }}" class="inline">
         <input type="hidden" name="token" value="{{ session.form_token }}">

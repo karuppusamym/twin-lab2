@@ -29,6 +29,8 @@ from urllib.parse import urlsplit
 from flask import abort, g, jsonify, redirect, render_template, request, session, url_for
 import yaml
 
+import recorder_contract as contract
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_identities (
     key TEXT PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id), surface TEXT NOT NULL,
@@ -68,6 +70,15 @@ CREATE TABLE IF NOT EXISTS recording_apps (
     recording_id TEXT NOT NULL REFERENCES recordings(id), app_id INTEGER NOT NULL REFERENCES apps(id),
     key TEXT NOT NULL, level TEXT NOT NULL, flow TEXT NOT NULL,
     PRIMARY KEY (recording_id, app_id, key)
+);
+CREATE TABLE IF NOT EXISTS recording_contracts (
+    recording_id TEXT PRIMARY KEY REFERENCES recordings(id), contract_version TEXT NOT NULL,
+    recorder TEXT NOT NULL, recorder_version TEXT NOT NULL, twinlab_commit TEXT,
+    received_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS machine_contracts (
+    machine_id INTEGER PRIMARY KEY REFERENCES machines(id), contract_version TEXT NOT NULL,
+    recorder TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 """
 
@@ -225,6 +236,26 @@ def clean_references(doc):
             "flows": flows, "timeline": timeline}  # fmt: skip
 
 
+def contract_refusal(error):
+    """The answer to a recorder outside the contract: what to update, and the versions.
+    426 when the version is not accepted (update the recorder or the portal), 400 for a
+    message of an accepted version that is not in the contract's shape."""
+    body = {"error": str(error), "update": error.update,
+            "contract": {"portal": contract.CONTRACT_VERSION, "supported": contract.supported()}}
+    if error.errors:
+        body["errors"] = error.errors[:20]
+    return jsonify(body), 400 if error.errors else 426
+
+
+def recorder_of(doc):
+    """The sending recorder's name and version, from the message (else the request header)."""
+    rec = doc.get("recorder") if isinstance(doc.get("recorder"), dict) else {}
+    if rec.get("name") and rec.get("version"):
+        return str(rec["name"])[:60], str(rec["version"])[:40]
+    name, _, version = request.headers.get("X-TwinLab-Recorder", "").strip().partition(" ")
+    return name[:60] or "unknown", version[:40] or "unknown"
+
+
 def register(app, db):  # noqa: C901 - one place for the routes of this module
     """Add the routes to the Flask app; `db()` returns the request's SQLite connection."""
 
@@ -256,7 +287,11 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
 
     @app.get("/machines")
     def machines():
-        rows = db().execute("SELECT * FROM machines ORDER BY revoked_at IS NOT NULL, name").fetchall()
+        rows = db().execute("""
+            SELECT machines.*, machine_contracts.contract_version FROM machines
+            LEFT JOIN machine_contracts ON machine_contracts.machine_id = machines.id
+            ORDER BY revoked_at IS NOT NULL, name
+        """).fetchall()
         return render_template("machines.html", machines=rows, code=session.pop("pair_code", None),
                                minutes=CODE_MINUTES)  # fmt: skip
 
@@ -281,6 +316,12 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
     @app.post("/api/agent/pair")
     def agent_pair():
         body = request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            body = {}
+        try:  # before the code is looked at: an outdated recorder does not use up the code
+            contract.validate(body, "pair")
+        except contract.ContractError as error:
+            return contract_refusal(error)
         code = str(body.get("code") or "").strip().upper().replace("-", "").replace(" ", "")
         name = str(body.get("name") or "").strip()[:80]
         if not name or re.search(r"[\x00-\x1f]", name):
@@ -309,7 +350,11 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                  request.headers.get("X-TwinLab-Recorder", "")[:60]),
             ).lastrowid  # fmt: skip
             db().execute("UPDATE pairing_codes SET machine_id = ? WHERE code_sha = ?", (machine, row["code_sha"]))
-        return jsonify(token=token, machine_id=machine, name=name)
+            rec_name, rec_version = recorder_of(body)
+            db().execute("INSERT OR REPLACE INTO machine_contracts VALUES (?, ?, ?, ?)",
+                         (machine, body["contract_version"], f"{rec_name} {rec_version}", now()))  # fmt: skip
+        return jsonify(token=token, machine_id=machine, name=name, contract_version=contract.CONTRACT_VERSION,
+                       contract_supported=contract.supported())  # fmt: skip
 
     # -- sessions offered to a machine ---------------------------------------------------------
 
@@ -434,10 +479,20 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
     @app.post("/api/agent/references")
     def agent_references():
         machine = agent_machine()
+        doc = request.get_json(silent=True)
         try:
-            refs = clean_references(request.get_json(silent=True))
+            contract.validate(doc, "references")
+        except contract.ContractError as error:
+            return contract_refusal(error)
+        try:
+            refs = clean_references(doc)
         except (ValueError, TypeError) as error:
             return jsonify(error=f"invalid references: {error}"), 400
+        rec_name, rec_version = recorder_of(doc)
+        received = {"contract_version": doc["contract_version"], "recorder": rec_name,
+                    "recorder_version": rec_version,
+                    "twinlab_commit": (doc.get("recorder") or {}).get("twinlab_commit")
+                    or refs["session"].get("twinlab_commit")}  # fmt: skip
         s = refs["session"]
         recording_id = "ws-" + s["id"]
         capture = None
@@ -486,6 +541,12 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
             if capture is not None:
                 db().execute("UPDATE capture_sessions SET status = 'recorded', recording_id = ? WHERE id = ?",
                              (recording_id, capture["id"]))  # fmt: skip
+            db().execute("INSERT OR REPLACE INTO recording_contracts VALUES (?, ?, ?, ?, ?, ?)",
+                         (recording_id, received["contract_version"], received["recorder"],
+                          received["recorder_version"], received["twinlab_commit"], now()))  # fmt: skip
+            db().execute("INSERT OR REPLACE INTO machine_contracts VALUES (?, ?, ?, ?)",
+                         (machine["id"], received["contract_version"],
+                          f"{received['recorder']} {received['recorder_version']}", now()))  # fmt: skip
         return jsonify(recording_id=recording_id, mapped=mapped, discovered=discovered,
                        url=url_for("recording", recording_id=recording_id, _external=True))  # fmt: skip
 
@@ -505,10 +566,13 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
             JOIN apps ON apps.id = recording_apps.app_id WHERE recording_id = ? ORDER BY apps.name
         """, (recording_id,)).fetchall()
         payload = json.loads(ref["payload"])
+        received = db().execute("SELECT * FROM recording_contracts WHERE recording_id = ?",
+                                (recording_id,)).fetchone()  # fmt: skip
         names = {a["key"]: a["name"] for a in apps}
         timeline = [dict(run, name=names.get(run["app"], "Other applications" if run["app"] == "presence"
                                              else run["app"])) for run in payload["timeline"]]  # fmt: skip
         return {"ref": ref, "session": payload["session"], "apps": apps, "timeline": timeline,
+                "contract": received,
                 "flows": {a["app_id"]: json.loads(a["flow"]) for a in apps}}  # fmt: skip
 
     def app_recordings(app_id):

@@ -19,6 +19,8 @@ One session records everything the process does on this PC. The session's target
 4. **Targets from the workflow:** **Targets from a UiPath project…** in the window (or `TwinLabRecorder.exe propose <project folder>`) reads the project's XAML and proposes the applications, web addresses, terminal hosts and browser it uses, with notes for Simulate input and for addresses held in variables. Check the list before recording.
 5. **The robot's log:** set UiPath Assistant's logging level to *Verbose* for the recording run. The recorder then reads the robot's execution log at the end and says which UI activities left no recorded step (**Recordings on this PC**, and `robot\coverage.json` in the session folder).
 
+6. **The portal's version:** if you use a portal, pair the PC (**Pair with portal…**). If the portal answers that the recorder or the portal must be updated, the two speak different versions of the [recorder contract](RECORDER-CONTRACT.md). `TwinLabRecorder.exe version` shows the recorder's version, its contract version and the Twin Lab commit it was built from. Get a recorder built for the portal's contract, or have the portal updated. Recordings already on the PC are kept and can be sent afterwards.
+
 ## Record
 
 **With the portal:** in the portal give each application an identity on its page (`CaseDesk.exe`, `https://orders.example.test`, `tn3270://mainframe.example.test:23`), then **Sessions → Offer a session** to the PC, with the automation it is for. On the PC choose the session and **Start**.
@@ -60,7 +62,7 @@ Pictures of desktop windows are off by default (they take much memory on a long 
 
 ## A check run (5 minutes, no mainframe needed)
 
-The Twin Lab checkout has a synthetic mainframe:
+Twin Lab's repository has a synthetic mainframe. Any clone will do: the recorder itself does not need one.
 
 ```powershell
 python reference\mainframe\demo_host.py serve --port 3270

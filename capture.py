@@ -60,17 +60,31 @@ def recover(folder):
 
 def start(args):
     folder = args.folder.resolve()
+    if args.twin_lab is None:
+        from agent import twinlab
+
+        args.twin_lab = twinlab.vendor_root()
     checkout = args.twin_lab.resolve()
     if args.minutes <= 0:
         raise ValueError("Use a positive recording duration.")
     collector = checkout / "lab" / "labctl" / "labctl" / "cli.py"
     if not collector.is_file():
-        raise ValueError("Choose a Twin Lab Git checkout with --twin-lab.")
-    revision = subprocess.check_output(
-        ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True,
-    ).strip()
-    if subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain"], text=True).strip():
-        raise ValueError("Use a clean Twin Lab checkout so the recorded source revision is reproducible.")
+        raise ValueError("No Twin Lab collectors: run `python -m agent.twinlab fetch`, or name a checkout with --twin-lab.")
+    pinned = checkout / "twinlab-pin.json"
+    if pinned.is_file():  # the vendored, digest-checked copy of twinlab.lock.json's commit
+        from agent import twinlab
+
+        try:
+            twinlab.verify()
+        except twinlab.PinError as error:
+            raise ValueError(str(error)) from error
+        revision = json.loads(pinned.read_text(encoding="utf-8"))["commit"]
+    else:
+        revision = subprocess.check_output(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        if subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain"], text=True).strip():
+            raise ValueError("Use a clean Twin Lab checkout so the recorded source revision is reproducible.")
     commands = {}
     if args.web:
         commands["web"] = ["evidence", "record", "capture", args.web, "--no-screenshots"]
@@ -143,7 +157,8 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     launch = commands.add_parser("start")
     launch.add_argument("folder", type=Path)
-    launch.add_argument("--twin-lab", type=Path, default=Path(__file__).resolve().parent.parent / "twin-lab")
+    launch.add_argument("--twin-lab", type=Path, default=None,
+                        help="a clean Twin Lab checkout (default: the pinned copy in vendor/)")
     browser = launch.add_mutually_exclusive_group()
     browser.add_argument("--web", help="Open a fresh browser at this URL.")
     browser.add_argument("--cdp", help="Attach to the debug endpoint of an existing browser.")

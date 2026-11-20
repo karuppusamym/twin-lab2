@@ -8,8 +8,9 @@ discovered, with their flows, and nothing of the applications that were not targ
 
 It takes the foreground and clicks in CaseDesk, so it runs only when asked:
 
+    python -m agent.twinlab fetch        the pinned collectors (twinlab.lock.json)
     set TWINLAB_AGENT_E2E=1
-    set TWINLAB_PATH=<a twin-lab checkout with labctl.workstation>
+    set TWINLAB_REFERENCE=<a twin-lab checkout>   only for the CaseDesk reference application
     python -m unittest tests.test_agent_e2e   (from twin-lab2, with -s tests)
 """
 
@@ -57,7 +58,7 @@ class Site(BaseHTTPRequestHandler):
 class EndToEndTest(unittest.TestCase):
     def test_pair_offer_record_send_and_see_it_mapped(self):
         agent_main._labctl()
-        twinlab = Path(os.environ.get("TWINLAB_PATH") or Path(__file__).resolve().parents[2] / "twin-lab")
+        twinlab = Path(os.environ.get("TWINLAB_REFERENCE") or Path(__file__).resolve().parents[2] / "twin-lab")
         casedesk = twinlab / "reference" / "desktop" / "CaseDesk"
         spec = importlib.util.spec_from_file_location("casedesk_flow", casedesk / "flow.py")
         flow = importlib.util.module_from_spec(spec)
