@@ -159,6 +159,10 @@ class BuildTest(unittest.TestCase):
         self.assertIn(HEAD, page)
         self.assertNotIn(">Tested<", page)
         self.assertNotIn("Cancel build", page)
+        verify = re.search(r'<form[^>]*id="verify-form".*?</form>', page, re.S).group(0)
+        self.assertIn(f'action="/apps/{app_id}/verify-commit"', verify)
+        self.assertIn(f'name="sha" value="{HEAD}"', verify)
+        self.assertIn('name="pr_number" value="12"', verify)
 
     def test_answering_a_question_sends_it_to_the_session(self):
         app_id, revision = self.ready_app()

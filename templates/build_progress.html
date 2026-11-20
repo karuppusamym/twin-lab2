@@ -76,8 +76,19 @@
 
 <section id="checks">
   <h2>Independent checks</h2>
-  <p class="muted">{% if build.head_sha %}Checks on commit <code>{{ build.head_sha[:12] }}</code> appear here once release
-    verification reads them. Until then this build is not Tested.{% else %}Checks run on the pull request's head commit once
-    Devin opens one.{% endif %}</p>
+  {% if build.head_sha %}
+  <p class="muted">This build is not Tested until the checks on commit <code>{{ build.head_sha[:12] }}</code> pass.</p>
+  {% if build.state == "ready_for_verification" %}
+  <form method="post" action="{{ url_for('verify_build', app_id=item.id) }}" class="inline" id="verify-form">
+    <input type="hidden" name="token" value="{{ session.form_token }}">
+    <input type="hidden" name="repo" value="{{ build.repo }}">
+    <input type="hidden" name="sha" value="{{ build.head_sha }}">
+    {% if build.pr_number %}<input type="hidden" name="pr_number" value="{{ build.pr_number }}">{% endif %}
+    <button>Verify this build</button>
+  </form>
+  {% endif %}
+  {% else %}
+  <p class="muted">Checks run on the pull request's head commit once Devin opens one.</p>
+  {% endif %}
 </section>
 {% endblock %}
