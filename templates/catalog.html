@@ -13,12 +13,11 @@
       <dt>Stage</dt><dd>{{ j.stage }}</dd>
       {% if j.missing %}<dt>Missing</dt><dd>{{ j.missing | join(", ") }}</dd>{% endif %}
     </dl>
+    {% with release = tested.get(app.id) %}{% include "_tested_release.html" %}{% endwith %}
     {% if j.out_of_scope %}
       <p class="muted">Recordings note it only as used.</p>
     {% elif j.next %}
       <p><a class="button" href="{{ j.next.href }}" title="{{ j.next.hint }}">{{ j.next.action }}</a></p>
-    {% else %}
-      <p><a class="button" href="{{ j.steps[-1].href }}">Open or download</a></p>
     {% endif %}
   </article>
 {% endfor %}</div>

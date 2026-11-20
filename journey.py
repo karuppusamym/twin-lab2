@@ -18,8 +18,8 @@ from dataclasses import dataclass, field
 JOURNEY = ("Choose application", "Add examples", "Review required behaviour", "Build", "Verify",
            "Open or download")  # fmt: skip
 
-# Release states that count as verified, and as ready to open or download. A catalog without a
-# release state column has neither yet: no release is verified until one is marked tested.
+# Release states (portal.STATES: packaged, tested, published) that count as verified, and as
+# ready to open or download. A catalog without a release state column has neither.
 VERIFIED_STATES = {"tested", "published"}
 OPEN_STATES = {"published"}
 
@@ -153,7 +153,8 @@ def app_journey(
         Step("verify", JOURNEY[4], state in VERIFIED_STATES, verify_hint, release_href,
              "Verify release"),
         Step("open", JOURNEY[5], state in OPEN_STATES,
-             "Open the demo or download the tested release.", release_href, "Open or download"),
+             "Publish the tested release, so that others can open the demo or download it.",
+             release_href, "Publish release"),
     ]  # fmt: skip
     if status == "not_replicated":
         for s in steps:

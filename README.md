@@ -30,7 +30,7 @@ Each capability carries one of three labels:
 | Catalog: applications, Twin Lab recording import, evidence links, reviewed attachments | Locally tested | `tests/test_workflow.py` |
 | Build pack export | Locally tested | Automated tests check its contents and immutable revisions. No coding agent has built an app from a pack in this project |
 | Release registration from a committed Git tree, release download | Locally tested | Automated tests; the Orders/Billing replay used previously built fixture apps, not a fresh rebuild |
-| Verify a release (the journey's Verify step) | Implemented | The step reads a release state when the catalog keeps one; marking a release tested is not part of this portal yet |
+| Release states Packaged → Tested → Published; deployment version check | Locally tested | `tests/test_release_states.py`; the journey's Verify step is done once the latest release is Tested, Open or download once it is Published. No real deployment has answered the version check |
 | Deployment registration (URL, demo username, secret reference) | Locally tested | Automated tests register a URL; no demo has been deployed |
 | OpenShift manifest for a demo (`openshift.py`) | Implemented | Manifest wiring checked locally; never applied to a cluster |
 | Portal on OpenShift (`Dockerfile`, `deploy/openshift-portal.yaml`) | Locally tested (image), Implemented (manifest) | The image ran locally as an arbitrary UID; the manifest, OAuth proxy, route and volume have not run on a cluster |
@@ -94,7 +94,11 @@ Import the session's top-level `steps.jsonl`. Recovered imports retain previousl
    oc get route billing
    ```
 
-4. Add the environment and route URL on the release page, under **Setup / Advanced: deployment configuration**. You can include a demo username and the reference to its password in your secret manager.
+4. Add the environment and route URL on the release page, under **Setup / Advanced: deployment configuration**. You can include a demo username and the reference to its password in your secret manager. The portal then asks the deployment for `GET <URL>/.twinlab/version`; when it answers HTTP 200 with JSON `{"commit": "<full 40-character Git commit>"}` equal to the release's commit, the deployment is **Verified**. Otherwise (no endpoint, another commit, unreachable) every page shows it as **Registered URL (not verified)**. **Check version again** on the release page repeats the check. The build pack asks the builder for this endpoint.
+
+### Release states: Packaged → Tested → Published
+
+A registered release is **Packaged**: its committed tree is archived, nothing more is known. On the release page, **Record test results** makes it **Tested** and stores the evidence: the tested commit (it must be the packaged commit), a pass, fail or not-run result for every scenario of the release's build brief (the brief's `scenarios`, else one per linked recording, named by its notes), the supported platform, launch instructions and the reset check (pass or fail). It can be tested again until it is published. **Publish** is refused unless the release is Tested, and a Published release is final. The catalog shows each app's latest Tested or Published release with its results, **Open demo** (a verified deployment first, else a registered URL labelled as not verified) and **Download tested release**. Releases registered before these states existed are Packaged.
 
 TwinLab2 helps a demo owner turn examples of an application into a runnable, versioned demo. The owner opens an app in the catalog, adds recordings and requirements, reviews what the demo should do, and gives the resulting build brief to a coding agent. A customer of the catalog can download a release or open a deployed demo.
 

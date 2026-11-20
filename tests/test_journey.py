@@ -110,3 +110,30 @@ class JourneyPagesTest(unittest.TestCase):
         self.assertIn("Request a recording", page)
         self.assertNotIn("Offer a session", page)
         self.assertIn("pair a recorder machine", page)
+
+
+class JourneyThroughReleaseStatesTest(unittest.TestCase):
+    """Build, Verify and Open or download follow the release states of the real portal."""
+    from test_release_states import ReleaseStatesTest as _R
+    setUp, git, post, evidence = _R.setUp, _R.git, _R.post, _R.evidence
+    del _R
+
+    def card(self):
+        page = self.client.get("/").data.decode()
+        return page.split('<article class="card">')[1].split("</article>")[0]
+
+    def test_tested_then_published(self):
+        self.post(self.app_path, owner="Finance IT", purpose="Invoice demo")
+        self.assertIn("<dd>Verify</dd>", self.card())
+        self.assertIn(">Verify release<", self.card())
+        self.assertEqual(self.post("/releases/1/test", **self.evidence()).status_code, 302)
+        card = self.card()
+        self.assertIn("<dd>Open or download</dd>", card)
+        self.assertIn(">Publish release<", card)
+        self.assertIn("Download tested release", card)  # the release session's buttons stay
+        self.assertEqual(self.post("/releases/1/publish").status_code, 302)
+        card = self.card()
+        self.assertIn("<dd>Ready to open or download</dd>", card)
+        self.assertNotIn(">Publish release<", card)
+        self.assertIn("Download tested release", card)
+        self.assertIn("Ready", self.client.get(self.app_path).data.decode())

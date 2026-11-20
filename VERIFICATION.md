@@ -60,12 +60,28 @@ example.com, visited in the session's browser, left no step and no HAR entry; th
 
 Not checked: a real UiPath robot, a real mainframe or emulator, a second PC, a signed build.
 
+## Release states and deployment verification (2026-11-20)
+
+Locally tested by `tests/test_release_states.py` (unit tests against the Flask test client, a temporary Git repo and SQLite catalog):
+
+| Check | Result |
+|---|---|
+| Packaged | Pass. A newly registered release is Packaged; **Publish** is refused (400) and it is not shown in the catalog as a tested release. |
+| Packaged → Tested refusals | Pass. Refused, with nothing stored, for: another commit, an abbreviated commit, no platform, no launch instructions, no or invalid reset check, a brief scenario without a result, an unknown result value, a result for a scenario not in the brief. A brief without scenarios cannot be tested. |
+| Packaged → Tested → Published | Pass. Results linked to the brief's scenarios (from linked recordings, and from an explicit `scenarios` list) are stored and shown; a re-test replaces them; publishing a Tested release succeeds; testing or publishing a Published release again is refused; the ZIP still downloads. |
+| Catalog card | Pass. Shows the latest Tested release (not a newer Packaged one), its pass/fail/not-run counts and platform, **Open demo** only with a deployment, and **Download tested release**. |
+| Version check | Pass. A stub HTTP server on 127.0.0.1 and an OS-chosen free port: `{"commit": <release commit>}` at `<URL>/.twinlab/version` → Verified; another commit (after **Check version again**) → Registered URL (not verified) naming the commit it serves; 404, HTML, a JSON list, an abbreviated commit, and a stopped server → Registered URL (not verified), on the release page and the catalog. |
+| Migration | Pass. A catalog with the earlier `releases` and `deployments` tables opens twice; its release becomes Packaged and its deployment an unverified registered URL. |
+| Whole suite | `python -m unittest discover -s tests`: 27 tests, OK, 1 skipped (the Edge/CaseDesk end-to-end test, which needs `TWINLAB_AGENT_E2E=1`). |
+
+Not verified: a real deployment (OpenShift route) answering `/.twinlab/version`, a version check through a proxy or with a private certificate authority, and the pages in a browser (checked through the rendered HTML only).
+
 ## The onboarding journey (2026-11-20)
 
 | Check | Result |
 |---|---|
-| Journey stage, missing information and one next action (`tests/test_journey.py`) | Pass. The first step not done is the stage; a discovered application asks for a scope decision; examples need an identity, then a paired machine; Verify waits for a release state that says tested; a not-replicated application is out of the journey. |
+| Journey stage, missing information and one next action (`tests/test_journey.py`) | Pass. The first step not done is the stage; a discovered application asks for a scope decision; examples need an identity, then a paired machine; Verify is done once the latest release is Tested and Open or download once it is Published; a not-replicated application is out of the journey. |
 | Pages (`tests/test_journey.py`) | Pass. Each catalog card shows owner, purpose, stage, missing information and exactly one action; identities and the Git repository are on the Setup / Advanced page; machines are reached from Setup / Advanced, not the main navigation; the application page's forms no longer overwrite each other's fields. |
 | Local render | The catalog, an application page, its Setup / Advanced page, Request a recording and Setup / Advanced rendered from `python portal.py --port 8791` with a sample catalog. |
 
-Not checked: onboarding with real users. Release states (Packaged, Tested, Published) are not stored by this portal yet, so no application gets past Verify.
+Not checked: onboarding with real users.
