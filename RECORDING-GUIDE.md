@@ -43,10 +43,14 @@ or from a command prompt:
 
 Then:
 
-1. Wait until the window says *The browser is ready* when there is a web target (Edge opens on the first one), or *Recording* otherwise. For a mainframe target it also shows the address the terminal connects to.
-2. Run the UiPath process (from Studio or UiPath Assistant). Leave the PC alone while it runs: anything you do in a target application is recorded too.
-3. Press **Stop recording** (or Ctrl+C at the command prompt). Finishing takes a few seconds; the browser the recorder started closes.
-4. **Recordings on this PC** shows what was recorded per application. **Send references to the portal** sends only that summary; without a portal, nothing leaves the PC.
+1. **The checks before recording (preflight).** Start first checks, without recording anything or opening a browser, that the session can be recorded: the recorder's Twin Lab collectors write the recorder contract this recorder speaks (`recorder`), there is at least 1 GB free where the recordings go (`disk`), the browser the recorder starts is installed with Playwright, or a Chromium browser answers at the attach address (`browser`), each web target answers (`reach <address>`), UI Automation answers and the desktop is unlocked (`desktop`), and each mainframe host answers and the port the terminal connects to is free (`mainframe <host:port>`, `proxy port <port>`). At the command prompt each check prints as `ok` or `FAIL` with its detail; the window says *Ready: every check passed* before *Recording*.
+   - **A check failed:** the window lists each failed check with its detail and asks; the default answer does not record. At the command prompt `record` stops with `NOT READY` (exit code 2) and records nothing. Fix what the detail says and start again.
+   - **Recording anyway:** answer **Yes** in the window, or add `--override-preflight` to `record`. Do this only when you know why the check failed (for example a web target that answers only once the VPN is up after you start). The recording then carries the checks with `"ready": false`: **Recordings on this PC** says *Recording started with failed checks* and names them, and the portal's recording page shows *Not ready: recording started with failed checks* with each check.
+   - Every recording carries its checks (`preflight` in `portal-outbox.json`, and in what the portal receives). The details name no local path: the data folder is written as *the recorder's data folder*.
+2. Wait until the window says *The browser is ready* when there is a web target (Edge opens on the first one), or *Recording* otherwise. For a mainframe target it also shows the address the terminal connects to.
+3. Run the UiPath process (from Studio or UiPath Assistant). Leave the PC alone while it runs: anything you do in a target application is recorded too.
+4. Press **Stop recording** (or Ctrl+C at the command prompt). Finishing takes a few seconds; the browser the recorder started closes.
+5. **Recordings on this PC** shows what was recorded per application. **Send references to the portal** sends only that summary; without a portal, nothing leaves the PC.
 
 The recording is in `%LOCALAPPDATA%\TwinLabRecorder\recordings\<session>\` (or `data\recordings\` beside the program with `--portable-data`): `session.jsonl` (the whole timeline), `desktop\`, `web\`, `mainframe\`, and `portal-outbox.json`.
 
@@ -79,4 +83,5 @@ Record with `--tn3270 127.0.0.1:3270`, point the terminal (or `python reference\
 - **No web steps:** UiPath used a browser the recorder did not start. Use the kept profile with UiPath's extension, or attach by DevTools address.
 - **No mainframe steps:** the terminal did not connect to `127.0.0.1:23270`; `mainframe\mainframe.json` says how many connections came and whether the host could be reached.
 - **No desktop steps for an application:** it was not a target (check its executable name; the notes say when a target was recorded only as used, for example `javaw.exe` or a program under `C:\Windows`), or it runs as administrator (the notes say so: run the recorder as administrator too).
+- **Not ready:** see *The checks before recording* above; each failed check's detail says what to fix.
 - **The recorder was closed or crashed:** start it again; it finishes the unfinished session from what it had written (a web recording then has no HAR).
