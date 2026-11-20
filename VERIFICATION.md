@@ -1,6 +1,21 @@
 # Local verification
 
-Every result below is **Locally tested** (on the developer's Windows PC) unless it says otherwise; labels as in the README's *What works today*. **Nothing here is externally validated**: there has been no recorder trial on a live managed PC, no OpenShift deployment, no fresh coding-agent rebuild from a build pack and no clean-machine install. The Orders/Billing release replay used previously built fixture apps.
+Every result below is **Locally tested** (on the developer's Windows PC) unless it says otherwise; labels as in the README's *What works today*. **Nothing here is externally validated**: there has been no recorder trial on a live managed PC and no OpenShift deployment. The Orders-to-Billing milestone (next section) did a fresh blind rebuild from exported packs and a clean-container install, all on the same PC; the older Orders/Billing release replay below used previously built fixture apps.
+
+## Orders-to-Billing milestone: record, freeze, blind rebuild, clean container, Tested (2026-11-20)
+
+Full report with every step, failure and cause: `../milestone-trial/REPORT.md` (beside this repository; not committed). Portal from this branch, Twin Lab pinned at 4385949.
+
+| Area | Status | Result |
+|---|---|---|
+| Recording through the portal | Locally tested | Request a recording, the recorder from source on its own Edge driven over DevTools: 65 web steps over two tabs (Orders, Billing), each with a UUIDv7 `event_id`; Recording details shows completeness (web and network complete), contract 1.1.0, Twin Lab 4385949; upload confirmed. "Production" apps: Twin Lab's in-memory fixture Orders/Billing. |
+| Owner workflow | Locally tested | Both applications confirmed, evidence reviewed, synthetic seed and reviewed screenshots attached, one guided scenario per app, pre-freeze report (it caught a redaction false positive), packages frozen (v1, v2, Orders v3) with stored change summaries and diffs; the downloads match the approved SHA-256. |
+| Blind rebuild from the packs alone | Locally tested | Three fresh Claude subagents (no API key, no Devin), each limited to a folder holding only the packs (plus the previous build for v2 and v3). Their transcripts were audited: none read anything outside its folder; side effects outside are listed in the report. |
+| Clean machine | Locally tested | Fresh `python:3.13-slim` containers with only the release ZIPs; dependencies installed inside; Twin Lab's lab agent beside each app for reset. An order made in Orders is billed in Billing, data survives a container restart, and reset returns both apps to the seed (7/7 checks on v1, 9/9 on v2 and v3). |
+| Release verification (Verify) | Locally tested | v1 1.0.0: business outcome met (7/7 acceptance cases), reset pass, but the DOM-fidelity replay failed on 47 steps (structure the pack did not describe): **Packaged**. v2 2.0.0 (changed requirement: invoices above 100.00 need approval, plus an owner interface-structure note): 8/8 cases, replay failed on one element state: **Packaged**. Orders v3 (the note adds disabled controls and row counts) → 3.0.0 for both: replay PASS WITHIN DECLARED SCOPE, 8/8, reset pass: **Tested**. No GitHub repository was used, so there was no CI gate; required checks cannot be local checks. |
+| Externally validated | No | Same PC throughout; fixture apps, not a production system; builders were subagents given the ZIPs, not the portal's build sessions; no managed PC, desktop or mainframe capture, OpenShift or real GitHub checks. |
+
+Fixed on the way: Verify no longer makes a release Tested when a scenario failed or was not run or the reset failed (the release keeps the results and stays Packaged); a recording linked to several scenarios is replayed once per verification (a second replay started from the first one's data); the README's PostgreSQL test container now uses UTF8.
 
 Since 2026-11-20 the portal calls offering a session **Request a recording** (the stored session status is still `offered`) and a confirmed application **Confirmed application** (stored status `known`). The results below keep the wording of the day they were run.
 
