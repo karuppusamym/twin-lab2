@@ -454,6 +454,16 @@ class IndependentChecksTest(unittest.TestCase):
         self.assertEqual(report["scenarios"][0]["result"], "fail")
         self.assertEqual(report["reset"]["result"], "pass")
 
+    def test_a_recording_shared_by_scenarios_is_replayed_once(self):
+        # the second replay would start from the data the first one saved, not from the seed
+        manifest = {"scenarios": [{"name": "Invoice", "events": [{"recording_id": "r1", "seq": 1}]},
+                                  {"name": "Approval", "events": [{"recording_id": "r1", "seq": 2}]}]}
+        scenarios = [{"id": "scenario-1", "name": "Invoice"}, {"id": "scenario-2", "name": "Approval"}]
+        twin = FakeTwinLab()
+        report = independent.run(twin, scenarios, manifest, "http://app.test/", "http://lab.test/")
+        self.assertEqual([c for c in twin.calls if c[0] == "replay"], [("replay", "r1", "http://app.test/")])
+        self.assertEqual([s["result"] for s in report["scenarios"]], ["pass", "pass"])
+
     def test_twin_lab_must_be_the_pinned_tree(self):
         class Unpinned(FakeTwinLab):
             def pin(self):

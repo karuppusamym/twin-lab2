@@ -105,7 +105,7 @@ python migrations.py copy .state/catalog.db "postgresql://twinlab2:…@host:5432
 `python -m pytest` runs on SQLite. Set `TWINLAB2_TEST_DATABASE_URL` to run the same suite on PostgreSQL. Every test gets a new database on that server, and the databases are dropped at the end of the run:
 
 ```powershell
-docker run -d --name twinlab2-pg -e POSTGRES_PASSWORD=twinlab2 -e POSTGRES_INITDB_ARGS="--locale=C" -p 55432:5432 postgres:16
+docker run -d --name twinlab2-pg -e POSTGRES_PASSWORD=twinlab2 -e POSTGRES_INITDB_ARGS="--locale=C --encoding=UTF8" -p 55432:5432 postgres:16
 ```
 
 ```powershell

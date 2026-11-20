@@ -139,11 +139,17 @@ def run(runner, scenarios, manifest, base_url, lab_url):
         report["twinlab"] = {"error": str(error)}
         report["problems"] = [f"Twin Lab is not available as pinned: {error}"]
         return report
+    # A replay changes the deployment's data (it saves what the recording saved), so a recording is
+    # replayed once per verification and its report is shared by every scenario linked to it:
+    # replaying it again would start from the first replay's data, not from the seed.
+    replayed = {}
     for scenario in scenarios:
         entry = {"id": scenario["id"], "name": scenario["name"], "replays": []}
         reports = []
         for recording_id in scenario_recordings(manifest, scenario["id"]):
-            result = runner.replay(recording_id, base_url)
+            if recording_id not in replayed:
+                replayed[recording_id] = runner.replay(recording_id, base_url)
+            result = replayed[recording_id]
             if result is None:
                 entry["replays"].append({"recording": recording_id, "status": "not-available"})
                 continue
