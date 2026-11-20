@@ -209,9 +209,6 @@ def facts(db, app) -> dict:
 
 def recordings_needing_attention(db, app_id) -> list[dict]:
     """The application's recordings that are partial or failed and that nobody has accepted."""
-    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    if "recording_completeness" not in tables:
-        return []
     rows = db.execute("""
         SELECT recordings.id, recordings.name, recording_completeness.completeness
         FROM recording_completeness JOIN recordings ON recordings.id = recording_completeness.recording_id

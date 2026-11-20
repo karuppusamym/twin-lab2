@@ -87,7 +87,7 @@ def migrate(db) -> dict:
     """Give every stored event its id and move numeric references to ids. Returns the counts
     changed per table (all zero once migrated)."""
     changed = {"recordings": 0, "recording_apps": 0, "evidence": 0, "scenarios": 0}
-    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    # portable SQL only: the tables exist (portal.create_app runs the other migrations first)
     ids = {}  # recording_id -> {number: event_id}
     with db:
         for rec_id, events in db.execute("SELECT id, events FROM recordings").fetchall():
@@ -101,43 +101,40 @@ def migrate(db) -> dict:
             if missing:
                 db.execute("UPDATE recordings SET events = ? WHERE id = ?", (json.dumps(events), rec_id))
                 changed["recordings"] += 1
-        if "recording_apps" in tables:
-            rows = db.execute("SELECT recording_id, app_id, key, flow FROM recording_apps").fetchall()
-            for rec_id, app_id, key, flow in rows:
-                steps = json.loads(flow)
-                if all(clean(s.get("event_id")) for s in steps):
-                    continue
-                assign(steps, rec_id, ids.get(rec_id, {}))
-                db.execute("UPDATE recording_apps SET flow = ? WHERE recording_id = ? AND app_id = ? AND key = ?",
-                           (json.dumps(steps), rec_id, app_id, key))  # fmt: skip
-                changed["recording_apps"] += 1
+        rows = db.execute("SELECT recording_id, app_id, key, flow FROM recording_apps").fetchall()
+        for rec_id, app_id, key, flow in rows:
+            steps = json.loads(flow)
+            if all(clean(s.get("event_id")) for s in steps):
+                continue
+            assign(steps, rec_id, ids.get(rec_id, {}))
+            db.execute("UPDATE recording_apps SET flow = ? WHERE recording_id = ? AND app_id = ? AND key = ?",
+                       (json.dumps(steps), rec_id, app_id, key))  # fmt: skip
+            changed["recording_apps"] += 1
 
         def to_id(rec_id, value):
             if isinstance(value, int) and not isinstance(value, bool):
                 return ids.get(rec_id, {}).get(value) or derived(rec_id, value)
             return value
 
-        columns = {row[1] for row in db.execute("PRAGMA table_info(evidence)")}
-        wanted = [c for c in ("selection", "suggested") if c in columns]
-        for row in db.execute(f"SELECT app_id, recording_id, {', '.join(wanted)} FROM evidence").fetchall():
-            app_id, rec_id, values = row[0], row[1], [json.loads(v) for v in row[2:]]
+        for app_id, rec_id, selection, suggested in db.execute(
+                "SELECT app_id, recording_id, selection, suggested FROM evidence").fetchall():
+            values = [json.loads(selection), json.loads(suggested)]
             if not any(isinstance(v, int) for lst in values for v in lst):
                 continue
             moved = [json.dumps(sorted({to_id(rec_id, v) for v in lst})) for lst in values]
-            db.execute(f"UPDATE evidence SET {', '.join(f'{c} = ?' for c in wanted)} "
-                       "WHERE app_id = ? AND recording_id = ?", (*moved, app_id, rec_id))  # fmt: skip
+            db.execute("UPDATE evidence SET selection = ?, suggested = ? WHERE app_id = ? AND recording_id = ?",
+                       (*moved, app_id, rec_id))  # fmt: skip
             changed["evidence"] += 1
-        if "scenarios" in tables:
-            for scenario_id, events in db.execute("SELECT id, events FROM scenarios").fetchall():
-                refs = json.loads(events)
-                moved = []
-                for ref in refs:
-                    match = REF.match(ref) if isinstance(ref, str) else None
-                    if match:
-                        rec_id = match["recording"]
-                        ref = f"{rec_id}#{to_id(rec_id, int(match['number']))}"
-                    moved.append(ref)
-                if moved != refs:
-                    db.execute("UPDATE scenarios SET events = ? WHERE id = ?", (json.dumps(moved), scenario_id))
-                    changed["scenarios"] += 1
+        for scenario_id, events in db.execute("SELECT id, events FROM scenarios").fetchall():
+            refs = json.loads(events)
+            moved = []
+            for ref in refs:
+                match = REF.match(ref) if isinstance(ref, str) else None
+                if match:
+                    rec_id = match["recording"]
+                    ref = f"{rec_id}#{to_id(rec_id, int(match['number']))}"
+                moved.append(ref)
+            if moved != refs:
+                db.execute("UPDATE scenarios SET events = ? WHERE id = ?", (json.dumps(moved), scenario_id))
+                changed["scenarios"] += 1
     return changed
