@@ -96,7 +96,7 @@ class BuildTest(unittest.TestCase):
         return app_id, self.revision(app_id)
 
     def revision(self, app_id):
-        return re.search(r'name="revision" value="([0-9a-f]{64})"', self.page(f"/apps/{app_id}/build")).group(1)
+        return re.search(r'<option value="([0-9a-f]{64})" selected', self.page(f"/apps/{app_id}/build")).group(1)
 
     def request_build(self, app_id, revision, **values):
         return self.post(f"/apps/{app_id}/build", revision=revision, repo=REPO, base_branch="", acu_budget="7", **values)
@@ -128,7 +128,7 @@ class BuildTest(unittest.TestCase):
         app_id, revision = self.ready_app()
         page = self.page(f"/apps/{app_id}/build")
         self.assertIn("BUILD_TASK.md", page)  # the exact pack preview
-        self.assertIn("Build with Devin", page)
+        self.assertIn("Start build session", page)
         response = self.request_build(app_id, revision)
         self.assertEqual(response.location, "/builds/1")
         self.assertIn("Queued", self.page("/builds/1"))
@@ -155,8 +155,8 @@ class BuildTest(unittest.TestCase):
         self.github.add_pull(REPO, 12, HEAD)
         self.run_worker()
         build = self.build()
-        self.assertEqual((build["state"], build["pr_number"], build["head_sha"], build["active_app"]),
-                         ("ready_for_verification", 12, HEAD, None))
+        self.assertEqual((build["state"], build["pr_number"], build["head_sha"], build["provider_session_id"]),
+                         ("ready_for_verification", 12, HEAD, session["session_id"]))
         page = self.page("/builds/1")
         self.assertIn("Ready for verification", page)
         self.assertIn(HEAD, page)
@@ -180,31 +180,34 @@ class BuildTest(unittest.TestCase):
         self.assertIn("Should closed orders be searchable?", page)
         self.assertIn('name="answer"', page)
         self.post("/builds/1/answer", answer="Yes, read-only.")
-        self.assertIn("(sending)", self.page("/builds/1"))
+        self.assertIn('data-delivery="queued"', self.page("/builds/1"))
         self.run_worker(jobs=2)
         self.assertEqual(self.devin.sessions[sid]["messages"][-1],
                          {"source": "user", "message": "Yes, read-only."})
         build = self.build()
         self.assertEqual(build["state"], "running")
-        self.assertIn("(sent)", self.page("/builds/1"))
+        self.assertIn('data-delivery="sent"', self.page("/builds/1"))
 
     def test_duplicate_build_clicks_make_one_build(self):
         app_id, revision = self.ready_app()
-        first = self.request_build(app_id, revision)
-        second = self.request_build(app_id, revision)
+        first = self.request_build(app_id, revision, request_key="click-1")
+        second = self.request_build(app_id, revision, request_key="click-1")
         self.assertEqual(first.location, second.location)
-        self.assertIn("already in progress", self.page(second.location))
+        self.assertIn("already started session #1", self.page(second.location))
+        # a request from a page without a key is matched to the same unfinished request
+        self.assertEqual(self.request_build(app_id, revision).location, "/builds/2")
+        self.assertEqual(self.request_build(app_id, revision).location, "/builds/2")
         db = self.db()
-        self.assertEqual(db.execute("SELECT COUNT(*) FROM builds").fetchone()[0], 1)
-        self.assertEqual(db.execute("SELECT COUNT(*) FROM jobs WHERE type = 'build'").fetchone()[0], 1)
-        # the database refuses a second active build even when the check is skipped
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM builds").fetchone()[0], 2)
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM jobs WHERE type = 'build'").fetchone()[0], 2)
+        # the database refuses a second session of the same request even when the check is skipped
         row = dict(builds.get(db, 1))
         row.update(id=None, idempotency_tag="another")
         with self.assertRaises(IntegrityError):
             db.execute(f"INSERT INTO builds ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})", list(row.values()))
         db.rollback()
-        self.run_worker(jobs=3)
-        self.assertEqual(self.devin.create_calls, 1)
+        self.run_worker(jobs=4)
+        self.assertEqual(self.devin.create_calls, 2)
 
     def test_a_create_that_timed_out_is_found_by_its_tag_not_repeated(self):
         for plan in ("slow", "fail_after_create"):
@@ -217,7 +220,7 @@ class BuildTest(unittest.TestCase):
                 self.request_build(app_id, revision)
                 self.run_worker()
                 self.assertEqual(self.build()["state"], "checking_started")
-                self.assertIn("Checking whether the build started", self.page("/builds/1"))
+                self.assertIn("Checking whether the session started", self.page("/builds/1"))
                 self.run_worker()
                 build = self.build()
                 self.assertEqual(build["state"], "running")
@@ -339,7 +342,7 @@ class BuildTest(unittest.TestCase):
         self.run_worker()
         self.post("/builds/1/cancel")
         build = self.build()
-        self.assertEqual((build["state"], build["active_app"]), ("cancelled", None))
+        self.assertEqual(build["state"], "cancelled")
         self.run_worker(jobs=3)
         self.assertTrue(self.devin.only_session()["terminated"])
         self.assertEqual(self.build()["state"], "cancelled")

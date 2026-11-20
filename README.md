@@ -136,7 +136,7 @@ Follow these rules in every new query and table so they work on SQLite and Postg
 
 **Sign-in.** Behind an SSO / OAuth proxy set `TWINLAB2_TRUST_PROXY_USER=1`: the user comes from `X-Forwarded-User`, admins from `TWINLAB2_ADMINS` (comma separated), `TWINLAB2_ADMIN_GROUP` (matched against `X-Forwarded-Groups`) or `python portal.py user NAME --admin`. For development, the local user store signs people in with their own password (`python portal.py user NAME --password`, or *Users* in the portal); `TWINLAB2_PASSWORD` still lets any other name in with the shared password. Without either, the portal serves only this machine as the admin user `local`. To take identity from elsewhere (JWT, mTLS), replace `auth.proxy_identity`.
 
-**Two artifact classes.** Recordings and uploads are *restricted evidence*: only the uploader and the application's owners see them, and uploading never shares anything. A *builder-approved package* is the only thing a builder gets: the owner previews the draft with its **pre-freeze report** ("N items excluded, reasons"; what was redacted), approves that exact SHA-256, and freezes it as revision 1, 2, … Each revision records who approved it, when, the SHA-256, the report, a change summary and a diff against the previous revision; revisions are never changed (SQLite triggers refuse it). Build with Devin sends only a frozen revision, and releases and build verification answer one.
+**Two artifact classes.** Recordings and uploads are *restricted evidence*: only the uploader and the application's owners see them, and uploading never shares anything. A *builder-approved package* is the only thing a builder gets: the owner previews the draft with its **pre-freeze report** ("N items excluded, reasons"; what was redacted), approves that exact SHA-256, and freezes it as revision 1, 2, … Each revision records who approved it, when, the SHA-256, the report, a change summary and a diff against the previous revision; revisions are never changed (SQLite triggers refuse it). A build session sends only a frozen revision, and releases and build verification answer one.
 
 **Filtering beyond typed values** (`redact.py`). Attachments stay out until the owner marks them *reviewed* or *synthetic*. Shared ones are filtered: HAR files lose cookies, credential headers, query and form values, binary bodies, and sensitive fields in JSON bodies; JSON loses fields named like passwords, tokens, e-mail, card, SSN, IBAN, phone, address, birth date; images lose their metadata (PNG text/EXIF chunks, JPEG APP1–15 and comments); all text in the pack (flow labels, notes, scenarios, text files) loses e-mail addresses outside example domains, card numbers (Luhn), IBANs, SSNs, phone numbers, JWTs, bearer tokens, API keys and `password=…` values. A file that cannot be parsed is excluded.
 
@@ -157,33 +157,45 @@ For automation, start the browser with a local CDP endpoint and add `--cdp http:
 
 Import the session's top-level `steps.jsonl`. Recovered imports retain previously linked event IDs. Review scope and attach approved API contracts, synthetic database fixtures, utility examples, visual references, or acceptance cases directly to the app. The adapter records the collector commit for every capture: the pinned one, or a clean checkout's with `--twin-lab`. [Twin Lab baseline and update procedure](UPSTREAM.md)
 
-## Build with Devin
+## Build sessions (Devin, Claude, Copilot)
 
-On the application page, **Build with Devin** opens the **Build** page: the exact build pack (the same file-by-file preview as the download), a **Freeze this pack** button, the target repository and base branch, what changed since the previous build, and the ACU budget. Only a frozen pack is built, and the build sends exactly the frozen bytes (their SHA-256 is checked again). The branch is resolved to a commit when the build is queued; Devin starts from that commit. A later build of a changed pack must say what changed; Devin gets the new pack, the previous revision and its pull request, the summary and the list of files that differ.
+Three things are kept apart. A **recording** is evidence and can feed several applications. An **approved package revision** is the immutable builder package an owner froze (above). A **build session** is one provider's attempt at one package revision, from one repository and starting commit, with its own branch (`twinlab2/app-<id>/session-<n>-<provider>`), workspace, budget, conversation, outputs (pull request, head commit, cost) and verification results. One revision can have many sessions: a Devin first implementation, a Claude alternative, a Claude improvement that starts from the commit another session made.
 
-**Build progress** shows the state, Devin's questions with an answer box (the answer is sent to the session), the Devin session link, the pull request and its head commit, and a placeholder for the independent checks, with **Cancel** and **Retry**. Devin finishing is **Ready for verification**, never Tested.
+On the application page, **Build** opens the sessions page: the exact package (the same file-by-file preview as the download), **New build session** (provider, model, package revision, repository, base branch or a previous session's commit, budget in the provider's own unit, what changed since the previous build), and the session list (state, branch, cost against budget, outstanding questions, pull request) with **Compare results**. Only a frozen revision is built, and a session sends exactly its bytes (the SHA-256 is checked again).
+
+A session's page is its **chat**: the provider's questions and tool requests, your answers with a delivery status each (Queued, Sending, Sent, Acknowledged, **Delivery uncertain**, Not delivered, Held for package review), the provider session link, the branch, pull request and head commit, and **Interrupt** (when the provider supports it), **Cancel**, **Retry** and **New session**. Tool approvals are their own Approve / Deny control, never a chat answer. A reply that got no clear answer (a timeout, a 5xx, a worker that died mid-send, or a provider that never confirmed it) is *Delivery uncertain* and is **not resent**: check the session, then answer again. An answer marked **This changes agreed behaviour** is not sent: it becomes a proposed scenario, so the draft package changes and an owner reviews and approves it as a new revision; the session's own revision is untouched. A provider finishing is **Ready for verification**, never Tested.
 
 | State | Meaning |
 |---|---|
 | Queued | Waiting for the worker |
-| Starting | Uploading the pack and creating the Devin session |
-| Checking whether the build started | The create got no clear answer (timeout, 5xx, or a worker that stopped mid-call). Nothing is sent again until the worker has looked for the session by the build's tag: found, it is followed; not found, it is created once more |
-| Running | Devin is working |
-| Waiting for your answer | Devin asked something; answer on the page |
-| Ready for verification | Devin finished; the pull request awaits the independent checks |
-| Failed, Cancelled | Final; **Retry** makes a new attempt of the same frozen pack, repository and base commit |
+| Starting | Preparing (Devin: uploading the pack) and starting the provider session |
+| Checking whether the session started | The start got no clear answer (timeout, 5xx, or a worker that stopped mid-call). Nothing is started again until the worker has looked for the session by its tag: found, it is followed; not found, it is started once more. A provider that cannot look a start up fails the session instead of repeating it |
+| Running | The provider is working |
+| Waiting for your answer | The provider asked something or wants a tool approved |
+| Ready for verification | Finished; the commit awaits the independent checks |
+| Failed, Cancelled | Final; **Retry** makes a new session of the same provider, package, repository and starting commit |
 
-One build per application is active at a time (a unique column, plus a check), so a second click finds the first build. Builds run in one worker process beside the portal:
+**Idempotency and isolation.** Each New build session form carries a request key: a repeated click returns the session that request started (the key is unique in the database); **New session** deliberately starts another attempt. There is no "one active build per application" rule any more: sessions run side by side, each on its own branch and workspace. **Publishing stays coordinated**: only one release publish per application runs at a time (a lock taken before the publish; 409 while another holds it; taken over after 2 minutes if its holder died), and a release belongs to the session that first packaged its commit, so another session cannot take it over.
+
+**Compare results** runs the same acceptance checks as release verification (the commit's required GitHub checks, and Twin Lab's independent scenario checks against a deployment reporting that commit) against each selected session's commit, under that session's package revision, and shows them side by side. Nothing is merged or published from there.
+
+**Providers.** A provider is an integration; the model is configuration inside it. Each adapter (`providers/`) declares its capabilities (start, read events, reply, interrupt, cancel, collect results, find a lost start, tool approvals, acknowledgements) and the page shows only the controls it supports.
+
+| Provider | How it runs | Budget unit | Status |
+|---|---|---|---|
+| Devin | Twin Lab's pinned Devin client (`devin.py`): the pack as an attachment, the session tagged, an uncertain create looked up by tag | ACU | Implemented; locally tested against a fake Devin API |
+
+Sessions run in one worker process beside the portal:
 
 ```powershell
 python worker.py --database .state/catalog.db   # or DATABASE_URL, as the portal
 ```
 
-Jobs are leased and kept alive by a heartbeat; a job held by a worker that died is taken over when its lease runs out. Under **Setup / Advanced: Build with Devin** an owner sets the Devin key and organisation and the GitHub token (environment variables `DEVIN_API_KEY`, `DEVIN_ORG_ID`, `DEVIN_BASE_URL`, `TWINLAB2_GITHUB_TOKEN`, `TWINLAB2_GITHUB_API` win over saved values; secrets are never shown), connects repositories, sets the default ACU budget, and sees the workers and the job queue. For development the worker can be started from there. The Devin client is Twin Lab's own, imported from the pinned commit ([UPSTREAM.md](UPSTREAM.md)); run `python -m agent.twinlab fetch` once.
+Jobs are leased and kept alive by a heartbeat; a job held by a worker that died is taken over when its lease runs out. Under **Setup / Advanced: Build sessions** an admin sets the provider credentials and the GitHub token (environment variables `DEVIN_API_KEY`, `DEVIN_ORG_ID`, `DEVIN_BASE_URL`, `TWINLAB2_GITHUB_TOKEN`, `TWINLAB2_GITHUB_API` win over saved values; secrets are never shown), connects repositories, sets default budgets, and sees the workers and the job queue. For development the worker can be started from there. The Devin client is Twin Lab's own, imported from the pinned commit ([UPSTREAM.md](UPSTREAM.md)); run `python -m agent.twinlab fetch` once.
 
 ## Build, package, and register a deployment
 
-1. Download the app's build pack (or build it with Devin, above). Give the ZIP to a coding agent along with access to the demo's Git repo. Include launch, seed, reset, and smoke-check instructions in the committed demo source; add a Dockerfile when a server release will use OpenShift.
+1. Download the app's build pack (or build it in a build session, above). Give the ZIP to a coding agent along with access to the demo's Git repo. Include launch, seed, reset, and smoke-check instructions in the committed demo source; add a Dockerfile when a server release will use OpenShift.
 2. Test the committed demo on the intended local platform. Register that committed tree using the app number in the portal URL and full brief revision in `BUILD_TASK.md`.
 
    ```powershell

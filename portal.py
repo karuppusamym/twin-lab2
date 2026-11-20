@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import re
 import secrets
+import uuid
 from urllib.parse import quote, urlsplit, urlunsplit
 import urllib.request
 
@@ -28,7 +29,9 @@ import completeness
 import event_ids
 import independent
 import journey
+import builds
 import builds_web
+import jobqueue
 import migrations
 import packages
 import redact
@@ -139,7 +142,7 @@ def store_brief(connection, app_id, revision, contents, package):
 
 
 def verify_commit(connection, app_id, repo, sha, github=None, runner=None, pr_number=None, ref="",
-                  base_url=None, user="verification"):
+                  base_url=None, user="verification", build_id=None, revision=None):
     """“Verify this build”: a Packaged release of exactly `sha` (from GitHub), its checks, Twin
     Lab's independent checks against a deployment reporting that commit, and the Tested
     transition when all of it holds. The release stays Packaged otherwise. The verification
@@ -150,11 +153,13 @@ def verify_commit(connection, app_id, repo, sha, github=None, runner=None, pr_nu
         raise ValueError("Add a business scenario before verifying a build.")
     # The package the build answers: the latest builder-approved (frozen) revision, the only
     # artifact a builder was given.
-    frozen = packages.latest(connection, app_id)
+    # A build session answers the revision it was given (`revision`).
+    frozen = packages.by_revision(connection, app_id, revision) if revision else packages.latest(connection, app_id)
     if frozen is None:
         raise ValueError("Freeze a builder package before verifying a build: a build answers an approved package.")
     revision = frozen["revision"]
-    release_id = commit_checks.package_commit(connection, app_id, repo, sha, github, revision, pr_number, ref)
+    release_id = commit_checks.package_commit(connection, app_id, repo, sha, github, revision, pr_number, ref,
+                                              build_id=build_id)
     return verify_release(connection, release_id, github, runner, base_url, user)
 
 
@@ -211,6 +216,35 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
     return {"release_id": release_id, "tested": tested, "reasons": reasons, "report": report, "report_sha": digest}
 
 
+class PublishConflict(ValueError):
+    """Another release of the application is being published right now."""
+
+
+PUBLISH_LOCK_SECONDS = 120
+
+
+def acquire_publish(connection, app_id, release_id, holder):
+    """Take the application's publish lock (committed at once, so a second publisher sees it).
+    PublishConflict while another publish holds it; a lock older than PUBLISH_LOCK_SECONDS
+    belongs to a publisher that died and is taken over."""
+    stamp, until = registry.now(), jobqueue.later(PUBLISH_LOCK_SECONDS)
+    cursor = connection.execute(
+        """INSERT INTO publish_locks(app_id, release_id, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (app_id) DO UPDATE SET release_id = excluded.release_id, holder = excluded.holder,
+           acquired_at = excluded.acquired_at, expires_at = excluded.expires_at
+           WHERE publish_locks.expires_at < ?""", (app_id, release_id, holder, stamp, until, jobqueue.stamp()))
+    connection.commit()
+    if cursor.rowcount != 1:
+        row = connection.execute("SELECT * FROM publish_locks WHERE app_id = ?", (app_id,)).fetchone()
+        raise PublishConflict(f"Release {row['release_id']} of this application is being published by {row['holder']}: "
+                              "try again when it has finished.")
+
+
+def release_publish(connection, app_id, holder):
+    connection.execute("DELETE FROM publish_locks WHERE app_id = ? AND holder = ?", (app_id, holder))
+    connection.commit()
+
+
 def publish(connection, release_id):
     """Make a Tested release Published; ValueError for any other state."""
     row = connection.execute("SELECT state FROM releases WHERE id = ?", (release_id,)).fetchone()
@@ -219,8 +253,10 @@ def publish(connection, release_id):
     if row["state"] != "tested":
         raise ValueError("Only a tested release can be published: record its test results first."
                          if row["state"] == "packaged" else "This release is already published.")
-    connection.execute("UPDATE releases SET state = 'published', published_at = ? WHERE id = ?",
-                       (registry.now(), release_id))
+    updated = connection.execute("UPDATE releases SET state = 'published', published_at = ? WHERE id = ? "
+                                 "AND state = 'tested'", (registry.now(), release_id)).rowcount
+    if updated != 1:
+        raise ValueError("This release is already published.")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1185,6 +1221,21 @@ def create_app(target):
                    tested=outcome.get("tested"), reasons=outcome.get("reasons"), report_sha=outcome.get("report_sha"))
         return redirect(url_for("release", release_id=release_id, _anchor="verification"))
 
+    def session_of(app_id, build_id):
+        """{build_id, revision} of the build session a verification is for (none: {})."""
+        if not build_id:
+            return {}
+        build = builds.get(db(), build_id)
+        if build is None or build["app_id"] != app_id:
+            abort(400, "That build session is not one of this application's.")
+        return {"build_id": build_id, "revision": build["revision"]}
+
+    def verify_session(connection, build):
+        with connection:
+            return verify_commit(connection, build["app_id"], build["repo"], build["head_sha"], github(),
+                                 app.config.get("TWINLAB_RUNNER"), build["pr_number"], build["branch"] or "",
+                                 user=g.user, build_id=build["id"], revision=build["revision"])
+
     @app.post("/apps/<int:app_id>/verify-commit")
     @require_role("owner")
     def verify_build(app_id):
@@ -1196,7 +1247,7 @@ def create_app(target):
                     db(), app_id, request.form.get("repo") or commit_checks.github_repo(item["git_url"]),
                     request.form.get("sha"), github(), app.config.get("TWINLAB_RUNNER"),
                     request.form.get("pr_number", type=int), request.form.get("ref", "").strip()[:200],
-                    user=g.user)
+                    user=g.user, **session_of(app_id, request.form.get("build_id", type=int)))
                 record("release.verify", "release", outcome["release_id"], app_id=app_id,
                        commit=request.form.get("sha"), tested=outcome.get("tested"), reasons=outcome.get("reasons"),
                        report_sha=outcome.get("report_sha"))
@@ -1236,6 +1287,11 @@ def create_app(target):
     @require_role("owner", resolve=release_app)
     def publish_release(release_id):
         item = get_release(release_id)
+        holder = f"{g.user}:{uuid.uuid4().hex[:8]}"
+        try:
+            acquire_publish(db(), item["app_id"], release_id, holder)
+        except PublishConflict as error:
+            abort(409, str(error))
         try:
             with db():
                 publish(db(), release_id)
@@ -1243,6 +1299,8 @@ def create_app(target):
                        commit=item["commit_sha"], archive_sha256=item["archive_sha"])
         except ValueError as error:
             abort(400, str(error))
+        finally:
+            release_publish(db(), item["app_id"], holder)
         return redirect(url_for("release", release_id=release_id))
 
     @app.get("/releases/<int:release_id>/download")
@@ -1260,7 +1318,8 @@ def create_app(target):
     uploads.register(app, db)
     auth.public(app.view_functions["artifact_download"])  # a signed, short-lived link is the credential
     builds_web.register(app, db, get_app, pack_view, target,
-                        dev_worker=not auth.Settings.from_env().trust_proxy and os.environ.get("TWINLAB2_DEV_WORKER", "1") != "0")
+                        dev_worker=not auth.Settings.from_env().trust_proxy and os.environ.get("TWINLAB2_DEV_WORKER", "1") != "0",
+                        verify=verify_session)
     return app
 
 

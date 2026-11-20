@@ -165,6 +165,10 @@ class RoleRefusalTest(Base):
             ("builder", "POST", "/builds/1/answer", {"answer": ""}),
             ("builder*", "POST", "/builds/1/cancel", {}),
             ("builder*", "POST", "/builds/1/retry", {}),
+            ("builder*", "POST", "/builds/1/interrupt", {}),
+            ("builder", "POST", "/builds/1/tools/1", {"decision": "approve"}),
+            ("builder", "GET", f"/apps/{a}/sessions/compare", {}),
+            ("owner", "POST", f"/apps/{a}/sessions/compare", {}),
             ("owner", "POST", f"/apps/{a}/build/freeze", {}),
             ("owner", "POST", "/releases/1/checks", {}),
             ("owner*", "POST", "/releases/1/verify", {}),  # * refusals only: admitting it runs Twin Lab
