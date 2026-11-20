@@ -151,6 +151,11 @@ class RoleRefusalTest(Base):
             ("builder", "GET", f"/apps/{a}/briefs/{self.revision}", {}),
             ("builder", "GET", "/releases/1/download", {}),
             ("builder", "POST", "/releases/1/deployments/check", {"environment": "Demo"}),
+            ("builder", "GET", "/releases/1/reports/1", {}),
+            ("owner", "POST", "/releases/1/checks", {}),
+            ("owner*", "POST", "/releases/1/verify", {}),  # * refusals only: admitting it runs Twin Lab
+            ("owner", "POST", f"/apps/{a}/verify-commit", {"repo": "octo/billing", "sha": "not-a-sha"}),
+            ("owner", "POST", f"/apps/{a}/verification", {"target_platform": "web"}),
             ("owner", "GET", f"/recordings/{r}", {}),
             ("owner", "POST", f"/recordings/{r}", {"app_id": str(a), "event": "1"}),
             ("owner", "GET", f"/apps/{a}/setup", {}),
@@ -182,11 +187,14 @@ class RoleRefusalTest(Base):
         people = {"dave": 0, "carol": 1, "bob": 2, "alice": 3}
         rank = {"viewer": 1, "builder": 2, "owner": 3}
         for needed, method, path, values in self.routes():
+            needed = needed.rstrip("*")
             for user, level in people.items():
                 if level < rank[needed]:
                     response = self.call(method, path, user, values)
                     self.assertEqual(response.status_code, 403, f"{user} {method} {path}")
         for needed, method, path, values in self.routes():
+            if needed.endswith("*"):
+                continue
             user = {"viewer": "carol", "builder": "bob", "owner": "alice"}[needed]
             response = self.call(method, path, user, values)
             self.assertNotEqual(response.status_code, 403, f"{user} {method} {path}: {response.data[:300]}")
