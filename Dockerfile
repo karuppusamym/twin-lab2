@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt "gunicorn>=23,<24"
 COPY portal.py registry.py openshift.py buildpack.py scenarios.py journey.py recorder_contract.py \
-     event_ids.py completeness.py ./
+     event_ids.py completeness.py independent.py verification.py ./
 COPY contract contract
 COPY templates templates
 COPY static static
