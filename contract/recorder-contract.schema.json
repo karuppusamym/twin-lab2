@@ -2,19 +2,65 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/karuppusamym/twin-lab2/blob/main/contract/recorder-contract.schema.json",
   "title": "TwinLab recorder contract",
-  "description": "What a workstation recorder sends to the TwinLab2 portal: the pairing request (#/$defs/pair) and the references of a recorded session (#/$defs/references). See RECORDER-CONTRACT.md. Unknown fields are allowed, so that a minor version can add optional ones, and are ignored: the portal stores only the fields named here.",
-  "x-contract-version": "1.0.0",
-  "oneOf": [{"$ref": "#/$defs/pair"}, {"$ref": "#/$defs/references"}],
+  "description": "What a workstation recorder sends to the TwinLab2 portal: the pairing request (#/$defs/pair) and the references of a recorded session (#/$defs/references for contract 1.0.x, #/$defs/references_1_1 for 1.1.0 and later minors). See RECORDER-CONTRACT.md. Unknown fields are allowed, so that a minor version can add optional ones, and are ignored: the portal stores only the fields named here.",
+  "x-contract-version": "1.1.0",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/pair"
+    },
+    {
+      "$ref": "#/$defs/references"
+    }
+  ],
   "$defs": {
     "contract_version": {
       "description": "The version of this contract the sender implements (semantic versioning: MAJOR.MINOR.PATCH).",
       "type": "string",
       "pattern": "^(0|[1-9][0-9]{0,3})\\.(0|[1-9][0-9]{0,3})\\.(0|[1-9][0-9]{0,3})$"
     },
-    "text": {"type": "string", "minLength": 1, "pattern": "^[^\\u0000-\\u001f]*$"},
-    "count": {"type": "integer", "minimum": 0},
-    "catalog_id": {"type": "integer", "minimum": 1},
-    "level": {"enum": ["full", "steps"]},
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000-\\u001f]*$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "catalog_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "event_id": {
+      "description": "A UUIDv7 (lowercase, canonical form) assigned when the event was captured. Finalisation, recovery and reordering never change it. Everything the portal keeps about an event refers to it.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "channel": {
+      "enum": [
+        "web",
+        "desktop",
+        "mainframe",
+        "network"
+      ]
+    },
+    "utc_ms": {
+      "description": "ISO-8601 UTC time with milliseconds, such as 2026-11-20T10:02:00.123Z.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3,6}(Z|\\+00:00)$"
+    },
+    "iso_time": {
+      "description": "ISO-8601 time with a UTC offset.",
+      "type": "string",
+      "maxLength": 40,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]{1,6})?)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "level": {
+      "enum": [
+        "full",
+        "steps"
+      ]
+    },
     "app_key": {
       "description": "An application's identity: desktop:<company>/<product>, web:<scheme>://<host>[:<port>], or mainframe:<host>:<port>. An executable name (exe:) is a target, never a recorded key.",
       "type": "string",
@@ -23,84 +69,390 @@
     "recorder": {
       "description": "The program that sent the message.",
       "type": "object",
-      "required": ["name", "version"],
+      "required": [
+        "name",
+        "version"
+      ],
       "properties": {
-        "name": {"$ref": "#/$defs/text", "maxLength": 60},
-        "version": {"$ref": "#/$defs/text", "maxLength": 40},
-        "twinlab_commit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"}
+        "name": {
+          "$ref": "#/$defs/text",
+          "maxLength": 60
+        },
+        "version": {
+          "$ref": "#/$defs/text",
+          "maxLength": 40
+        },
+        "twinlab_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{7,40}$"
+        }
       }
     },
     "pair": {
       "title": "Pairing request: POST /api/agent/pair",
       "type": "object",
-      "required": ["contract_version", "code", "name"],
+      "required": [
+        "contract_version",
+        "code",
+        "name"
+      ],
       "properties": {
-        "contract_version": {"$ref": "#/$defs/contract_version"},
-        "code": {"type": "string", "minLength": 1, "maxLength": 40, "description": "The one-time code from the portal's Machines page (dashes and spaces are ignored)."},
-        "name": {"$ref": "#/$defs/text", "maxLength": 80},
-        "recorder": {"$ref": "#/$defs/recorder"}
+        "contract_version": {
+          "$ref": "#/$defs/contract_version"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "The one-time code from the portal's Machines page (dashes and spaces are ignored)."
+        },
+        "name": {
+          "$ref": "#/$defs/text",
+          "maxLength": 80
+        },
+        "recorder": {
+          "$ref": "#/$defs/recorder"
+        }
       }
     },
     "step": {
       "description": "One labelled step. Never a typed value, a screen's content or a picture: what the step did, the control's type, its label (a control name, a field label or a key), and the screen (a window title, a route with ids replaced by {id}, or a mainframe screen title). Text over 160 characters is dropped by the portal.",
       "type": "object",
-      "required": ["n"],
+      "required": [
+        "n"
+      ],
       "properties": {
-        "n": {"type": "integer", "minimum": 0, "description": "The step's position in the whole session."},
-        "action": {"type": "string"},
-        "control": {"type": "string"},
-        "label": {"type": "string"},
-        "screen": {"type": "string"},
-        "key": {"type": "string"}
+        "n": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The step's position in the whole session. In 1.1 it equals seq: display order only, never a reference."
+        },
+        "action": {
+          "type": "string"
+        },
+        "control": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "screen": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "event_id": {
+          "$ref": "#/$defs/event_id"
+        },
+        "channel": {
+          "$ref": "#/$defs/channel"
+        },
+        "captured_at": {
+          "$ref": "#/$defs/utc_ms"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Display order (1.1). It may be recomputed by finalisation or recovery and is never used as a reference: use event_id."
+        }
       }
+    },
+    "step_1_1": {
+      "description": "A step from a contract 1.1 recorder: event_id, channel, captured_at and seq are required.",
+      "$ref": "#/$defs/step",
+      "required": [
+        "n",
+        "event_id",
+        "channel",
+        "captured_at",
+        "seq"
+      ]
     },
     "app": {
       "type": "object",
-      "required": ["key", "level"],
+      "required": [
+        "key",
+        "level"
+      ],
       "properties": {
-        "key": {"$ref": "#/$defs/app_key"},
-        "surface": {"enum": ["web", "desktop", "mainframe"]},
-        "level": {"$ref": "#/$defs/level"},
-        "display": {"type": "string"},
-        "exe": {"type": "string"},
-        "company": {"type": "string"},
-        "product": {"type": "string"},
-        "version": {"type": "string"},
-        "origin": {"type": "string"},
-        "toolkit": {"type": "string"},
-        "app_id": {"$ref": "#/$defs/catalog_id"}
+        "key": {
+          "$ref": "#/$defs/app_key"
+        },
+        "surface": {
+          "enum": [
+            "web",
+            "desktop",
+            "mainframe"
+          ]
+        },
+        "level": {
+          "$ref": "#/$defs/level"
+        },
+        "display": {
+          "type": "string"
+        },
+        "exe": {
+          "type": "string"
+        },
+        "company": {
+          "type": "string"
+        },
+        "product": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "toolkit": {
+          "type": "string"
+        },
+        "app_id": {
+          "$ref": "#/$defs/catalog_id"
+        }
+      }
+    },
+    "gap": {
+      "type": "object",
+      "required": [
+        "from",
+        "to",
+        "reason"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/iso_time"
+        },
+        "to": {
+          "$ref": "#/$defs/iso_time"
+        },
+        "reason": {
+          "$ref": "#/$defs/text",
+          "maxLength": 200
+        }
+      }
+    },
+    "channel_completeness": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "complete",
+            "interrupted",
+            "missing",
+            "not_requested"
+          ]
+        },
+        "gaps": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/gap"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/text",
+            "maxLength": 300
+          }
+        }
+      }
+    },
+    "completeness": {
+      "description": "How complete the recording is, per channel. A stopped recording is not complete by itself: overall says so.",
+      "type": "object",
+      "required": [
+        "overall",
+        "channels",
+        "network_evidence",
+        "recovered"
+      ],
+      "properties": {
+        "overall": {
+          "enum": [
+            "complete",
+            "partial",
+            "failed"
+          ]
+        },
+        "channels": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "web": {
+              "$ref": "#/$defs/channel_completeness"
+            },
+            "desktop": {
+              "$ref": "#/$defs/channel_completeness"
+            },
+            "mainframe": {
+              "$ref": "#/$defs/channel_completeness"
+            },
+            "network": {
+              "$ref": "#/$defs/channel_completeness"
+            }
+          }
+        },
+        "network_evidence": {
+          "enum": [
+            "complete",
+            "incomplete",
+            "none"
+          ]
+        },
+        "recovered": {
+          "type": "boolean",
+          "description": "true when the recording was rebuilt from its journal after the recorder stopped unexpectedly."
+        },
+        "loss_window_seconds": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "At most this many seconds before the interruption may be lost; null when nothing is known to be lost."
+        }
+      }
+    },
+    "preflight": {
+      "description": "The checks the recorder ran before recording started.",
+      "type": "object",
+      "required": [
+        "checks",
+        "ready"
+      ],
+      "properties": {
+        "checks": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "ok"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/text",
+                "maxLength": 80
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "detail": {
+                "type": "string",
+                "maxLength": 300
+              }
+            }
+          }
+        },
+        "ready": {
+          "type": "boolean"
+        }
       }
     },
     "references": {
-      "title": "References of a recorded session: POST /api/agent/references",
+      "title": "References of a recorded session (contract 1.0.x): POST /api/agent/references",
       "type": "object",
-      "required": ["contract_version", "format", "session", "apps", "flows", "timeline"],
+      "required": [
+        "contract_version",
+        "format",
+        "session",
+        "apps",
+        "flows",
+        "timeline"
+      ],
       "properties": {
-        "contract_version": {"$ref": "#/$defs/contract_version"},
-        "format": {"const": "twinlab-references/1"},
-        "recorder": {"$ref": "#/$defs/recorder"},
+        "contract_version": {
+          "$ref": "#/$defs/contract_version"
+        },
+        "format": {
+          "const": "twinlab-references/1"
+        },
+        "recorder": {
+          "$ref": "#/$defs/recorder"
+        },
         "session": {
           "type": "object",
-          "required": ["id"],
+          "required": [
+            "id"
+          ],
           "properties": {
-            "id": {"type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$"},
-            "name": {"$ref": "#/$defs/text", "maxLength": 120},
-            "started": {"$ref": "#/$defs/text", "maxLength": 40},
-            "ended": {"$ref": "#/$defs/text", "maxLength": 40},
-            "state": {"enum": ["stopped", "recovered"]},
-            "recorder": {"type": "string"},
-            "twinlab_commit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
-            "automation_id": {"$ref": "#/$defs/catalog_id"},
-            "portal_session_id": {"$ref": "#/$defs/catalog_id"},
-            "location": {"type": "object"},
-            "targets": {"type": "array", "items": {"type": "object"}}
+            "id": {
+              "type": "string",
+              "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$"
+            },
+            "name": {
+              "$ref": "#/$defs/text",
+              "maxLength": 120
+            },
+            "started": {
+              "$ref": "#/$defs/text",
+              "maxLength": 40
+            },
+            "ended": {
+              "$ref": "#/$defs/text",
+              "maxLength": 40
+            },
+            "state": {
+              "enum": [
+                "stopped",
+                "recovered"
+              ]
+            },
+            "recorder": {
+              "type": "string"
+            },
+            "twinlab_commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{7,40}$"
+            },
+            "automation_id": {
+              "$ref": "#/$defs/catalog_id"
+            },
+            "portal_session_id": {
+              "$ref": "#/$defs/catalog_id"
+            },
+            "location": {
+              "type": "object"
+            },
+            "targets": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
           }
         },
-        "apps": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/app"}},
+        "apps": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/app"
+          }
+        },
         "flows": {
           "description": "Per recorded application (by its key in apps), its labelled steps.",
           "type": "object",
-          "additionalProperties": {"type": "array", "maxItems": 50000, "items": {"$ref": "#/$defs/step"}}
+          "additionalProperties": {
+            "type": "array",
+            "maxItems": 50000,
+            "items": {
+              "$ref": "#/$defs/step"
+            }
+          }
         },
         "timeline": {
           "description": "Runs of consecutive steps per application; presence stands for applications that were not targets (never named).",
@@ -108,10 +460,24 @@
           "maxItems": 20000,
           "items": {
             "type": "object",
-            "required": ["app", "steps"],
+            "required": [
+              "app",
+              "steps"
+            ],
             "properties": {
-              "app": {"anyOf": [{"const": "presence"}, {"$ref": "#/$defs/app_key"}]},
-              "steps": {"$ref": "#/$defs/count"}
+              "app": {
+                "anyOf": [
+                  {
+                    "const": "presence"
+                  },
+                  {
+                    "$ref": "#/$defs/app_key"
+                  }
+                ]
+              },
+              "steps": {
+                "$ref": "#/$defs/count"
+              }
             }
           }
         },
@@ -119,10 +485,49 @@
           "description": "Counts from a UiPath robot's log read beside the session (no activity names).",
           "type": "object",
           "properties": {
-            "activities": {"$ref": "#/$defs/count"},
-            "ui_activities": {"$ref": "#/$defs/count"},
-            "covered": {"$ref": "#/$defs/count"},
-            "gaps": {"$ref": "#/$defs/count"}
+            "activities": {
+              "$ref": "#/$defs/count"
+            },
+            "ui_activities": {
+              "$ref": "#/$defs/count"
+            },
+            "covered": {
+              "$ref": "#/$defs/count"
+            },
+            "gaps": {
+              "$ref": "#/$defs/count"
+            }
+          }
+        },
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "preflight": {
+          "$ref": "#/$defs/preflight"
+        }
+      }
+    },
+    "references_1_1": {
+      "title": "References of a recorded session (contract 1.1.0 and later 1.x): POST /api/agent/references",
+      "description": "As references, with every step carrying event_id, channel, captured_at and seq, and the recording's completeness.",
+      "$ref": "#/$defs/references",
+      "required": [
+        "contract_version",
+        "format",
+        "session",
+        "apps",
+        "flows",
+        "timeline",
+        "completeness"
+      ],
+      "properties": {
+        "flows": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/step_1_1"
+            }
           }
         }
       }

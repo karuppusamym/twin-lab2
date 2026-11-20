@@ -34,8 +34,8 @@
     <h2>Combined</h2>
     {% for link in plan.combined %}
       <h3>{{ link.name }}</h3>
-      <p>Both applications link this recording. {{ plan.source.name }} selected {{ link.source | length }} events, {{ plan.target.name }} {{ link.target | length }}: the merged link selects {{ link.selection | length }} ({{ link.selection | join(", ") }}).
-        {% if link.suggested %}{{ link.suggested | length }} more ({{ link.suggested | join(", ") }}) were not reviewed and stay <span class="badge discovered">new, not yet reviewed</span> until you select them.{% endif %}</p>
+      <p>Both applications link this recording. {{ plan.source.name }} selected {{ link.source | length }} events, {{ plan.target.name }} {{ link.target | length }}: the merged link selects {{ link.selection | length }} ({{ link.shown | join(", ") }}).
+        {% if link.suggested %}{{ link.suggested | length }} more ({{ link.shown_suggested | join(", ") }}) were not reviewed and stay <span class="badge discovered">new, not yet reviewed</span> until you select them.{% endif %}</p>
       {% if link.notes %}<p class="notes">{{ link.notes }}</p>{% endif %}
     {% else %}
       <p class="muted">No recording is linked to both applications.</p>

@@ -88,3 +88,12 @@ a.button.secondary { background: #e6eef6; color: #14548e; }
 .scenario-events label { align-items: flex-start; gap: .35rem; }
 .pack-file { margin-top: 1rem; }
 pre.file { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f7fa; border: 1px solid #d9e3ec; border-radius: .35rem; padding: .75rem; font-size: .85rem; max-height: 40rem; overflow-y: auto; }
+.warning { background: #fff7e6; border-left: 4px solid #d48a00; padding: .5rem .75rem; border-radius: .25rem; }
+.lanes { margin: .75rem 0; }
+.lane { display: grid; grid-template-columns: 6.5rem 1fr minmax(8rem, auto); gap: .5rem; align-items: center; margin: .25rem 0; }
+.lane-bar { position: relative; height: .8rem; border-radius: .25rem; background: #cfe8d7; }
+.lane-bar.missing { background: #f3d6d6; }
+.lane-bar .gap { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(45deg, #d48a00 0 4px, #fff1d6 4px 8px); border-radius: .15rem; }
+.checks { list-style: none; padding: 0; }
+.checks .failed { color: #8a1c1c; }
+@media (max-width: 600px) { .lane { grid-template-columns: 1fr; } }

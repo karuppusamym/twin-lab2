@@ -18,7 +18,7 @@ from agent import main as agent_main
 from agent import twinlab
 from agent.client import PortalError
 import recorder_contract as contract
-from test_registry import RegistryTest, references
+from test_registry import EVENT_1, RegistryTest, completeness_report, references, references_1_1
 
 try:
     import jsonschema
@@ -47,8 +47,11 @@ def pair_message(**extra):
 class SchemaTest(unittest.TestCase):
     def test_one_version_everywhere(self):
         self.assertEqual(contract.schema()["x-contract-version"], CV)
-        self.assertEqual(json.loads(twinlab.LOCK.read_text(encoding="utf-8"))["contract_version"], CV)
         self.assertIsNotNone(contract.parse(CV))
+        # the lock names the version the pinned Twin Lab's collectors emit (1.0.0 until the pin
+        # moves to collectors with event ids); this portal must accept it
+        pinned = json.loads(twinlab.LOCK.read_text(encoding="utf-8"))["contract_version"]
+        self.assertEqual(contract.compatibility(pinned), contract.parse(pinned))
 
     @unittest.skipIf(jsonschema is None, "jsonschema is not installed")
     def test_the_schema_is_valid_json_schema_2020_12(self):
@@ -58,9 +61,47 @@ class SchemaTest(unittest.TestCase):
         good = references()
         steps_without_n = copy.deepcopy(good)
         steps_without_n["flows"]["web:http://127.0.0.1:8080"][0].pop("n")
+        new = references_1_1()
+
+        def changed(edit):
+            doc = copy.deepcopy(new)
+            edit(doc)
+            return doc
+
+        def step(doc):
+            return doc["flows"]["web:http://127.0.0.1:8080"][0]
+
+        partial = completeness_report("partial", desktop={
+            "status": "interrupted", "notes": ["UI Automation stopped answering"],
+            "gaps": [{"from": "2026-11-19T10:02:00Z", "to": "2026-11-19T10:05:00Z", "reason": "collector restarted"}]})
         return [
-            ("references", good, True),
-            ("references", dict(good, contract_version="1.7.3", future_field={"x": 1}), True),
+            ("references", good, True),  # 1.0.0: steps without event ids, no completeness
+            ("references", dict(good, completeness=completeness_report()), True),  # optional in 1.0
+            ("references", new, True),
+            ("references", dict(new, completeness=partial), True),
+            ("references", dict(new, contract_version="1.7.3", future_field={"x": 1}), True),
+            ("references", changed(lambda d: d.pop("preflight")), True),  # preflight is optional
+            ("references", changed(lambda d: d["completeness"].update(loss_window_seconds=12.5, recovered=True)), True),
+            ("references", dict(good, contract_version="1.1.0"), False),  # 1.1 needs event ids
+            ("references", changed(lambda d: d.pop("completeness")), False),
+            ("references", changed(lambda d: step(d).pop("event_id")), False),
+            ("references", changed(lambda d: step(d).pop("captured_at")), False),
+            ("references", changed(lambda d: step(d).update(event_id="9b2f6c1e-8d2a-4b7e-9a51-2c4d9e7f0a13")), False),  # v4
+            ("references", changed(lambda d: step(d).update(event_id=EVENT_1.upper())), False),
+            ("references", changed(lambda d: step(d).update(channel="email")), False),
+            ("references", changed(lambda d: step(d).update(captured_at="2026-11-19 10:01")), False),
+            ("references", changed(lambda d: step(d).update(captured_at="2026-11-19T10:01:00+02:00")), False),
+            ("references", changed(lambda d: step(d).update(seq=-1)), False),
+            ("references", changed(lambda d: d["completeness"].update(overall="stopped")), False),
+            ("references", changed(lambda d: d["completeness"]["channels"].update(email={"status": "complete"})), False),
+            ("references", changed(lambda d: d["completeness"]["channels"]["web"].update(status="ok")), False),
+            ("references", changed(lambda d: d["completeness"]["channels"]["web"].update(
+                gaps=[{"from": "yesterday", "to": "2026-11-19T10:05:00Z", "reason": "x"}])), False),
+            ("references", changed(lambda d: d["completeness"].update(network_evidence="partial")), False),
+            ("references", changed(lambda d: d["completeness"].update(loss_window_seconds=-1)), False),
+            ("references", changed(lambda d: d["completeness"].update(recovered="no")), False),
+            ("references", changed(lambda d: d["preflight"].pop("ready")), False),
+            ("references", changed(lambda d: d["preflight"]["checks"][0].update(ok="yes")), False),
             ("references", dict(good, format="twinlab-references/2"), False),
             ("references", {k: v for k, v in good.items() if k != "timeline"}, False),
             ("references", dict(good, session={"id": "../../etc"}), False),
@@ -84,7 +125,8 @@ class SchemaTest(unittest.TestCase):
     def test_the_small_validator_agrees_with_jsonschema(self):
         schema = contract.schema()
         for message, doc, ok in self.samples():
-            sub = dict(schema, **{"$ref": f"#/$defs/{message}"})
+            name = contract.definition(message, doc.get("contract_version"))
+            sub = dict(schema, **{"$ref": f"#/$defs/{name}"})
             sub.pop("oneOf")
             with self.subTest(message=message, doc=str(doc)[:80]):
                 self.assertEqual(jsonschema.Draft202012Validator(sub).is_valid(doc), ok)
@@ -163,7 +205,7 @@ class PortalContractTest(unittest.TestCase):
                                                              "recorder": {"name": "TwinLabRecorder", "version": "0.2.0"}})
         self.assertEqual(response.status_code, 200, response.data)  # the code still worked
         self.assertEqual(response.json["contract_version"], CV)
-        self.assertIn("contract 1.0.0", self.client.get("/machines").data.decode())
+        self.assertIn(f"contract {CV}", self.client.get("/machines").data.decode())
         with closing(sqlite3.connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM pairing_failures").fetchone()[0], 0)
 
@@ -185,7 +227,11 @@ class PortalContractTest(unittest.TestCase):
     def test_each_recording_keeps_the_recorder_and_contract_versions(self):
         _, token = self.pair()
         doc = agent_main.contract_references(json.loads(BUILT.read_text(encoding="utf-8")))
-        doc["contract_version"] = "1.2.0"  # a newer minor is accepted
+        doc["contract_version"] = "1.0.3"  # a newer patch of the 1.0 shape is accepted
+        response = self.client.post("/api/agent/references", json=doc, headers=self.agent(token))
+        self.assertEqual(response.status_code, 200, response.data)
+        doc = dict(references_1_1(), contract_version="1.2.0", recorder={  # a newer minor is accepted
+            "name": "TwinLabRecorder", "version": "0.2.0", "twinlab_commit": "430dfe538965b46ccbe824f8f2b4f415c5576483"})
         response = self.client.post("/api/agent/references", json=doc, headers=self.agent(token))
         self.assertEqual(response.status_code, 200, response.data)
         recording_id = response.json["recording_id"]
@@ -202,7 +248,9 @@ class RecorderStampTest(unittest.TestCase):
     def test_the_recorder_stamps_and_checks_before_sending(self):
         box = json.loads(BUILT.read_text(encoding="utf-8"))
         doc = agent_main.contract_references(box)
-        self.assertEqual(doc["contract_version"], CV)
+        self.assertEqual(doc["contract_version"], "1.0.0")  # the pinned collectors' shape
+        newer = {k: v for k, v in references_1_1().items() if k != "contract_version"}
+        self.assertEqual(agent_main.contract_references(newer)["contract_version"], "1.1.0")
         self.assertEqual(doc["recorder"]["name"], "TwinLabRecorder")
         self.assertNotIn("contract_version", box)  # the outbox on disk is left as it is
         with self.assertRaises(PortalError):

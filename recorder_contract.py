@@ -7,6 +7,9 @@
 - `compatibility(version)`: whether a sender's `contract_version` is accepted, and if not, what
   the person has to update (the recorder or the portal);
 - `validate(doc, message)`: the document against the schema's `pair` or `references` message.
+  References are checked by the rules of the version they declare: 1.0.x against
+  `references`, 1.1.0 and later 1.x minors against `references_1_1` (every step carries an
+  `event_id`, and the recording its `completeness`).
 
 The validator is a small, dependency-free subset of JSON Schema 2020-12: the keywords the
 schema uses (type, required, properties, additionalProperties, items, enum, const, pattern,
@@ -20,9 +23,10 @@ import json
 from pathlib import Path
 import re
 
-CONTRACT_VERSION = "1.0.0"
+CONTRACT_VERSION = "1.1.0"
 OLDEST_SUPPORTED = "1.0.0"  # the oldest contract version this portal still accepts
 RECORDER_MIN = "0.2.0"  # the first TwinLabRecorder that declares a contract version
+EVENT_IDS_FROM = (1, 1, 0)  # the first contract version whose steps carry event_id
 SCHEMA_PATH = Path(__file__).resolve().parent / "contract" / "recorder-contract.schema.json"
 VERSION = re.compile(r"^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$")
 
@@ -132,7 +136,7 @@ def _check(value, node: dict, path: str, errors: list[str]) -> None:  # noqa: C9
             errors.append(f"{path}: longer than {node['maxLength']} characters")
         if "pattern" in node and not re.search(node["pattern"], value):
             errors.append(f"{path}: not in the expected form")
-    if _TYPES["integer"](value) and "minimum" in node and value < node["minimum"]:
+    if _TYPES["number"](value) and "minimum" in node and value < node["minimum"]:
         errors.append(f"{path}: less than {node['minimum']}")
     if isinstance(value, list):
         if "maxItems" in node and len(value) > node["maxItems"]:
@@ -159,13 +163,27 @@ def _check(value, node: dict, path: str, errors: list[str]) -> None:  # noqa: C9
                 return
 
 
-def errors(doc, message: str) -> list[str]:
-    """Every way `doc` is outside the `pair` or `references` message (empty when it conforms)."""
+def definition(message: str, version=None) -> str:
+    """The schema definition a message is checked against: references by the rules of the
+    version they declare (1.1.0 and later minors need event ids and completeness)."""
     if message not in ("pair", "references"):
         raise ValueError(message)
+    if message == "references" and (parse(version) or (0, 0, 0)) >= EVENT_IDS_FROM:
+        return "references_1_1"
+    return message
+
+
+def errors(doc, message: str) -> list[str]:
+    """Every way `doc` is outside the `pair` or `references` message (empty when it conforms)."""
+    name = definition(message, doc.get("contract_version") if isinstance(doc, dict) else None)
     out: list[str] = []
-    _check(doc, {"$ref": f"#/$defs/{message}"}, "$", out)
+    _check(doc, {"$ref": f"#/$defs/{name}"}, "$", out)
     return out
+
+
+def has_event_ids(version) -> bool:
+    """Whether a sender of this contract version assigns event ids at capture time."""
+    return (parse(version) or (0, 0, 0)) >= EVENT_IDS_FROM
 
 
 def validate(doc, message: str) -> tuple[int, int, int]:

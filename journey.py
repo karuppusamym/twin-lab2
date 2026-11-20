@@ -14,6 +14,9 @@ here; the pages only read `stage`, `next` and `missing`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
+
+import completeness as compl
 
 JOURNEY = ("Choose application", "Add examples", "Review required behaviour", "Build", "Verify",
            "Open or download")  # fmt: skip
@@ -90,8 +93,12 @@ def app_journey(
     behaviour: bool,
     briefs: int,
     releases: list[dict],
+    attention: list[dict] = (),
 ) -> Journey:
-    """The journey of one application. `releases` is newest first."""
+    """The journey of one application. `releases` is newest first. `attention` lists the
+    recordings of the application that are partial or failed and not accepted as they are, each
+    {"id", "name", "overall", "summary"}: a stopped recording is not complete by itself, so
+    examples are not done while one needs attention."""
     base = f"/apps/{app_id}"
     setup = f"{base}/setup"
     latest = releases[0] if releases else None
@@ -109,6 +116,8 @@ def app_journey(
         missing.append("Examples")
     if not behaviour:
         missing.append("Required behaviour")
+    for rec in attention:
+        missing.append(f"Complete recording ({rec['name']} is {rec['overall']})")
 
     if status == "discovered":
         choose_hint = ("A recording found this application: confirm it to replicate it, merge it "
@@ -129,6 +138,11 @@ def app_journey(
         examples_hint = ("Request a recording of the process on a paired machine, or import a "
                          "Twin Lab steps.jsonl.")
         examples_href, examples_action = "/sessions", "Request a recording"
+    if attention:
+        rec = attention[0]
+        examples_hint = (f"Recording “{rec['name']}” stopped but is {rec['overall']}: {rec['summary']}. "
+                         "Re-record the missing part, or review it and accept it as it is.")
+        examples_href, examples_action = f"/recordings/{rec['id']}", f"Review {rec['overall']} recording"
     if briefs:
         build_hint = ("Have the app built from the build pack, then register the committed build "
                       "as a release (README: Releases).")
@@ -143,7 +157,8 @@ def app_journey(
     steps = [
         Step("choose", JOURNEY[0], status == "known" and bool(owner) and bool(purpose),
              choose_hint, f"{base}#choose", choose_action),
-        Step("examples", JOURNEY[1], examples > 0, examples_hint, examples_href, examples_action),
+        Step("examples", JOURNEY[1], examples > 0 and not attention, examples_hint, examples_href,
+             examples_action),
         Step("behaviour", JOURNEY[2], behaviour,
              "Review the recorded examples and add a business scenario for each outcome the "
              "demo must reproduce: starting conditions, actions, expected result, failure cases.",
@@ -188,7 +203,29 @@ def facts(db, app) -> dict:
         "behaviour": behaviour_reviewed(db, app),
         "briefs": count("SELECT count(*) FROM briefs WHERE app_id = ?"),
         "releases": releases,
+        "attention": recordings_needing_attention(db, app_id),
     }
+
+
+def recordings_needing_attention(db, app_id) -> list[dict]:
+    """The application's recordings that are partial or failed and that nobody has accepted."""
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "recording_completeness" not in tables:
+        return []
+    rows = db.execute("""
+        SELECT recordings.id, recordings.name, recording_completeness.completeness
+        FROM recording_completeness JOIN recordings ON recordings.id = recording_completeness.recording_id
+        WHERE recording_completeness.completeness IS NOT NULL AND recording_completeness.accepted_at IS NULL
+          AND (recordings.id IN (SELECT recording_id FROM recording_apps WHERE app_id = ?)
+               OR recordings.id IN (SELECT recording_id FROM evidence WHERE app_id = ?))
+        ORDER BY recordings.id
+    """, (app_id, app_id)).fetchall()
+    out = []
+    for rec_id, name, text in rows:
+        data = json.loads(text)
+        if compl.needs_attention(data):
+            out.append({"id": rec_id, "name": name, "overall": data["overall"], "summary": compl.summary(data)})
+    return out
 
 
 def behaviour_reviewed(db, app) -> bool:

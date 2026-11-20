@@ -3,6 +3,72 @@
 {% block content %}
 <h1>{{ item.name }}</h1>
 {% set refs = recording_refs(item.id) %}
+{% set data = status.completeness %}
+<section id="details">
+  <h2>Recording details</h2>
+  <p id="completeness"><span class="badge {{ 'recorded' if data and data.overall == 'complete' else ('discovered' if data else 'packaged') }}">{{ status.label }}</span>
+    {{ status.summary }}.</p>
+  {% if data and data.recovered %}
+    <p class="warning" id="recovered"><b>Recovered after the recorder stopped unexpectedly.</b>
+      The recording was rebuilt from its journal{% if data.loss_window_seconds is not none %}: up to {{ data.loss_window_seconds }} second{{ "s" if data.loss_window_seconds != 1 }} before the interruption may be lost{% endif %}. Check the events around the interruption before relying on them.</p>
+  {% endif %}
+  {% if status.attention %}
+    <div class="warning" id="attention">
+      <p><b>Needs attention: this recording stopped, but it is {{ data.overall }}.</b> A stopped recording is not complete by itself. Re-record the missing part, or accept the recording as it is if what it has is enough.</p>
+      <form method="post" action="{{ url_for('accept_recording', recording_id=item.id) }}">
+        <input type="hidden" name="token" value="{{ session.form_token }}">
+        <button>Accept it as it is</button>
+      </form>
+    </div>
+  {% elif status.accepted %}
+    <p class="muted">Accepted as it is by {{ status.accepted_by }} on {{ status.accepted_at[:16] | replace("T", " ") }}.</p>
+  {% endif %}
+  {% if data %}
+    <table class="flow" id="channels">
+      <thead><tr><th>Channel</th><th>Status</th><th>Affected time</th><th>Notes</th></tr></thead>
+      <tbody>{% for name, ch in data.channels.items() %}
+        <tr><td>{{ name | capitalize }}</td><td>{{ ch.status | replace("_", " ") }}</td>
+          <td>{% for gap in ch.gaps %}{{ gap["from"][11:16] }}–{{ gap["to"][11:16] }}{% if gap.reason %} <span class="muted">({{ gap.reason }})</span>{% endif %}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+          <td>{{ ch.notes | join("; ") }}</td></tr>
+      {% endfor %}
+        <tr><td>Network evidence</td><td>{{ data.network_evidence }}</td><td></td><td></td></tr>
+      </tbody>
+    </table>
+  {% endif %}
+  {% if refs and refs.ranges %}
+    <div class="lanes" aria-label="Affected time ranges">
+      <p class="muted">{{ refs.session.started[11:16] if refs.session.started }} – {{ refs.session.ended[11:16] if refs.session.ended }}</p>
+      {% for lane in refs.ranges %}
+        <div class="lane"><span class="lane-name">{{ lane.label }}</span>
+          <span class="lane-bar {{ lane.status }}">{% for gap in lane.gaps %}{% if gap.left is not none %}<span class="gap" style="left: {{ gap.left }}%; width: {{ gap.width }}%" title="{{ gap.text }} {{ gap.reason }}"></span>{% endif %}{% endfor %}</span>
+          <span class="muted">{{ lane.status | replace("_", " ") }}{% for gap in lane.gaps %} · {{ gap.text }}{% endfor %}</span></div>
+      {% endfor %}
+    </div>
+  {% endif %}
+  <h3>Preflight</h3>
+  {% if status.preflight %}
+    <p>{{ "Ready to record" if status.preflight.ready else "Not ready: recording started with failed checks" }}.</p>
+    <ul class="checks" id="preflight">{% for c in status.preflight.checks %}
+      <li class="{{ 'ok' if c.ok else 'failed' }}">{{ "✓" if c.ok else "✗" }} {{ c.name }}{% if c.detail %} <span class="muted">{{ c.detail }}</span>{% endif %}</li>
+    {% endfor %}</ul>
+  {% else %}<p class="muted">No preflight results{% if not status.workstation %} for an imported event log{% else %} (older recorder){% endif %}.</p>{% endif %}
+  <h3>Upload</h3>
+  {% if upload %}
+    <p id="upload" data-upload-url="{{ upload.url }}" data-complete="{{ 1 if upload.complete else 0 }}">{{ upload.text }}
+      {% if upload.percent is not none %}<progress max="100" value="{{ upload.percent }}">{{ upload.percent }}%</progress>{% endif %}</p>
+  {% else %}<p class="muted" id="upload">Upload progress: not available.</p>{% endif %}
+  <h3>Evidence preview</h3>
+  {% for p in preview %}
+    <p><a href="{{ url_for('demo', app_id=p.app_id) }}">{{ p.name }}</a>: {{ p.count }} event{{ "s" if p.count != 1 }} selected{% if not p.reviewed %}, not yet reviewed{% endif %}{% if p.suggested %}, {{ p.suggested }} new{% endif %}.</p>
+    {% if p.events %}<div class="scroll"><table class="flow">
+      <thead><tr><th>#</th><th>Action</th><th>Control</th><th>Label</th><th>Screen</th><th></th></tr></thead>
+      <tbody>{% for e in p.events %}
+        <tr><td>{{ e.seq }}</td><td>{{ e.action }}{% if e.key %} {{ e.key }}{% endif %}</td><td>{{ e.control or "" }}</td><td>{{ e.label or "" }}</td><td>{{ e.screen or "" }}</td>
+          <td>{% if in_gap(data, e.time, e.channel) %}<span class="badge discovered">in an interrupted period</span>{% endif %}</td></tr>
+      {% endfor %}</tbody>
+    </table></div>{% if p.count > p.events | length %}<p class="muted">and {{ p.count - p.events | length }} more.</p>{% endif %}{% endif %}
+  {% else %}<p class="muted">No application has evidence from this recording yet.</p>{% endfor %}
+</section>
 {% if refs %}
 <section>
   <h2>Recorded applications</h2>
@@ -49,17 +115,17 @@
           <button type="button" hidden data-select-source>Select all</button>
           <div class="events">
             {% for event in group %}
-              <label><input type="checkbox" name="event" value="{{ event.seq }}" {% if event.seq in selected %}checked{% endif %}>
-                {{ event.seq }} · {{ event.action }}{% if event.seq in suggested %} <span class="badge discovered">new, not yet reviewed</span>{% endif %}</label>
+              <label><input type="checkbox" name="event" value="{{ event.event_id }}" {% if event.event_id in selected %}checked{% endif %}>
+                {{ event.seq }} · {{ event.action }}{% if event.event_id in suggested %} <span class="badge discovered">new, not yet reviewed</span>{% endif %}{% if in_gap(data, event.time, event.channel) %} <span class="badge discovered">in an interrupted period</span>{% endif %}</label>
             {% endfor %}
           </div>
         </fieldset>
       {% endfor %}
       <button>Save assignment</button>
     </form>
-    <script src="{{ url_for('static', filename='recording.js') }}" defer></script>
   {% endif %}
 {% else %}
   <p>Create a demo app in the catalog to assign events.</p>
 {% endif %}
+<script src="{{ url_for('static', filename='recording.js') }}" defer></script>
 {% endblock %}

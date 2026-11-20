@@ -14,9 +14,14 @@ from zipfile import ZipFile
 
 from portal import create_app
 import scenarios
-from test_registry import CV, DESK, WEB, references
+from test_registry import CV, DESK, WEB, eid, references
 
 RECORDING = "ws-20261119T100000Z-0a1b2c3d"
+
+
+def ref(n):
+    """A scenario's link to event n of the recording: by its event id."""
+    return f"{RECORDING}#{eid(RECORDING, n)}"
 SECRET = "hunter2-SECRET-VALUE"
 SSN = "078-05-1120"
 
@@ -66,7 +71,7 @@ class BuildPackTest(unittest.TestCase):
                   "actions": "Search for the case\nOpen it", "expected": "The case is shown.",
                   "failures": "Unknown case: a message, nothing opens", "examples": "Case number: 1001",
                   "questions": "Can a clerk search closed cases?", "notes": "",
-                  "event": [f"{RECORDING}#1", f"{RECORDING}#2"]}
+                  "event": [ref(1), ref(2)]}
         fields.update(values)
         response = self.post(f"/apps/{app_id}/scenarios", **fields)
         self.assertEqual(response.status_code, 302, response.data)
@@ -84,8 +89,8 @@ class BuildPackTest(unittest.TestCase):
         manifest = json.loads(files["evidence.json"])
         self.assertEqual(manifest["format"], 2)
         events = manifest["evidence"][0]["events"]
-        self.assertEqual(events[0], {"seq": 1, "action": "type", "control": "Edit", "label": "txtSearch",
-                                     "screen": "MainForm"})
+        self.assertEqual(events[0], {"event_id": eid(RECORDING, 1), "seq": 1, "action": "type", "control": "Edit",
+                                     "label": "txtSearch", "screen": "MainForm"})
         scenario = manifest["scenarios"][0]
         self.assertEqual([e["label"] for e in scenario["events"]], ["txtSearch", "btnOpen"])
         self.assertEqual(scenario["expected_result"], "The case is shown.")
@@ -97,7 +102,7 @@ class BuildPackTest(unittest.TestCase):
         self.assertIn("screen `MainForm`", task)
         self.assertIn("Can a clerk search closed cases?", task)
         # the web application's screen keeps its path, not its credentials, query or fragment
-        self.scenario(web, name="Save a case", event=[f"{RECORDING}#5"])
+        self.scenario(web, name="Save a case", event=[ref(5)])
         _, files = self.download(web)
         web_event = json.loads(files["evidence.json"])["evidence"][0]["events"][0]
         self.assertEqual(web_event["screen"], "http://127.0.0.1:8080/cases/{id}")
@@ -151,19 +156,19 @@ class BuildPackTest(unittest.TestCase):
             {"name": "Find a case", "starting": "Signed in as a clerk.", "actions": "Search for the case\nOpen it",
              "expected": "The case is shown.", "failures": "Unknown case: a message, nothing opens",
              "examples": "Case number: 1001", "questions": "Can a clerk search closed cases?",
-             "events": [f"{RECORDING}#1", f"{RECORDING}#2"]})
+             "events": [ref(1), ref(2)]})
         page = self.client.get(f"/apps/{desk}").data.decode()
         for value in ("Find a case", "Signed in as a clerk.", "Search for the case\nOpen it", "Case number: 1001"):
             self.assertIn(value, page)
-        self.assertIn(f'value="{RECORDING}#1" checked', page)
+        self.assertIn(f'value="{ref(1)}" checked', page)
         edited = self.post(f"/apps/{desk}/scenarios/{saved['id']}", name="Find a closed case",
-                           expected="Shown read-only.", event=f"{RECORDING}#2")
+                           expected="Shown read-only.", event=ref(2))
         self.assertEqual(edited.status_code, 302)
         manifest = json.loads(self.download(desk)[1]["evidence.json"])
         self.assertEqual(manifest["scenarios"][0]["name"], "Find a closed case")
         self.assertEqual([e["seq"] for e in manifest["scenarios"][0]["events"]], [2])
-        self.assertEqual(manifest["unresolved_questions"], [f"Selected event {RECORDING}#1 is not part of any scenario."])
-        self.assertEqual(self.post(f"/apps/{desk}/scenarios", name="X", event=f"{RECORDING}#5").status_code, 400)
+        self.assertEqual(manifest["unresolved_questions"], [f"Selected event {ref(1)} is not part of any scenario."])
+        self.assertEqual(self.post(f"/apps/{desk}/scenarios", name="X", event=ref(5)).status_code, 400)
         self.assertEqual(self.post(f"/apps/{desk}/scenarios", name="").status_code, 400)
         self.assertEqual(self.post(f"/apps/{desk}/scenarios/999", name="X").status_code, 404)
         self.assertEqual(self.post(f"/apps/{desk}/scenarios/{saved['id']}/remove").status_code, 302)
