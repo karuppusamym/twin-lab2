@@ -40,6 +40,31 @@
     </form>
   </section>
 </div>
+<section id="verification">
+  <h2>Release verification</h2>
+  <p class="muted">What a release of this application needs before it is Tested. GitHub repository: {% if github_repo %}<code>{{ github_repo }}</code>{% else %}none (set a github.com Demo repository above){% endif %}. GitHub token: {{ "configured" if github_token else "not configured (set TWINLAB2_GITHUB_TOKEN)" }}.</p>
+  <form method="post" action="{{ url_for('verification_settings', app_id=item.id) }}">
+    <input type="hidden" name="token" value="{{ session.form_token }}">
+    <label>Required checks (one check name or glob per line; empty: every check reported on the commit)
+      <textarea name="required_checks" rows="3" placeholder="build&#10;test (*)">{{ item.required_checks }}</textarea></label>
+    <label>Target platform
+      <select name="target_platform">
+        {% for value, label in platforms.items() %}<option value="{{ value }}" {% if item.target_platform == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select></label>
+    <label>Windows validation check (for Windows desktop) <input name="windows_check_pattern" value="{{ item.windows_check_pattern }}" placeholder="{{ default_windows }}"></label>
+    <label>Lab agent URL (for the reset check) <input name="lab_url" type="url" value="{{ item.lab_url }}"></label>
+    <label>Launch instructions <textarea name="launch" rows="3">{{ item.launch }}</textarea></label>
+    <button>Save verification settings</button>
+  </form>
+  <h3>Verify a commit</h3>
+  <form method="post" action="{{ url_for('verify_build', app_id=item.id) }}">
+    <input type="hidden" name="token" value="{{ session.form_token }}">
+    <label>Repository <input name="repo" value="{{ github_repo }}" placeholder="owner/name" required></label>
+    <label>Commit SHA <input name="sha" required pattern="[0-9a-fA-F]{40}"></label>
+    <label>Pull request (optional) <input name="pr_number" type="number" min="1"></label>
+    <button>Verify this build</button>
+  </form>
+</section>
 <section id="deployments">
   <h2>Deployment configuration</h2>
   {% for release in releases %}
