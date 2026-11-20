@@ -6,6 +6,8 @@
     TwinLabRecorder record --session 3   record an offered session (Ctrl+C or Stop ends it)
     TwinLabRecorder record --exe CaseDesk.exe --origin https://billing.example.test
     TwinLabRecorder record --tn3270 mainframe.example.test:23 --keep-browser-profile ...
+                                         (checks first, preflight; a failed check refuses to start
+                                         unless --override-preflight; the checks go with the references)
     TwinLabRecorder browser              open the kept browser profile (install UiPath's extension)
     TwinLabRecorder propose <project>    targets proposed from a UiPath project's XAML
     TwinLabRecorder show <session-id>    the references that would be sent
@@ -119,8 +121,57 @@ def mainframe_addresses(conf: dict) -> list[str]:
     return out
 
 
+class NotReady(Exception):
+    """Preflight found checks that failed, and nobody chose to record anyway."""
+
+    def __init__(self, block: dict):
+        self.block = block
+        super().__init__("not ready: " + "; ".join(failed_checks(block)))
+
+
+def preflight_checks(cfg: st.Settings, conf: dict) -> dict:
+    """Twin Lab's preflight (labctl.workstation.preflight) for this session, before anything is
+    recorded: the collectors write the contract this recorder speaks, free disk where the
+    recordings go, the browser (or the attached one) and each web target answer, UI Automation
+    answers for desktop targets, each mainframe host answers and its terminal port is free.
+    -> {"checks": [{"name", "ok", "detail"}], "ready": bool}"""
+    _labctl()
+    from labctl.workstation.levels import Targets
+    from labctl.workstation.preflight import preflight
+
+    targets = Targets.from_list(conf["targets"], conf.get("deny_keys"))
+    got = preflight(targets, out=cfg.recordings, browser=conf.get("browser") or None,
+                    cdp=conf.get("cdp") or None, portal_contract=contract.CONTRACT_VERSION)  # fmt: skip
+    # The block goes to the portal: no local paths (they name the Windows user), within the
+    # contract's lengths (name 80, detail 300).
+    local = sorted({str(cfg.recordings.resolve()), str(cfg.folder.resolve()), str(Path.home())}, key=len, reverse=True)
+    checks = []
+    for c in got["checks"]:
+        detail = str(c.get("detail") or "")
+        for path in local:
+            detail = detail.replace(path, "the recorder's data folder" if path != str(Path.home()) else "~")
+        checks.append({"name": str(c.get("name") or "")[:80], "ok": bool(c.get("ok")), "detail": detail[:300]})
+    return {"checks": checks, "ready": bool(got["ready"])}
+
+
+def failed_checks(block: dict) -> list[str]:
+    return [f"{c.get('name')}: {c.get('detail') or 'failed'}" for c in block.get("checks") or [] if not c.get("ok")]
+
+
+def describe_checks(block: dict) -> str:
+    lines = [f"  {'ok  ' if c.get('ok') else 'FAIL'}  {c.get('name')}: {c.get('detail') or ''}"
+             for c in block.get("checks") or []]  # fmt: skip
+    lines.append("Ready" if block.get("ready") else "NOT READY")
+    return "\n".join(lines)
+
+
 def run_session(cfg: st.Settings, conf: dict, script=None, parent_pid: int | None = None) -> Path:
-    """Record one session in this process (the calling thread runs the desktop recorder)."""
+    """Record one session in this process (the calling thread runs the desktop recorder).
+
+    The session's preflight block (`conf["preflight"]`, run here when the caller has not run
+    it) goes into session.json and the outbox. A session whose checks failed is not recorded
+    (NotReady) unless `conf["override_preflight"]` says the person chose to record anyway; its
+    references then carry the failed checks and `"ready": false`."""
     _labctl()
     from labctl.workstation.levels import Targets
     from labctl.workstation.session import Session, recover_all
@@ -128,6 +179,11 @@ def run_session(cfg: st.Settings, conf: dict, script=None, parent_pid: int | Non
     commit = _build_info().get("twinlab_commit")
     if commit:
         os.environ.setdefault("TWINLAB_COMMIT", commit)
+    pre = conf.get("preflight")
+    if not isinstance(pre, dict) or not isinstance(pre.get("checks"), list):
+        pre = preflight_checks(cfg, conf)
+    if not pre.get("ready") and conf.get("override_preflight") is not True:
+        raise NotReady(pre)
     recover_all(cfg.recordings)
     targets = Targets.from_list(conf["targets"], conf.get("deny_keys"))
     s = Session(cfg.recordings, targets, name=conf.get("name") or "", session_id=conf["id"],
@@ -138,7 +194,7 @@ def run_session(cfg: st.Settings, conf: dict, script=None, parent_pid: int | Non
                 browser_profile=browser_profile(cfg) if conf.get("keep_browser_profile") else None,
                 cdp=conf.get("cdp") or None, browser=conf.get("browser") or None,
                 pictures=bool(conf.get("pictures")), robot=conf.get("robot", True) is not False,
-                parent_pid=parent_pid)  # fmt: skip
+                parent_pid=parent_pid, preflight=pre)  # fmt: skip
     return s.run(script=script)
 
 
@@ -207,6 +263,10 @@ def describe(box: dict, notes: list[str] | None = None) -> str:
     if rb:
         lines.append(f"  robot log: {rb['activities']} activities; {rb['covered']} of {rb['ui_activities']} "
                      f"UI activities left a recorded step ({rb['gaps']} not seen: robot\\coverage.json)")  # fmt: skip
+    pre = box.get("preflight")
+    if isinstance(pre, dict) and not pre.get("ready"):
+        lines.append("  RECORDING STARTED WITH FAILED CHECKS (the person chose to record anyway):")
+        lines += [f"    {f}" for f in failed_checks(pre)]
     if not box["apps"]:
         lines.append("  NO TARGET APPLICATION WAS RECORDED: see the notes below")
     for note in notes or []:
@@ -426,14 +486,53 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
         return {"keep_browser_profile": keep_var.get(), "cdp": cdp or None,
                 "browser": browser_var.get(), "pictures": pictures_var.get()}  # fmt: skip
 
+    def set_start_buttons(enabled: bool):
+        for b in (start_offered, start_own):
+            b.configure(state="normal" if enabled else "disabled")
+
     def start(conf):
-        if state["proc"] is not None:
+        """Preflight first (in a worker thread: a check may wait a few seconds), then record."""
+        if state["proc"] is not None or state.get("checking"):
             return
         try:
             conf.update(options())
         except ValueError as exc:
             messagebox.showerror("TwinLab Recorder", str(exc))
             return
+        state["checking"] = True
+        set_start_buttons(False)
+        rec_status.set("Checking that each channel can start…")
+
+        def work():
+            try:
+                block, error = preflight_checks(cfg, conf), None
+            except Exception as exc:  # noqa: BLE001 - shown to the person
+                block, error = None, f"{type(exc).__name__}: {exc}"
+            root.after(0, lambda: checked(conf, block, error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def checked(conf, block, error):
+        state["checking"] = False
+        if error:
+            rec_status.set("Not recording: the checks could not run.")
+            set_start_buttons(True)
+            messagebox.showerror("TwinLab Recorder", f"The checks before recording could not run: {error}")
+            return
+        conf["preflight"] = block
+        if not block["ready"]:
+            failed = "\n".join("• " + f for f in failed_checks(block))
+            rec_status.set("Not ready:\n" + failed)
+            if not messagebox.askyesno("TwinLab Recorder — not ready",
+                                       f"These checks failed:\n\n{failed}\n\nFix them and press Start "
+                                       "again. Or record anyway? The recording will say it started with "
+                                       "these checks failed.", icon="warning", default="no"):  # fmt: skip
+                set_start_buttons(True)
+                return
+            conf["override_preflight"] = True
+        launch(conf)
+
+    def launch(conf):
         cfg_path = cfg.folder / "next-session.json"
         cfg_path.write_text(json.dumps(conf), encoding="utf-8")
         cmd = [sys.executable] + ([] if getattr(sys, "frozen", False) else [str(Path(__file__).resolve())])
@@ -448,10 +547,11 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
         state["session"] = conf["id"]
         state["ready"] = False
         lines = mainframe_addresses(conf)
-        rec_status.set(f"Recording {conf['name']}…" + ("\n" + "\n".join(lines) if lines else ""))
+        checks = "Ready: every check passed." if conf["preflight"]["ready"] else \
+            "Recording anyway, with failed checks."  # fmt: skip
+        rec_status.set(f"{checks}\nRecording {conf['name']}…" + ("\n" + "\n".join(lines) if lines else ""))
         stop_btn.configure(state="normal")
-        for b in (start_offered, start_own):
-            b.configure(state="disabled")
+        set_start_buttons(False)
         root.after(1000, watch)
 
     def watch():
@@ -475,8 +575,7 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
         else:
             rec_status.set("Recording saved on this PC. Review it before sending.")
         stop_btn.configure(state="disabled")
-        for b in (start_offered, start_own):
-            b.configure(state="normal")
+        set_start_buttons(True)
         refresh_done()
         body.select(tab_done)
         for i, s in enumerate(state.get("done") or []):
@@ -655,6 +754,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--name", default="")
     r.add_argument("--minutes", type=float, default=240)
     r.add_argument("--send", action="store_true", help="send the references at the end without asking")
+    r.add_argument("--override-preflight", action="store_true",
+                   help="record even when checks fail (the references say which failed)")
     rs = sub.add_parser("run-session")
     rs.add_argument("--config", required=True)
     rs.add_argument("--parent", type=int)
@@ -719,6 +820,17 @@ def main(argv: list[str] | None = None) -> int:
             conf = session_config(targets, deny, name or "session", portal_id, automation_id, args.minutes,
                                   args.keep_browser_profile, args.cdp, args.browser, args.pictures,
                                   not args.no_robot)  # fmt: skip
+            print("checking that each channel can start...")
+            conf["preflight"] = preflight_checks(cfg, conf)
+            print(describe_checks(conf["preflight"]))
+            if not conf["preflight"]["ready"]:
+                if not args.override_preflight:
+                    print("not ready: fix the checks above, or record anyway with --override-preflight "
+                          "(the recording then says it started with failed checks)", file=sys.stderr)  # fmt: skip
+                    return 2
+                conf["override_preflight"] = True
+                print("warning: recording anyway (--override-preflight); the references say which "
+                      "checks failed", file=sys.stderr)  # fmt: skip
             print(f"recording session {conf['id']}: Ctrl+C, or a file 'stop' in "
                   f"{cfg.recordings / conf['id']}, ends it")  # fmt: skip
             for line in mainframe_addresses(conf):
@@ -735,7 +847,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"kept on this PC. Review with `show {folder.name}`, send with `send {folder.name}`")
         elif args.command == "run-session":
             conf = json.loads(Path(args.config).read_text(encoding="utf-8"))
-            run_session(cfg, conf, parent_pid=args.parent)
+            try:
+                run_session(cfg, conf, parent_pid=args.parent)
+            except NotReady as exc:
+                print(describe_checks(exc.block), file=sys.stderr)
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
         elif args.command == "show":
             box = outbox(cfg, args.session_id)
             print(describe(box, session_notes(cfg, args.session_id)))
