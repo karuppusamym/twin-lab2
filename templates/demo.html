@@ -10,21 +10,54 @@
   {% if journey.missing %}<dt>Missing</dt><dd>{{ journey.missing | join(", ") }}</dd>{% endif %}
 </dl>
 {% with j = journey %}{% include "_journey.html" %}{% endwith %}
+{% if reviewer %}
 <p class="muted">Identities, Git repository and deployment settings: <a href="{{ url_for('app_setup', app_id=item.id) }}">Setup / Advanced</a>.</p>
+{% endif %}
+{% if manage_roles %}
+<p class="muted"><a href="{{ url_for('app_history', app_id=item.id) }}">Audit history</a>: who reviewed evidence, froze packages, started builds, published releases and changed roles.</p>
+{% endif %}
+{% if not reviewer %}
+<p class="muted">You have read-only access to this application. Recordings and uploaded evidence are restricted to its owners{% if builder %}; you can open its builder-approved packages below{% endif %}.</p>
+{% endif %}
 
 <section id="choose">
   <h2>1. Choose application</h2>
-  {% if item.status == "discovered" %}
+  {% if item.status == "discovered" and reviewer %}
     <p>A recording found this application. Confirm it to replicate it, rename it, merge it into an application it is the same as, or mark it as not replicated: later recordings then note it only as having been used.</p>
   {% endif %}
   <div class="columns">
-    <form method="post">
-      <input type="hidden" name="token" value="{{ session.form_token }}">
-      <label>Owner <input name="owner" value="{{ item.owner }}" placeholder="Who answers questions about this application"></label>
-      <label>Purpose <input name="purpose" value="{{ item.purpose }}" placeholder="What the demo is for"></label>
-      <button>Save owner and purpose</button>
-    </form>
+    <div id="roles">
+      <h3>Who has access</h3>
+      <table class="flow">
+        <thead><tr><th>User</th><th>Role</th><th></th></tr></thead>
+        <tbody>{% for r in roles %}
+          <tr><td>{{ r.user_name }}</td><td>{{ r.role }}</td>
+            <td>{% if manage_roles %}<form class="inline" method="post" action="{{ url_for('assign_role', app_id=item.id) }}">
+              <input type="hidden" name="token" value="{{ session.form_token }}">
+              <input type="hidden" name="user" value="{{ r.user_name }}">
+              <input type="hidden" name="remove" value="yes">
+              <button class="secondary">Remove</button></form>{% endif %}</td></tr>
+        {% else %}
+          <tr><td colspan="3">No one is assigned yet{% if manage_roles %}: assign an owner{% endif %}.</td></tr>
+        {% endfor %}</tbody>
+      </table>
+      {% if manage_roles %}
+      <form method="post" action="{{ url_for('assign_role', app_id=item.id) }}">
+        <input type="hidden" name="token" value="{{ session.form_token }}">
+        <label>User (their sign-in name) <input name="user" required></label>
+        <label>Role <select name="role">{% for role in role_names | reverse %}<option value="{{ role }}">{{ role }}</option>{% endfor %}</select></label>
+        <button>Assign role</button>
+      </form>
+      <p class="muted">Owners review evidence, freeze builder packages and publish; builders get the frozen packages and start builds; viewers read this page and published releases.</p>
+      {% endif %}
+    </div>
+    {% if reviewer %}
     <div>
+      <form method="post">
+        <input type="hidden" name="token" value="{{ session.form_token }}">
+        <label>Purpose <input name="purpose" value="{{ item.purpose }}" placeholder="What the demo is for"></label>
+        <button>Save purpose</button>
+      </form>
       <form method="post" action="{{ url_for('set_status', app_id=item.id) }}">
         <input type="hidden" name="token" value="{{ session.form_token }}">
         <label>Name <input name="name" value="{{ item.name }}"></label>
@@ -38,11 +71,14 @@
       </form>
       {% endif %}
     </div>
+    {% endif %}
   </div>
 </section>
 
+{% if reviewer %}
 <section id="examples">
   <h2>2. Add examples</h2>
+  <p class="muted">Recordings and uploads are <strong>restricted evidence</strong>: only the owners of this application see them. Uploading never shares anything with the builder; only a builder package you approve does.</p>
   <p><a href="{{ url_for('sessions') }}">Request a recording</a> of the process on a paired machine, or import a Twin Lab recording from the <a href="{{ url_for('home') }}">catalog</a>.</p>
   <div class="columns">
     <div>
@@ -74,13 +110,21 @@
       {% else %}
         <p>Open a recording from the catalog to link its events to this app.</p>
       {% endfor %}
-      <h3>Reviewed evidence</h3>
+      <h3>Uploaded evidence</h3>
       {% for file in attachments %}
-        <form method="post" action="{{ url_for('remove_attachment', app_id=item.id, attachment_id=file.id) }}">
-          <input type="hidden" name="token" value="{{ session.form_token }}">
-          <span>{{ file.kind }} · {{ file.title }}</span>
-          <button>Remove from brief</button>
-        </form>
+        <div class="attachment">
+          <p><span>{{ file.kind }} · {{ file.title }}</span>
+            <span class="badge {{ 'discovered' if file.share == 'restricted' else 'recorded' }}">{{ file.share }}</span></p>
+          <form class="inline" method="post" action="{{ url_for('share_attachment', app_id=item.id, attachment_id=file.id) }}">
+            <input type="hidden" name="token" value="{{ session.form_token }}">
+            <select name="share">{% for key, label in shares.items() %}<option value="{{ key }}" {% if key == file.share %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+            <button class="secondary">Save review</button>
+          </form>
+          <form class="inline" method="post" action="{{ url_for('remove_attachment', app_id=item.id, attachment_id=file.id) }}">
+            <input type="hidden" name="token" value="{{ session.form_token }}">
+            <button class="secondary">Remove</button>
+          </form>
+        </div>
       {% endfor %}
       <form method="post" enctype="multipart/form-data" action="{{ url_for('add_attachment', app_id=item.id) }}">
         <input type="hidden" name="token" value="{{ session.form_token }}">
@@ -89,9 +133,10 @@
           <select name="kind">{% for kind in kinds %}<option>{{ kind }}</option>{% endfor %}</select>
         </label>
         <label>File <input name="file" type="file" required></label>
-        <label class="check"><input name="reviewed" type="checkbox" value="yes" required>
-          Ready to share with the builder</label>
-        <button>Attach evidence</button>
+        <label>Share with the builder
+          <select name="share">{% for key, label in shares.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label>
+        <p class="muted">Screenshots and files stay restricted until you mark them reviewed or synthetic. Shared files are still redacted (HAR credentials and bodies, sensitive JSON fields, image metadata, e-mail addresses, card numbers…); the package preview lists every exclusion and redaction.</p>
+        <button>Upload evidence</button>
       </form>
     </div>
   </div>
@@ -107,15 +152,27 @@
     {% with sc = none, form_id = "scenario-new" %}{% include "_scenario.html" %}{% endwith %}
   </div>
 </section>
+{% endif %}
 
 <section id="build">
   <h2>4. Build</h2>
-  {% if scenarios %}
-    <p><a class="button" href="{{ url_for('build_page', app_id=item.id) }}">Build with Devin</a></p>
-    <p><a href="{{ url_for('preview_pack', app_id=item.id) }}">Preview build pack</a> ·
-      <a href="{{ url_for('build_pack', app_id=item.id) }}">Download build pack</a></p>
+  {% if reviewer %}
+    {% if scenarios %}
+      <p><a class="button" href="{{ url_for('preview_pack', app_id=item.id) }}">Preview and approve a builder package</a></p>
+    {% else %}
+      <p class="muted">Add a business scenario to prepare a builder package.</p>
+    {% endif %}
+  {% endif %}
+  {% if builder %}
+  {% if packages %}<p><a class="button" href="{{ url_for('build_page', app_id=item.id) }}">Build with Devin</a></p>{% endif %}
+  <h3>Builder-approved packages</h3>
+  {% for p in packages %}
+    <p><a href="{{ url_for('package', app_id=item.id, rev=p.rev) }}">Revision {{ p.rev }}</a>
+      <span class="muted">approved by {{ p.approved_by }} · {{ p.approved_at[:16] | replace("T", " ") }} · <code>{{ p.sha256[:12] }}</code></span>
+      · <a href="{{ url_for('download_package', app_id=item.id, rev=p.rev) }}">Download</a></p>
   {% else %}
-    <p class="muted">Add a business scenario to export a build pack.</p>
+    <p>No package is approved for the builder yet.</p>
+  {% endfor %}
   {% endif %}
   <h3>Releases</h3>
   {% for release in releases %}

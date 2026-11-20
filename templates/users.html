@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Users · TwinLab2{% endblock %}
+{% block content %}
+<h1>Users and portal admins</h1>
+<p class="muted">The local user store for development sign-in. Behind an SSO proxy, people sign in there and need no password here; mark admins here or with <code>TWINLAB2_ADMINS</code>. Roles per application are assigned on each application's page.</p>
+<table class="flow">
+  <thead><tr><th>User</th><th>Password</th><th>Portal admin</th><th>Added</th></tr></thead>
+  <tbody>{% for u in users %}
+    <tr><td>{{ u.name }}</td><td>{{ "set" if u.has_password else "none" }}</td><td>{{ "yes" if u.is_admin else "no" }}</td>
+      <td>{{ u.created_by }} {{ u.created_at | replace("T", " ") }}</td></tr>
+  {% else %}
+    <tr><td colspan="4">No local users.</td></tr>
+  {% endfor %}</tbody>
+</table>
+<form method="post">
+  <input type="hidden" name="token" value="{{ session.form_token }}">
+  <label>Sign-in name <input name="name" required></label>
+  <label>Password (leave empty to keep) <input name="password" type="password" autocomplete="new-password"></label>
+  <label class="check"><input name="is_admin" type="checkbox" value="yes"> Portal admin</label>
+  <button>Save user</button>
+</form>
+{% endblock %}

@@ -17,15 +17,11 @@
 <section id="pack">
   <h2>1. The build pack</h2>
   {% if frozen %}
-    <p><span class="badge verified">Frozen</span> by {{ frozen.frozen_by }} at {{ frozen.frozen_at[:19] | replace("T", " ") }} UTC.
-      A build sends exactly these bytes.</p>
+    <p><span class="badge verified">Approved</span> revision {{ pack.rev }} by {{ frozen.frozen_by }} at {{ frozen.frozen_at[:19] | replace("T", " ") }} UTC.
+      A build sends exactly these bytes. {% if can("owner", app_id=item.id) %}<a href="{{ url_for('preview_pack', app_id=item.id) }}">Preview and approve a newer package</a>{% endif %}</p>
   {% else %}
-    <p>Review the pack, then freeze it: a build sends only a frozen pack, byte for byte.</p>
-    <form method="post" action="{{ url_for('freeze_pack', app_id=item.id) }}" class="inline">
-      <input type="hidden" name="token" value="{{ session.form_token }}">
-      <input type="hidden" name="revision" value="{{ pack.revision }}">
-      <button>Freeze this pack</button>
-    </form>
+    <p>A build sends only a package an owner approved.{% if can("owner", app_id=item.id) %}
+      <a href="{{ url_for('preview_pack', app_id=item.id) }}#approve">Preview and approve it</a>.{% endif %}</p>
   {% endif %}
   {% include "_pack_preview.html" %}
 </section>

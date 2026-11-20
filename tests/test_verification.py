@@ -15,6 +15,7 @@ from zipfile import ZipFile
 from agent import twinlab
 import independent
 import portal
+from support import freeze
 from portal import create_app
 from test_registry import eid
 import verification
@@ -164,7 +165,7 @@ class VerificationTest(unittest.TestCase):
         self.post(recording, app_id="1", event=eid(self.recording_id, 1), notes="Invoice is saved")
         self.post("/apps/1/scenarios", name="Invoice is saved", expected="The invoice has its number.",
                   event=f"{self.recording_id}#{eid(self.recording_id, 1)}")
-        self.assertEqual(self.client.get("/apps/1/build-pack").status_code, 200)
+        self.assertEqual(freeze(self.client, self.token, "/apps/1").status_code, 200)
         self.settings()
 
     def post(self, path, **values):

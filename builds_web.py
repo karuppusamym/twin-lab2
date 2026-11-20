@@ -1,8 +1,9 @@
 """The pages of Build with Devin: Build, Build progress, and their part of Setup.
 
-Roles: auth.py (`require_role`) is not on main yet, so each route carries a `# ROLE:` comment
-for the roles work to turn into a decorator: builders start, answer, retry and cancel builds;
-owners hold credentials, repository connections and the worker.
+Roles (auth.py): builders (and owners) of the application open the Build page and start, answer,
+retry and cancel builds; only an owner approves a package (on the preview: a build sends only
+an owner-frozen revision); portal admins hold the Devin and GitHub credentials, repository
+connections and the worker. Build starts, cancels, retries and answers go to the audit history.
 """
 
 from __future__ import annotations
@@ -12,6 +13,9 @@ import json
 from flask import abort, flash, g, redirect, render_template, request, url_for
 from werkzeug.exceptions import HTTPException
 
+import audit
+import auth
+from auth import require_role
 import builds
 import devin
 import github
@@ -27,13 +31,22 @@ def register(app, db, get_app, pack_view, database, dev_worker=True):
             abort(404)
         return build
 
+    def build_app(kwargs):
+        return get_build(kwargs["build_id"])["app_id"]
+
+    def record(action, build, **details):
+        with db():
+            audit.record(db(), g.user, action, "build", build["id"], app_id=build["app_id"],
+                         revision=build["revision"], **details)
+
     def back_to_build(app_id, error=None):
         if error:
             flash(error, "error")
         return redirect(url_for("build_page", app_id=app_id))
 
     @app.get("/apps/<int:app_id>/build")
-    def build_page(app_id):  # ROLE: builder
+    @require_role("builder")
+    def build_page(app_id):
         item = get_app(app_id)
         pack, problem = None, None
         try:
@@ -60,16 +73,15 @@ def register(app, db, get_app, pack_view, database, dev_worker=True):
         return None
 
     @app.post("/apps/<int:app_id>/build/freeze")
-    def freeze_pack(app_id):  # ROLE: builder
+    @require_role("owner")
+    def freeze_pack(app_id):
+        """Freezing is the owner's approval of the previewed package: it happens on the preview."""
         get_app(app_id)
-        try:
-            builds.freeze(db(), app_id, request.form.get("revision", ""), g.user)
-        except builds.BuildError as exc:
-            return back_to_build(app_id, str(exc))
-        return redirect(url_for("build_page", app_id=app_id) + "#start")
+        return redirect(url_for("preview_pack", app_id=app_id) + "#approve")
 
     @app.post("/apps/<int:app_id>/build")
-    def start_build(app_id):  # ROLE: builder
+    @require_role("builder")
+    def start_build(app_id):
         get_app(app_id)
         form = request.form
         try:
@@ -78,12 +90,17 @@ def register(app, db, get_app, pack_view, database, dev_worker=True):
                                             form.get("acu_budget", builds.default_budget(db())), g.user)
         except (builds.BuildError, ValueError, github.GitHubError) as exc:
             return back_to_build(app_id, str(exc))
+        if created:
+            record("build.start", build, repo=build["repo"], base_branch=build["base_branch"],
+                   pack_sha256=build["pack_sha256"], acu_budget=build["acu_budget"],
+                   change_summary=build["change_summary"])
         if not created:
             flash("A build of this application is already in progress: this is it.", "info")
         return redirect(url_for("build_progress", build_id=build["id"]))
 
     @app.get("/builds/<int:build_id>")
-    def build_progress(build_id):  # ROLE: builder
+    @require_role("builder", resolve=build_app)
+    def build_progress(build_id):
         build = get_build(build_id)
         return render_template("build_progress.html", build=build, item=get_app(build["app_id"]),
                                questions=json.loads(build["questions"] or "[]"),
@@ -91,9 +108,11 @@ def register(app, db, get_app, pack_view, database, dev_worker=True):
                                frozen=builds.is_frozen(db(), build["app_id"], build["revision"]))
 
     @app.post("/builds/<int:build_id>/cancel")
-    def cancel_build(build_id):  # ROLE: builder
+    @require_role("builder", resolve=build_app)
+    def cancel_build(build_id):
         try:
             builds.cancel(db(), build_id, g.user)
+            record("build.cancel", get_build(build_id))
         except LookupError:
             abort(404)
         except builds.BuildError as exc:
@@ -101,7 +120,8 @@ def register(app, db, get_app, pack_view, database, dev_worker=True):
         return redirect(url_for("build_progress", build_id=build_id))
 
     @app.post("/builds/<int:build_id>/retry")
-    def retry_build(build_id):  # ROLE: builder
+    @require_role("builder", resolve=build_app)
+    def retry_build(build_id):
         try:
             build, created = builds.retry(db(), build_id, g.user)
         except LookupError:
@@ -109,14 +129,18 @@ def register(app, db, get_app, pack_view, database, dev_worker=True):
         except builds.BuildError as exc:
             flash(str(exc), "error")
             return redirect(url_for("build_progress", build_id=build_id))
+        if created:
+            record("build.start", build, retry_of=build_id, pack_sha256=build["pack_sha256"])
         if not created:
             flash("A build of this application is already in progress: this is it.", "info")
         return redirect(url_for("build_progress", build_id=build["id"]))
 
     @app.post("/builds/<int:build_id>/answer")
-    def answer_build(build_id):  # ROLE: builder
+    @require_role("builder", resolve=build_app)
+    def answer_build(build_id):
         try:
             builds.answer(db(), build_id, request.form.get("answer", ""), g.user)
+            record("build.answer", get_build(build_id))
         except LookupError:
             abort(404)
         except builds.BuildError as exc:
@@ -126,7 +150,8 @@ def register(app, db, get_app, pack_view, database, dev_worker=True):
     # --- Setup ---------------------------------------------------------------------------------
 
     @app.get("/setup/builds")
-    def build_setup():  # ROLE: owner
+    @require_role(auth.ADMIN, resolve=None)
+    def build_setup():
         stored = builds.stored_settings(db())
         try:
             dv, dv_error = builds.devin_settings(db()), None
@@ -139,7 +164,8 @@ def register(app, db, get_app, pack_view, database, dev_worker=True):
             stale=jobqueue.later(-2 * jobqueue.LEASE_SECONDS), lease=jobqueue.LEASE_SECONDS, dev_worker=dev_worker, budget=builds.default_budget(db()))
 
     @app.post("/setup/builds/settings")
-    def save_build_settings():  # ROLE: owner
+    @require_role(auth.ADMIN, resolve=None)
+    def save_build_settings():
         form = request.form
         for key in builds.SETTING_KEYS:
             if key in form:
@@ -157,7 +183,8 @@ def register(app, db, get_app, pack_view, database, dev_worker=True):
         return redirect(url_for("build_setup"))
 
     @app.post("/setup/builds/check")
-    def check_connections():  # ROLE: owner
+    @require_role(auth.ADMIN, resolve=None)
+    def check_connections():
         try:
             with devin.make_client(builds.devin_settings(db()), timeout=15) as client:
                 client.list_sessions(first=1)
@@ -181,7 +208,8 @@ def register(app, db, get_app, pack_view, database, dev_worker=True):
         return redirect(url_for("build_setup"))
 
     @app.post("/setup/builds/repos")
-    def connect_repository():  # ROLE: owner
+    @require_role(auth.ADMIN, resolve=None)
+    def connect_repository():
         try:
             info = builds.connect_repo(db(), request.form.get("repo", ""), g.user)
             flash(f"Connected {info['full_name']} (default branch {info['default_branch']}).", "info")
@@ -190,13 +218,15 @@ def register(app, db, get_app, pack_view, database, dev_worker=True):
         return redirect(url_for("build_setup") + "#repos")
 
     @app.post("/setup/builds/repos/remove")
-    def disconnect_repository():  # ROLE: owner
+    @require_role(auth.ADMIN, resolve=None)
+    def disconnect_repository():
         db().execute("DELETE FROM github_repos WHERE repo = ?", (request.form.get("repo", ""),))
         db().commit()
         return redirect(url_for("build_setup") + "#repos")
 
     @app.post("/setup/builds/worker")
-    def start_worker():  # ROLE: owner
+    @require_role(auth.ADMIN, resolve=None)
+    def start_worker():
         if not dev_worker:
             abort(403, "Run `python worker.py` beside the portal; starting it from here is for development.")
         pid, started = builds.start_dev_worker(database)

@@ -19,6 +19,9 @@ from flask import Flask, abort, g, redirect, render_template, request, send_file
 from werkzeug.exceptions import HTTPException
 from werkzeug.routing import RequestRedirect
 
+import audit
+import auth
+from auth import require_role
 import artifacts
 import buildpack
 import completeness
@@ -27,12 +30,14 @@ import independent
 import journey
 import builds
 import builds_web
+import packages
+import redact
 import registry
 import scenarios
 import uploads
 import verification as commit_checks
 
-LOCAL = {"127.0.0.1", "::1"}
+LOCAL = auth.LOCAL
 
 
 SCHEMA = """
@@ -70,6 +75,9 @@ CREATE TABLE IF NOT EXISTS deployments (
     release_id INTEGER NOT NULL REFERENCES releases(id), environment TEXT NOT NULL,
     url TEXT NOT NULL, username TEXT NOT NULL, secret_ref TEXT NOT NULL,
     PRIMARY KEY (release_id, environment)
+);
+CREATE TABLE IF NOT EXISTS recording_uploads (
+    recording_id TEXT PRIMARY KEY REFERENCES recordings(id), added_by TEXT NOT NULL, added_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS release_tests (
     release_id INTEGER PRIMARY KEY REFERENCES releases(id), commit_sha TEXT NOT NULL,
@@ -199,9 +207,12 @@ def verify_commit(connection, app_id, repo, sha, github=None, runner=None, pr_nu
     github = github or commit_checks.GitHub()
     if not scenarios.load(connection, app_id):
         raise ValueError("Add a business scenario before verifying a build.")
-    # The brief the build answers: the app's current one, stored as an export would store it.
-    revision, contents, _, package = buildpack.build(connection, app_id, VERSION_PATH)
-    store_brief(connection, app_id, revision, contents, package)
+    # The package the build answers: the latest builder-approved (frozen) revision, the only
+    # artifact a builder was given.
+    frozen = packages.latest(connection, app_id)
+    if frozen is None:
+        raise ValueError("Freeze a builder package before verifying a build: a build answers an approved package.")
+    revision = frozen["revision"]
     release_id = commit_checks.package_commit(connection, app_id, repo, sha, github, revision, pr_number, ref)
     return verify_release(connection, release_id, github, runner, base_url, user)
 
@@ -316,7 +327,7 @@ def deployment_reason(deployment):
 
 ATTACHMENT_TYPES = {
     "Screen": {".png", ".jpg", ".jpeg"},
-    "API": {".json", ".yaml", ".yml", ".md", ".txt"},
+    "API": {".json", ".har", ".yaml", ".yml", ".md", ".txt"},
     "Database": {".sql", ".json", ".csv", ".md", ".txt"},
     "Utility": {".json", ".csv", ".md", ".txt"},
     "Acceptance": {".md", ".txt", ".json"},
@@ -443,7 +454,11 @@ def add_release(database, app_id, version, revision, repository, ref, subdirecto
             "SELECT 1 FROM briefs WHERE revision = ? AND app_id = ?", (revision, app_id),
         ).fetchone()
         if brief is None:
-            raise ValueError("Export the build brief for this app before registering its release.")
+            raise ValueError("Freeze a builder package for this app before registering its release.")
+        frozen = connection.execute("SELECT COUNT(*) FROM builder_packages WHERE app_id = ?", (app_id,)).fetchone()[0]
+        if frozen and connection.execute("SELECT 1 FROM builder_packages WHERE app_id = ? AND revision = ?",
+                                         (app_id, revision)).fetchone() is None:
+            raise ValueError("Register a release against a frozen builder package revision.")
 
         def git(*args):
             return subprocess.run(
@@ -476,6 +491,20 @@ def add_release(database, app_id, version, revision, repository, ref, subdirecto
     return commit
 
 
+def migrate_owners(db, fallback=None):
+    """The free-text owner of catalogs made before roles becomes an owner assignment. An
+    application without one gets `fallback`: the machine user `local` when the portal serves
+    only this machine (who owned everything before), else nobody until an admin assigns one."""
+    rows = db.execute("""SELECT id, trim(owner) AS owner FROM apps
+                         WHERE NOT EXISTS (SELECT 1 FROM app_roles WHERE app_roles.app_id = apps.id)""").fetchall()
+    for app_id, owner in rows:
+        owner = owner or fallback
+        if owner and auth.valid_name(owner):
+            auth.assign(db, app_id, owner, "owner", "migration", registry.now())
+            audit.record(db, "migration", "role.assign", "role", f"{app_id}/{owner}", app_id=app_id,
+                         user=owner, role="owner", previous=None, reason="owner text field before roles")
+
+
 def create_app(database):
     app = Flask(__name__)
     hosts = [h.strip() for h in os.environ.get("TWINLAB2_HOSTS", "").split(",") if h.strip()]
@@ -487,8 +516,6 @@ def create_app(database):
         SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=os.environ.get("TWINLAB2_SECURE_COOKIES") == "1",
     )
-    trust_proxy = os.environ.get("TWINLAB2_TRUST_PROXY_USER") == "1"
-    password = os.environ.get("TWINLAB2_PASSWORD", "")
     database = Path(database)
     database.parent.mkdir(parents=True, exist_ok=True)
     artifacts.init_app(app, database)
@@ -524,6 +551,18 @@ def create_app(database):
         for column in ("owner", "purpose"):
             if column not in columns:
                 db().execute(f"ALTER TABLE apps ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        columns = {row[1] for row in db().execute("PRAGMA table_info(attachments)")}
+        # uploaded evidence is restricted until the owner marks it reviewed or synthetic; files
+        # attached before this column existed are restricted too: uploading never meant sharing
+        for column, definition in (("share", "TEXT NOT NULL DEFAULT 'restricted'"),
+                                   ("added_by", "TEXT NOT NULL DEFAULT ''")):
+            if column not in columns:
+                db().execute(f"ALTER TABLE attachments ADD COLUMN {column} {definition}")
+        db().executescript(auth.SCHEMA)
+        audit.migrate(db())
+        packages.migrate(db())
+        settings = auth.Settings.from_env()
+        migrate_owners(db(), None if settings.trust_proxy or settings.password else auth.LOCAL_USER)
         db().commit()
 
     app.jinja_env.filters["status_label"] = lambda status: journey.STATUS_LABELS.get(
@@ -532,50 +571,36 @@ def create_app(database):
     app.jinja_env.globals.update(deployment_label=deployment_label, deployment_reason=deployment_reason,
                                  version_path=VERSION_PATH)
 
-    @app.before_request
-    def sign_in():
-        """Every page needs a signed-in user: the OpenShift OAuth proxy's user when the portal
-        runs behind it, a password when one is set, else only this machine. The agent API has
-        its own bearer token (registry)."""
-        if request.path.startswith(("/static/", *uploads.MACHINE_PATHS)) or request.endpoint in (
-                "login", "health", "artifact_download"):
-            return None
-        if trust_proxy:
-            user = request.headers.get("X-Forwarded-User") or request.headers.get("X-Forwarded-Preferred-Username")
-            if not user:
-                abort(401, "Sign in through the OpenShift OAuth proxy.")
-            g.user = user[:120]
-        elif password:
-            if not session.get("user"):
-                return redirect(url_for("login", next=request.path))
-            g.user = session["user"]
-        else:
-            if request.remote_addr not in LOCAL:
-                abort(403, "This portal serves only this machine: set TWINLAB2_PASSWORD or run it behind the OAuth proxy.")
-            g.user = "local"
-        return None
+    # Sign-in and roles (auth): every request is signed in, every endpoint has a policy.
+    auth.install(app, db)
 
     @app.route("/login", methods=["GET", "POST"])
+    @auth.public
     def login():
-        if not password:
+        if not auth.login_available():
             return redirect(url_for("home"))
         error = None
         if request.method == "POST":
             name = request.form.get("user", "").strip()[:80]
-            if name and secrets.compare_digest(request.form.get("password", ""), password):
+            if name and auth.login_user(name, request.form.get("password", "")):
+                form_token = session.get("form_token")
                 session.clear()
                 session["user"] = name
+                if form_token:
+                    session["form_token"] = form_token
                 target = request.args.get("next", "")
                 return redirect(target if target.startswith("/") and not target.startswith("//") else url_for("home"))
-            error = "Wrong password."
+            error = "Wrong name or password."
         return render_template("login.html", error=error), 401 if error else 200
 
     @app.post("/logout")
+    @auth.public
     def logout():
         session.clear()
-        return redirect(url_for("login") if password else url_for("home"))
+        return redirect(url_for("login") if auth.login_available() else url_for("home"))
 
     @app.get("/healthz")
+    @auth.public
     def health():
         db().execute("SELECT 1")
         return {"ok": True}
@@ -588,6 +613,29 @@ def create_app(database):
             session["form_token"] = secrets.token_hex(32)
         if request.method == "POST" and request.form.get("token") != session["form_token"]:
             abort(400, "Reload the page before submitting the form.")
+
+    def record(action, object_type, object_id, app_id=None, **details):
+        audit.record(db(), g.user, action, object_type, object_id, app_id=app_id, **details)
+
+    def visible(rows, key="id"):
+        """The rows of applications the user may see (any role; an admin sees all)."""
+        ids = auth.visible_app_ids(db(), g.user, g.is_admin)
+        return [row for row in rows if ids is None or row[key] in ids]
+
+    def reviewer_of_recording(recording_id):
+        """Restricted evidence: who added the recording (imported it, or paired the machine that
+        sent or uploaded it), and the owners of the applications it is linked to."""
+        return db().execute("""
+            SELECT 1 FROM recording_uploads WHERE recording_id = ? AND added_by = ?
+            UNION SELECT 1 FROM app_roles JOIN evidence ON evidence.app_id = app_roles.app_id
+                  WHERE evidence.recording_id = ? AND app_roles.user_name = ? AND app_roles.role = 'owner'
+            UNION SELECT 1 FROM app_roles JOIN recording_apps ON recording_apps.app_id = app_roles.app_id
+                  WHERE recording_apps.recording_id = ? AND app_roles.user_name = ? AND app_roles.role = 'owner'
+            UNION SELECT 1 FROM uploads JOIN machines ON machines.id = uploads.machine_id
+                  WHERE uploads.recording_id = ? AND machines.paired_by = ?
+        """, (recording_id, g.user) * 4).fetchone() is not None
+
+    app.extensions["twinlab_reviewer_of_recording"] = reviewer_of_recording
 
     def get_app(app_id):
         row = db().execute("SELECT * FROM apps WHERE id = ?", (app_id,)).fetchone()
@@ -641,15 +689,18 @@ def create_app(database):
         return found
 
     @app.get("/")
+    @auth.signed_in
     def home():
-        apps = db().execute("SELECT * FROM apps ORDER BY status = 'not_replicated', name").fetchall()
+        apps = visible(db().execute("SELECT * FROM apps ORDER BY status = 'not_replicated', name").fetchall())
+        recordings = [row for row in db().execute("SELECT id, name FROM recordings ORDER BY name").fetchall()
+                      if reviewer_of_recording(row["id"])]
         return render_template(
             "catalog.html", apps=[(row, journey.for_app(db(), row)) for row in apps],
-            recordings=db().execute("SELECT id, name FROM recordings ORDER BY name").fetchall(),
-            tested=tested_releases(),
+            recordings=recordings, tested=tested_releases(),
         )
 
     @app.post("/apps")
+    @auth.signed_in
     def add_app():
         name = request.form.get("name", "").strip()
         git_url = request.form.get("git_url", "").strip()
@@ -661,8 +712,16 @@ def create_app(database):
         with db():
             result = db().execute(
                 "INSERT INTO apps(name, git_url, requirements, owner, purpose) VALUES (?, ?, ?, ?, ?)",
-                (name, git_url, requirements, owner, purpose),
+                (name, git_url, requirements, "", purpose),
             )
+            app_id = result.lastrowid
+            record("app.create", "app", app_id, app_id=app_id, name=name)
+            # whoever creates an application owns it; a named owner is assigned too
+            for person in dict.fromkeys([g.user, owner]):
+                if person and auth.valid_name(person):
+                    auth.assign(db(), app_id, person, "owner", g.user, registry.now())
+                    record("role.assign", "role", f"{app_id}/{person}", app_id=app_id, user=person,
+                           role="owner", previous=None)
         scenarios.migrate(db())
         return redirect(url_for("demo", app_id=result.lastrowid))
 
@@ -672,29 +731,102 @@ def create_app(database):
                 for rec in buildpack.evidence(db(), app_id) for event in rec["events"]}
 
     @app.route("/apps/<int:app_id>", methods=["GET", "POST"])
+    @require_role("viewer")
     def demo(app_id):
         item = get_app(app_id)
         if request.method == "POST":
+            auth.ensure("owner", app_id=app_id)
             # Each form on the application and setup pages sends only its own fields.
-            limits = {"owner": 120, "purpose": 500, "git_url": 500}
+            limits = {"purpose": 500, "git_url": 500}
             with db():
                 for column, limit in limits.items():
                     if column in request.form:
                         db().execute(f"UPDATE apps SET {column} = ? WHERE id = ?",
                                      (request.form[column].strip()[:limit], app_id))
+                # the owner field is an assignment: the named user becomes an owner
+                person = request.form.get("owner", "").strip()[:120]
+                if person:
+                    grant(app_id, person, "owner")
             target = request.form.get("next")
             return redirect(url_for("app_setup", app_id=app_id) if target == "setup"
                             else url_for("demo", app_id=app_id))
+        reviewer = auth.can("owner", app_id=app_id)
         return render_template(
-            "demo.html", item=item, links=links(app_id), loads=json.loads,
-            journey=journey.for_app(db(), item),
-            attachments=attachments(app_id), kinds=ATTACHMENT_TYPES, releases=releases(app_id),
-            others=db().execute("SELECT id, name FROM apps WHERE id != ? ORDER BY name", (app_id,)).fetchall(),
-            scenarios=scenarios.load(db(), app_id), choices=selected_events(app_id),
+            "demo.html", item=item, links=links(app_id) if reviewer else [], loads=json.loads,
+            journey=journey.for_app(db(), item), reviewer=reviewer,
+            builder=auth.can("builder", app_id=app_id),
+            manage_roles=reviewer or g.is_admin, roles=auth.roles_of(db(), app_id), role_names=auth.ROLES,
+            attachments=attachments(app_id) if reviewer else [], kinds=ATTACHMENT_TYPES, releases=releases(app_id),
+            shares=redact.SHARE_STATES, packages=packages.revisions(db(), app_id),
+            others=visible(db().execute("SELECT id, name FROM apps WHERE id != ? ORDER BY name",
+                                        (app_id,)).fetchall()) if reviewer else [],
+            scenarios=scenarios.load(db(), app_id) if reviewer else [],
+            choices=selected_events(app_id) if reviewer else {},
             fields=scenarios.FIELDS,
         )
 
+    def grant(app_id, person, role):
+        try:
+            previous = auth.assign(db(), app_id, person, role, g.user, registry.now())
+        except ValueError as error:
+            abort(400, str(error))
+        if previous != role:
+            record("role.assign", "role", f"{app_id}/{person}", app_id=app_id, user=person, role=role,
+                   previous=previous)
+
+    def owner_or_admin(kwargs):
+        return None if g.is_admin else kwargs["app_id"]
+
+    @app.post("/apps/<int:app_id>/roles")
+    @require_role("owner", auth.ADMIN, resolve=owner_or_admin)
+    def assign_role(app_id):
+        """Assign or remove a role on the application (its owners, and portal admins)."""
+        get_app(app_id)
+        person = request.form.get("user", "").strip()[:120]
+        role = request.form.get("role", "")
+        with db():
+            if request.form.get("remove") == "yes":
+                try:
+                    previous = auth.unassign(db(), app_id, person)
+                except ValueError as error:
+                    abort(400, str(error))
+                if previous:
+                    record("role.remove", "role", f"{app_id}/{person}", app_id=app_id, user=person, previous=previous)
+            else:
+                if role not in auth.ROLES or not auth.valid_name(person):
+                    abort(400, "Give a user name and choose owner, builder or viewer.")
+                grant(app_id, person, role)
+        return redirect(url_for("demo", app_id=app_id, _anchor="roles"))
+
+    @app.get("/apps/<int:app_id>/history")
+    @require_role("owner", auth.ADMIN, resolve=owner_or_admin)
+    def app_history(app_id):
+        """The application's audit history (its owners, and portal admins)."""
+        return render_template("history.html", item=get_app(app_id), rows=audit.history(db(), app_id))
+
+    @app.route("/admin/users", methods=["GET", "POST"])
+    @require_role(auth.ADMIN, resolve=None)
+    def admin_users():
+        """The local user store (dev sign-in) and portal admins."""
+        if request.method == "POST":
+            name = request.form.get("name", "").strip()[:120]
+            password = request.form.get("password", "")
+            make_admin = request.form.get("is_admin") == "yes"
+            try:
+                with db():
+                    auth.save_user(db(), name, password=password or None, is_admin=make_admin, by=g.user,
+                                   now=registry.now())
+                    record("user.save", "user", name, user=name, is_admin=make_admin,
+                           password_changed=bool(password))
+            except ValueError as error:
+                abort(400, str(error))
+            return redirect(url_for("admin_users"))
+        users = db().execute("SELECT name, password_hash != '' AS has_password, is_admin, created_by, created_at "
+                             "FROM users ORDER BY name").fetchall()
+        return render_template("users.html", users=users)
+
     @app.get("/apps/<int:app_id>/setup")
+    @require_role("owner")
     def app_setup(app_id):
         item = get_app(app_id)
         return render_template("app_setup.html", item=item, releases=releases(app_id),
@@ -703,12 +835,15 @@ def create_app(database):
                                github_token=bool(commit_checks.GitHub().token))
 
     @app.get("/setup")
+    @auth.signed_in
     def setup():
-        return render_template("setup.html", apps=db().execute("SELECT id, name FROM apps ORDER BY name").fetchall(),
+        rows = visible(db().execute("SELECT id, name FROM apps ORDER BY name").fetchall())
+        return render_template("setup.html", apps=[r for r in rows if auth.can("owner", app_id=r["id"])],
                                storage=artifacts.store().describe())
 
     @app.post("/apps/<int:app_id>/scenarios", defaults={"scenario_id": None})
     @app.post("/apps/<int:app_id>/scenarios/<int:scenario_id>")
+    @require_role("owner")
     def save_scenario(app_id, scenario_id):
         get_app(app_id)
         try:
@@ -722,19 +857,26 @@ def create_app(database):
         return redirect(url_for("demo", app_id=app_id, _anchor=f"scenario-{scenario_id}"))
 
     @app.post("/apps/<int:app_id>/scenarios/<int:scenario_id>/remove")
+    @require_role("owner")
     def remove_scenario(app_id, scenario_id):
         get_app(app_id)
         scenarios.remove(db(), app_id, scenario_id)
         return redirect(url_for("demo", app_id=app_id))
 
     @app.post("/apps/<int:app_id>/attachments")
+    @require_role("owner")
     def add_attachment(app_id):
+        """Upload restricted evidence. Uploading never shares it: the owner marks it reviewed or
+        synthetic (here or later) before it can enter a builder package."""
         get_app(app_id)
         upload = request.files.get("file")
-        title = request.form.get("title", "").strip()
+        title = request.form.get("title", "").strip()[:200]
         kind = request.form.get("kind", "")
-        if not upload or not title or request.form.get("reviewed") != "yes":
-            abort(400, "Choose a file and confirm it is ready to share with the builder.")
+        share = request.form.get("share", "restricted")
+        if not upload or not title:
+            abort(400, "Choose a file and give it a title.")
+        if share not in redact.SHARE_STATES:
+            abort(400, "Choose restricted, reviewed or synthetic.")
         extension = Path(upload.filename).suffix.lower()
         if extension not in ATTACHMENT_TYPES.get(kind, set()):
             abort(400, "The file extension is unsupported for this evidence type.")
@@ -745,20 +887,47 @@ def create_app(database):
                             content_type=artifacts.content_type_for(extension))
         with db():
             ref = artifacts.save(db(), ref)
-            db().execute(
-                "INSERT INTO attachments(app_id,title,kind,extension,content,artifact_id) VALUES (?,?,?,?,?,?)",
-                (app_id, title, kind, extension, b"", ref.id),
-            )
+            attachment_id = db().execute(
+                "INSERT INTO attachments(app_id,title,kind,extension,content,artifact_id,share,added_by) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (app_id, title, kind, extension, b"", ref.id, share, g.user),
+            ).lastrowid
+            record("evidence.upload", "attachment", attachment_id, app_id=app_id, title=title, kind=kind,
+                   sha256=hashlib.sha256(content).hexdigest(), share=share)
         return redirect(url_for("demo", app_id=app_id))
 
+    @app.post("/apps/<int:app_id>/attachments/<int:attachment_id>/share")
+    @require_role("owner")
+    def share_attachment(app_id, attachment_id):
+        """The owner's review of an attachment: restricted, reviewed or synthetic."""
+        share = request.form.get("share", "")
+        if share not in redact.SHARE_STATES:
+            abort(400, "Choose restricted, reviewed or synthetic.")
+        with db():
+            row = db().execute("SELECT share FROM attachments WHERE app_id = ? AND id = ?",
+                               (app_id, attachment_id)).fetchone()
+            if row is None:
+                abort(404)
+            if row["share"] != share:
+                db().execute("UPDATE attachments SET share = ? WHERE app_id = ? AND id = ?",
+                             (share, app_id, attachment_id))
+                record("evidence.share", "attachment", attachment_id, app_id=app_id, share=share,
+                       previous=row["share"])
+        return redirect(url_for("demo", app_id=app_id, _anchor="examples"))
+
     @app.post("/apps/<int:app_id>/attachments/<int:attachment_id>/remove")
+    @require_role("owner")
     def remove_attachment(app_id, attachment_id):
         get_app(app_id)
         with db():
-            db().execute("DELETE FROM attachments WHERE app_id = ? AND id = ?", (app_id, attachment_id))
+            removed = db().execute("DELETE FROM attachments WHERE app_id = ? AND id = ?",
+                                   (app_id, attachment_id)).rowcount
+            if removed:
+                record("evidence.remove", "attachment", attachment_id, app_id=app_id)
         return redirect(url_for("demo", app_id=app_id))
 
     @app.post("/recordings")
+    @auth.signed_in
     def import_recording():
         name = request.form.get("name", "").strip()
         upload = request.files.get("log")
@@ -786,17 +955,25 @@ def create_app(database):
                 db().execute("UPDATE recordings SET events = ? WHERE id = ?", (
                     json.dumps(ordered(old.values())), digest,
                 ))
+            db().execute("INSERT OR IGNORE INTO recording_uploads VALUES (?, ?, ?)", (digest, g.user, registry.now()))
+            record("recording.import", "recording", digest, name=name, events=len(events))
         return redirect(url_for("recording", recording_id=digest))
 
     @app.route("/recordings/<recording_id>", methods=["GET", "POST"])
+    @auth.signed_in
     def recording(recording_id):
+        """Restricted evidence: its uploader and the owners of linked applications only."""
         item = get_recording(recording_id)
+        if not reviewer_of_recording(recording_id):
+            abort(403, "Recordings are restricted evidence: only their uploader and the owners of "
+                       "the applications they are linked to can open them.")
         events = json.loads(item["events"])
         if request.method == "POST":
             app_id = request.form.get("app_id", type=int)
             if app_id is None:
                 abort(400, "Choose a demo app.")
             get_app(app_id)
+            auth.ensure("owner", app_id=app_id)
             # events are chosen by event_id: their seq is a display order and may change
             selected = {event_ids.clean(value) for value in request.form.getlist("event")}
             if None in selected:
@@ -812,6 +989,8 @@ def create_app(database):
                     SET selection = excluded.selection, notes = excluded.notes, reviewed = 1, suggested = '[]'
                 """, (app_id, recording_id, json.dumps(sorted(selected)),
                       request.form.get("notes", "").strip()))
+                record("evidence.review", "recording", recording_id, app_id=app_id,
+                       selected=sorted(selected), notes_changed=bool(request.form.get("notes", "").strip()))
             return redirect(url_for("demo", app_id=app_id))
         app_id = request.args.get("app_id", type=int)
         saved = db().execute(
@@ -822,7 +1001,8 @@ def create_app(database):
             "recording.html", item=item, events=events, app_id=app_id, saved=saved,
             selected=set(json.loads(saved["selection"])) if saved else set(),
             suggested=set(json.loads(saved["suggested"])) if saved else set(),
-            apps=db().execute("SELECT * FROM apps ORDER BY name").fetchall(),
+            apps=[row for row in db().execute("SELECT * FROM apps ORDER BY name").fetchall()
+                  if auth.can("owner", app_id=row["id"])],
             status=registry.recording_status(db(), recording_id), upload=upload_progress(recording_id),
             preview=buildpack.preview(db(), recording_id), in_gap=completeness.in_gap,
         )
@@ -844,16 +1024,100 @@ def create_app(database):
         found = upload_view(response.get_json(silent=True))
         return found and dict(found, url=path)
 
-    def store_pack(app_id):
-        """Build the app's pack and store it under its revision: the bytes a preview shows and
-        a download serves are the stored ones."""
+    def current_draft(app_id):
         get_app(app_id)
         if not scenarios.load(db(), app_id):
-            abort(400, "Add a business scenario before exporting.")
-        revision, contents, _, package = buildpack.build(db(), app_id, VERSION_PATH)
+            abort(400, "Add a business scenario before freezing a builder package.")
+        return buildpack.draft(db(), app_id, VERSION_PATH)
+
+    def frozen(app_id, rev):
+        row = packages.get(db(), app_id, rev)
+        if row is None:
+            abort(404)
+        return row
+
+    def send_package(app_id, row):
+        """A frozen revision: a short-lived presigned URL when the store is S3 (its object carries
+        the approved SHA-256), else the bytes, checked against the approved SHA-256."""
+        item = get_app(app_id)
+        stored = packages.stored_row(db(), row["storage_ref"])
+        ref = artifacts.ref_of(db(), stored)
+        if ref is not None and ref.sha256 != row["sha256"] or ref is None and                 hashlib.sha256(packages.open_package(db(), row["storage_ref"])).hexdigest() != row["sha256"]:
+            abort(500, "The stored package does not match its approved SHA-256.")
         with db():
-            store_brief(db(), app_id, revision, contents, package)
-        return revision
+            record("package.download", "builder_package", f"{app_id}/rev{row['rev']}", app_id=app_id,
+                   rev=row["rev"], sha256=row["sha256"])
+        slug = re.sub(r"[^a-z0-9]+", "-", item["name"].lower()).strip("-") or "demo"
+        return send_stored(stored, "archive", f"{slug}-rev{row['rev']}-{row['revision'][:12]}.zip")
+
+    @app.get("/apps/<int:app_id>/build-pack")
+    @require_role("builder")
+    def build_pack(app_id):
+        """The latest builder-approved package (a frozen revision)."""
+        get_app(app_id)
+        row = packages.latest(db(), app_id)
+        if row is None:
+            abort(400, "No builder package is frozen yet: the owner previews and approves one first.")
+        return send_package(app_id, row)
+
+    @app.get("/apps/<int:app_id>/build-pack/preview")
+    @require_role("owner")
+    def preview_pack(app_id):
+        """The draft package exactly as freezing would store it: every file, its size and SHA-256,
+        text files in full, and the pre-freeze report (what was excluded or redacted, and why)."""
+        d = current_draft(app_id)
+        latest = packages.latest(db(), app_id)
+        files = [{"path": path, "size": len(content), "sha256": hashlib.sha256(content).hexdigest(),
+                  "text": content.decode("utf-8") if buildpack.is_text(path) else None}
+                 for path, content in d.files.items()]
+        return render_template("preview.html", item=get_app(app_id), revision=d.revision, files=files,
+                               size=len(d.package), sha256=d.sha256, draft=d, latest=latest,
+                               unchanged=latest is not None and latest["sha256"] == d.sha256)
+
+    @app.post("/apps/<int:app_id>/packages")
+    @require_role("owner")
+    def freeze_package(app_id):
+        """The owner's explicit approval: freeze the previewed draft as the next revision."""
+        get_app(app_id)
+        if request.form.get("approve") != "yes":
+            abort(400, "Confirm that you approve this package for the builder.")
+        if not scenarios.load(db(), app_id):
+            abort(400, "Add a business scenario before freezing a builder package.")
+        try:
+            with db():
+                rev = packages.freeze(db(), app_id, g.user, request.form.get("sha256"),
+                                      request.form.get("summary"), VERSION_PATH)
+        except ValueError as error:
+            abort(409, str(error))
+        return redirect(url_for("package", app_id=app_id, rev=rev))
+
+    @app.get("/apps/<int:app_id>/packages/<int:rev>")
+    @require_role("builder")
+    def package(app_id, rev):
+        row = frozen(app_id, rev)
+        data = packages.open_package(db(), row["storage_ref"])
+        files = [{"path": path, "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+                 for path, content in buildpack.read(data).items()]
+        return render_template("package.html", item=get_app(app_id), package=row, files=files,
+                               report=json.loads(row["report"]), reviewer=auth.can("owner", app_id=app_id))
+
+    @app.get("/apps/<int:app_id>/packages/<int:rev>/download")
+    @require_role("builder")
+    def download_package(app_id, rev):
+        return send_package(app_id, frozen(app_id, rev))
+
+    @app.get("/apps/<int:app_id>/briefs/<revision>")
+    @require_role("builder")
+    def download_brief(app_id, revision):
+        """A package by its content revision: a frozen one for builders; a brief stored before
+        packages were frozen only for owners."""
+        row = packages.by_revision(db(), app_id, revision)
+        if row is not None:
+            return send_package(app_id, row)
+        auth.ensure("owner", app_id=app_id)
+        item = get_app(app_id)
+        slug = re.sub(r"[^a-z0-9]+", "-", item["name"].lower()).strip("-") or "demo"
+        return send_stored(pack_row(app_id, revision), "archive", f"{slug}-{revision[:12]}.zip")
 
     def pack_row(app_id, revision):
         row = db().execute("""
@@ -864,9 +1128,6 @@ def create_app(database):
             abort(404)
         return row
 
-    def stored_pack(app_id, revision):
-        return artifacts.content(db(), pack_row(app_id, revision), "archive")
-
     def send_stored(row, column, filename):
         """A download of a stored artifact: a short-lived presigned URL when the store is S3,
         else the bytes through the portal, checked against the ref's SHA-256."""
@@ -876,30 +1137,20 @@ def create_app(database):
         return send_file(io.BytesIO(artifacts.content(db(), row, column)), mimetype="application/zip",
                          as_attachment=True, download_name=filename)
 
-    @app.get("/apps/<int:app_id>/build-pack")
-    def build_pack(app_id):
-        return download_brief(app_id, store_pack(app_id))
 
     def pack_view(app_id):
-        """Exactly what the download contains: every file of the stored archive, its size and
-        SHA-256, text files in full. The preview and the Build page both show this."""
-        revision = store_pack(app_id)
-        package = stored_pack(app_id, revision)
+        """What a builder builds: the latest builder-approved (frozen) package, every file with its
+        size and SHA-256, text in full. 400 before an owner has approved one."""
+        row = packages.latest(db(), app_id)
+        if row is None:
+            abort(400, "No builder-approved package yet: an owner previews the package, checks its "
+                       "pre-freeze report and approves it.")
+        package = packages.open_package(db(), row["storage_ref"])
         files = [{"path": path, "size": len(content), "sha256": hashlib.sha256(content).hexdigest(),
                   "text": content.decode("utf-8") if buildpack.is_text(path) else None}
                  for path, content in buildpack.read(package).items()]
-        return {"revision": revision, "files": files, "size": len(package),
-                "sha256": hashlib.sha256(package).hexdigest()}
-
-    @app.get("/apps/<int:app_id>/build-pack/preview")
-    def preview_pack(app_id):
-        return render_template("preview.html", item=get_app(app_id), pack=pack_view(app_id))
-
-    @app.get("/apps/<int:app_id>/briefs/<revision>")
-    def download_brief(app_id, revision):
-        item = get_app(app_id)
-        slug = re.sub(r"[^a-z0-9]+", "-", item["name"].lower()).strip("-") or "demo"
-        return send_stored(pack_row(app_id, revision), "archive", f"{slug}-{revision[:12]}.zip")
+        return {"revision": row["revision"], "rev": row["rev"], "files": files, "size": len(package),
+                "sha256": row["sha256"], "approved_by": row["approved_by"], "approved_at": row["approved_at"]}
 
     def get_release(release_id):
         item = db().execute(
@@ -918,10 +1169,15 @@ def create_app(database):
             (status, observed, registry.now(), release["id"], environment),
         )
 
+    def release_app(kwargs):
+        return get_release(kwargs["release_id"])["app_id"]
+
     @app.route("/releases/<int:release_id>", methods=["GET", "POST"])
+    @require_role("viewer", resolve=release_app)
     def release(release_id):
         item = get_release(release_id)
         if request.method == "POST":
+            auth.ensure("owner", app_id=item["app_id"])
             environment = request.form.get("environment", "").strip()
             url = request.form.get("url", "").strip()
             try:
@@ -940,6 +1196,8 @@ def create_app(database):
                     url = excluded.url, username = excluded.username, secret_ref = excluded.secret_ref
                 """, (release_id, environment, url, request.form.get("username", "").strip(), secret_ref))
                 save_check(item, environment, url)
+                record("deployment.register", "release", release_id, app_id=item["app_id"],
+                       environment=environment, url=url)
             return redirect(url_for("release", release_id=release_id))
         deployments = db().execute(
             "SELECT * FROM deployments WHERE release_id = ? ORDER BY environment", (release_id,),
@@ -947,11 +1205,14 @@ def create_app(database):
         test = db().execute("SELECT * FROM release_tests WHERE release_id = ?", (release_id,)).fetchone()
         brief = db().execute("SELECT manifest FROM briefs WHERE revision = ?", (item["revision"],)).fetchone()
         return render_template("release.html", release=item, item=get_app(item["app_id"]),
+                               owner=auth.can("owner", app_id=item["app_id"]),
+                               builder=auth.can("builder", app_id=item["app_id"]),
                                deployments=deployments, test=test, loads=json.loads, results=RESULTS,
                                scenarios=brief_scenarios(json.loads(brief["manifest"])),
                                checks=commit_checks.summary(db(), release_id))
 
     @app.post("/releases/<int:release_id>/deployments/check")
+    @require_role("builder", resolve=release_app)
     def check_deployment(release_id):
         item = get_release(release_id)
         environment = request.form.get("environment", "")
@@ -964,8 +1225,9 @@ def create_app(database):
         return redirect(url_for("release", release_id=release_id))
 
     @app.post("/releases/<int:release_id>/test")
+    @require_role("owner", resolve=release_app)
     def test_release(release_id):
-        get_release(release_id)
+        item = get_release(release_id)
         results = {key[len("result:"):]: value for key, value in request.form.items() if key.startswith("result:")}
         with db():  # the fetched checks are kept even when the test is refused
             gate = commit_checks.refresh(db(), release_id, github())
@@ -974,6 +1236,8 @@ def create_app(database):
                 record_test(db(), release_id, request.form.get("commit"), request.form.get("platform"),
                             request.form.get("launch"), request.form.get("reset_result"),
                             request.form.get("reset_notes"), results, g.user, gate=gate)
+                record("release.test", "release", release_id, app_id=item["app_id"], version=item["version"],
+                       commit=item["commit_sha"], results=results, reset=request.form.get("reset_result"))
         except ValueError as error:
             abort(400, str(error))
         return redirect(url_for("release", release_id=release_id))
@@ -982,25 +1246,27 @@ def create_app(database):
         return app.config.get("GITHUB") or commit_checks.GitHub()
 
     @app.post("/releases/<int:release_id>/checks")
+    @require_role("owner", resolve=release_app)
     def refresh_checks(release_id):
-        # ROLE: owner
         get_release(release_id)
         with db():
             commit_checks.refresh(db(), release_id, github())
         return redirect(url_for("release", release_id=release_id, _anchor="verification"))
 
     @app.post("/releases/<int:release_id>/verify")
+    @require_role("owner", resolve=release_app)
     def verify_this_release(release_id):
-        # ROLE: owner
-        get_release(release_id)
+        item = get_release(release_id)
         with db():
-            verify_release(db(), release_id, github(), app.config.get("TWINLAB_RUNNER"), user=g.user)
+            outcome = verify_release(db(), release_id, github(), app.config.get("TWINLAB_RUNNER"), user=g.user)
+            record("release.verify", "release", release_id, app_id=item["app_id"], commit=item["commit_sha"],
+                   tested=outcome.get("tested"), reasons=outcome.get("reasons"), report_sha=outcome.get("report_sha"))
         return redirect(url_for("release", release_id=release_id, _anchor="verification"))
 
     @app.post("/apps/<int:app_id>/verify-commit")
+    @require_role("owner")
     def verify_build(app_id):
         """The “Verify this build” hook: a build's repository, head commit and pull request."""
-        # ROLE: owner
         item = get_app(app_id)
         try:
             with db():
@@ -1009,13 +1275,16 @@ def create_app(database):
                     request.form.get("sha"), github(), app.config.get("TWINLAB_RUNNER"),
                     request.form.get("pr_number", type=int), request.form.get("ref", "").strip()[:200],
                     user=g.user)
+                record("release.verify", "release", outcome["release_id"], app_id=app_id,
+                       commit=request.form.get("sha"), tested=outcome.get("tested"), reasons=outcome.get("reasons"),
+                       report_sha=outcome.get("report_sha"))
         except ValueError as error:
             abort(400, str(error))
         return redirect(url_for("release", release_id=outcome["release_id"], _anchor="verification"))
 
     @app.post("/apps/<int:app_id>/verification")
+    @require_role("owner")
     def verification_settings(app_id):
-        # ROLE: owner
         get_app(app_id)
         platform = request.form.get("target_platform", "")
         if platform not in commit_checks.PLATFORMS:
@@ -1033,6 +1302,7 @@ def create_app(database):
         return redirect(url_for("app_setup", app_id=app_id, _anchor="verification"))
 
     @app.get("/releases/<int:release_id>/reports/<int:report_id>")
+    @require_role("builder", resolve=release_app)
     def verification_report(release_id, report_id):
         content = commit_checks.get_report(db(), release_id, report_id)
         if content is None:
@@ -1041,26 +1311,34 @@ def create_app(database):
                          download_name=f"verification-{release_id}-{report_id}.json")
 
     @app.post("/releases/<int:release_id>/publish")
+    @require_role("owner", resolve=release_app)
     def publish_release(release_id):
-        get_release(release_id)
+        item = get_release(release_id)
         try:
             with db():
                 publish(db(), release_id)
+                record("release.publish", "release", release_id, app_id=item["app_id"], version=item["version"],
+                       commit=item["commit_sha"], archive_sha256=item["archive_sha"])
         except ValueError as error:
             abort(400, str(error))
         return redirect(url_for("release", release_id=release_id))
 
     @app.get("/releases/<int:release_id>/download")
+    @require_role("viewer", resolve=release_app)
     def download_release(release_id):
+        """A published release for every viewer; one not yet published for builders and owners."""
         item = db().execute("SELECT * FROM releases WHERE id = ?", (release_id,)).fetchone()
         if item is None:
             abort(404)
+        if item["state"] != "published":
+            auth.ensure("builder", app_id=item["app_id"])
         return send_stored(item, "archive", f"demo-{item['app_id']}-{item['version']}.zip")
 
     registry.register(app, db)
     uploads.register(app, db)
+    auth.public(app.view_functions["artifact_download"])  # a signed, short-lived link is the credential
     builds_web.register(app, db, get_app, pack_view, database,
-                        dev_worker=not trust_proxy and os.environ.get("TWINLAB2_DEV_WORKER", "1") != "0")
+                        dev_worker=not auth.Settings.from_env().trust_proxy and os.environ.get("TWINLAB2_DEV_WORKER", "1") != "0")
     return app
 
 
@@ -1082,6 +1360,10 @@ if __name__ == "__main__":
     publish.add_argument("repository", type=Path)
     publish.add_argument("--ref", default="HEAD")
     publish.add_argument("--subdirectory")
+    users = commands.add_parser("user", help="Add or change a local user (dev sign-in) or a portal admin.")
+    users.add_argument("name")
+    users.add_argument("--admin", action="store_true", help="make the user a portal admin")
+    users.add_argument("--password", action="store_true", help="set a password (asked for)")
     moving = commands.add_parser("artifacts", help="Copy SQLite blobs to artifact storage and check them.")
     moving.add_argument("--purge", action="store_true", help="then empty the blobs whose copy verifies")
     args = parser.parse_args()
@@ -1094,6 +1376,15 @@ if __name__ == "__main__":
         except (ValueError, sqlite3.IntegrityError, CalledProcessError, OSError) as error:
             parser.exit(1, f"Release registration failed: {error}\n")
         print(f"Registered {args.version} from {commit}.")
+    elif args.command == "user":
+        import getpass
+        secret = getpass.getpass(f"Password for {args.name}: ") if args.password else None
+        with closing(sqlite3.connect(args.database)) as connection, connection:
+            auth.save_user(connection, args.name, password=secret, is_admin=True if args.admin else None,
+                           by="cli", now=registry.now())
+            audit.record(connection, "cli", "user.save", "user", args.name, user=args.name,
+                         is_admin=args.admin, password_changed=bool(secret))
+        print(f"Saved user {args.name}.")
     elif args.command == "artifacts":
         with app.app_context(), closing(sqlite3.connect(args.database)) as connection:
             connection.row_factory = sqlite3.Row

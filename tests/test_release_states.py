@@ -12,6 +12,7 @@ import threading
 import unittest
 from zipfile import ZipFile
 
+from support import freeze
 from portal import VERSION_PATH, add_release, create_app
 from test_registry import eid
 
@@ -63,7 +64,7 @@ class ReleaseStatesTest(unittest.TestCase):
         self.post(recording, app_id="1", event=eid(recording_id, 1), notes="Invoice is saved\nwith its number")
         self.post(self.app_path + "/scenarios", name="Invoice is saved", expected="The invoice has its number.",
                   event=f"{recording_id}#{eid(recording_id, 1)}")
-        with ZipFile(io.BytesIO(self.client.get(self.app_path + "/build-pack").data)) as archive:
+        with ZipFile(io.BytesIO(freeze(self.client, self.token, self.app_path).data)) as archive:
             self.revision = archive.read("BUILD_TASK.md").decode().split("`")[1]
             self.task = archive.read("BUILD_TASK.md").decode()
         self.repo = self.root / "demo"
@@ -159,6 +160,10 @@ class ReleaseStatesTest(unittest.TestCase):
             {"id": "create-invoice", "name": "Create an invoice"}, "Reject an invalid amount"]})
         with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("INSERT INTO briefs VALUES ('explicit-scenarios', 1, ?)", (manifest,))
+            # a release is registered against a frozen builder package revision
+            connection.execute("""INSERT INTO builder_packages(app_id, rev, revision, sha256, size, storage_ref,
+                                  approved_by, approved_at, summary, diff, report)
+                                  VALUES (1, 2, 'explicit-scenarios', '', 0, '', 'local', '', '', '', '[]')""")
         add_release(self.database, 1, "3.0", "explicit-scenarios", self.repo, "HEAD")
         page = self.client.get("/releases/2").data.decode()
         self.assertIn("Create an invoice", page)

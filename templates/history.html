@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}History · {{ item.name }} · TwinLab2{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="{{ url_for('demo', app_id=item.id) }}">{{ item.name }}</a></p>
+<h1>Audit history: {{ item.name }}</h1>
+<p class="muted">Append-only: entries are never changed or removed.</p>
+<table class="flow" id="history">
+  <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Object</th><th>Details</th></tr></thead>
+  <tbody>{% for row in rows %}
+    <tr><td>{{ row.at | replace("T", " ") }}</td><td>{{ row.actor }}</td><td><code>{{ row.action }}</code></td>
+      <td>{{ row.object_type }} {{ row.object_id }}</td>
+      <td>{% for key, value in row.details.items() %}{% if value not in (none, "", [], {}) %}<span class="muted">{{ key }}</span> {{ value if value is string else value | tojson }}{% if not loop.last %} · {% endif %}{% endif %}{% endfor %}</td></tr>
+  {% else %}
+    <tr><td colspan="5">Nothing recorded yet.</td></tr>
+  {% endfor %}</tbody>
+</table>
+{% endblock %}

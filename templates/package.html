@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Package revision {{ package.rev }} · {{ item.name }} · TwinLab2{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="{{ url_for('demo', app_id=item.id) }}">{{ item.name }}</a></p>
+<h1>Builder package revision {{ package.rev }}</h1>
+<p><a class="button" href="{{ url_for('download_package', app_id=item.id, rev=package.rev) }}">Download revision {{ package.rev }}</a></p>
+<dl class="release-details">
+  <dt>Approved by</dt><dd id="approved-by">{{ package.approved_by }}</dd>
+  <dt>Approved at</dt><dd>{{ package.approved_at }}</dd>
+  <dt>SHA-256</dt><dd><code id="package-sha256">{{ package.sha256 }}</code></dd>
+  <dt>Content revision</dt><dd><code>{{ package.revision }}</code></dd>
+  <dt>Size</dt><dd>{{ package.size }} bytes</dd>
+</dl>
+<p class="muted">A frozen revision never changes: a change to the evidence or scenarios is frozen as a new revision.</p>
+<section>
+  <h2>Change summary</h2>
+  <pre class="notes">{{ package.summary }}</pre>
+</section>
+<section>
+  <h2>Files</h2>
+  <table class="flow">
+    <thead><tr><th>File</th><th>Bytes</th><th>SHA-256</th></tr></thead>
+    <tbody>{% for file in files %}<tr><td>{{ file.path }}</td><td>{{ file.size }}</td><td><code>{{ file.sha256 }}</code></td></tr>{% endfor %}</tbody>
+  </table>
+</section>
+{% if reviewer %}
+<section>
+  <h2>Pre-freeze report</h2>
+  {% for entry in report %}
+    <p>{{ entry.item }}: {{ entry.outcome }} — {{ entry.reasons | join("; ") }}</p>
+  {% else %}
+    <p>Nothing was excluded or redacted.</p>
+  {% endfor %}
+</section>
+{% endif %}
+{% if package.diff %}
+<section>
+  <h2>Diff against revision {{ package.rev - 1 }}</h2>
+  <pre class="file">{{ package.diff }}</pre>
+</section>
+{% endif %}
+{% endblock %}

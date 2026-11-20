@@ -4,6 +4,7 @@ recorder's offline upload queue. No real AWS: S3 is moto, in process or as a loc
 from datetime import datetime, timedelta, timezone
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import re
@@ -31,6 +32,7 @@ import artifacts  # noqa: E402
 from agent.client import Portal, PortalError  # noqa: E402
 from agent.upload_queue import UploadQueue  # noqa: E402
 from portal import create_app  # noqa: E402
+from support import freeze  # noqa: E402
 from test_registry import CV, references  # noqa: E402
 
 SESSION = "20261119T100000Z-0a1b2c3d"
@@ -144,7 +146,7 @@ class S3StoreTest(unittest.TestCase):
                 token = session["form_token"]
             client.post("/apps", data={"token": token, "name": "Orders"})
             client.post("/apps/1/scenarios", data={"token": token, "name": "Find", "expected": "Found."})
-            response = client.get("/apps/1/build-pack")
+            response = freeze(client, token, "/apps/1")
             self.assertEqual(response.status_code, 302)
             self.assertIn("X-Amz-Signature", response.headers["Location"])
             page = client.get("/setup").data.decode()
@@ -205,8 +207,11 @@ class MigrationTest(unittest.TestCase):
         with client.session_transaction() as session:
             token = session["form_token"]
         client.post("/apps/1/scenarios", data={"token": token, "name": "Find", "expected": "Found."})
-        with ZipFile(io.BytesIO(client.get("/apps/1/build-pack").data)) as pack:
-            self.assertEqual(pack.read([n for n in pack.namelist() if n.startswith("attachments/")][0]), b'{"a": 1}')
+        # an attachment stored before roles is restricted evidence until the owner shares it
+        client.post("/apps/1/attachments/1/share", data={"token": token, "share": "reviewed"})
+        with ZipFile(io.BytesIO(freeze(client, token, "/apps/1").data)) as pack:
+            content = pack.read([n for n in pack.namelist() if n.startswith("attachments/")][0])
+            self.assertEqual(json.loads(content), {"a": 1})
 
     def test_a_copy_that_does_not_verify_is_not_used(self):
         real_put = artifacts.put
