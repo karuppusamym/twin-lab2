@@ -129,7 +129,7 @@ class MergeTest(Base):
         revision = "ab" * 32
         with closing(sqlite3.connect(self.database)) as db, db:
             db.execute("INSERT INTO briefs VALUES (?, 2, '{}')", (revision,))
-            db.execute("INSERT INTO brief_packages VALUES (?, ?)", (revision, package))
+            db.execute("INSERT INTO brief_packages(revision, archive) VALUES (?, ?)", (revision, package))
         # the repro: the merge deleted the brief while its package still referred to it
         page, done = self.merge(2, 3)
         self.assertIn(revision[:12], page)

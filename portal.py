@@ -22,6 +22,7 @@ from werkzeug.routing import RequestRedirect
 import audit
 import auth
 from auth import require_role
+import artifacts
 import buildpack
 import completeness
 import event_ids
@@ -33,6 +34,7 @@ import packages
 import redact
 import registry
 import scenarios
+import uploads
 import verification as commit_checks
 
 LOCAL = auth.LOCAL
@@ -181,6 +183,18 @@ def record_test(connection, release_id, commit, platform, launch, reset_result, 
     """, (release_id, release["commit_sha"], platform[:500], launch[:8000], reset_result,
           (reset_notes or "").strip()[:2000], json.dumps(rows), user, registry.now()))
     connection.execute("UPDATE releases SET state = 'tested' WHERE id = ?", (release_id,))
+
+
+def store_brief(connection, app_id, revision, contents, package):
+    """Keep a frozen build brief and its pack (as a `builder_package` artifact) under its
+    revision, once: the same revision is the same bytes. No commit."""
+    connection.execute("INSERT INTO briefs VALUES (?, ?, ?) ON CONFLICT (revision) DO NOTHING",
+                       (revision, app_id, contents))
+    if connection.execute("SELECT 1 FROM brief_packages WHERE revision = ?", (revision,)).fetchone() is None:
+        ref = artifacts.save(connection, artifacts.put(package, kind="builder_package", app_id=app_id,
+                                                       content_type="application/zip"))
+        connection.execute("INSERT INTO brief_packages(revision, archive, artifact_id) VALUES (?, ?, ?)",
+                           (revision, b"", ref.id))
 
 
 def verify_commit(connection, app_id, repo, sha, github=None, runner=None, pr_number=None, ref="",
@@ -396,6 +410,8 @@ def upload_view(data):
         return None
 
     state = str(data.get("state") or data.get("status") or "").strip()[:40]
+    if state.lower() == "none":  # the storage API: this recording has no upload
+        return None
     done = first("received_bytes", "bytes_received", "uploaded_bytes", "uploaded", "received")
     total = first("total_bytes", "bytes_total", "size", "total")
     parts, of = first("parts_received", "received_parts", "parts_done"), first("parts_total", "total_parts")
@@ -407,7 +423,7 @@ def upload_view(data):
     if percent is None and parts is not None and of:
         percent = parts / of * 100
     percent = None if percent is None else max(0, min(100, round(percent)))
-    complete = state.lower() in ("complete", "completed", "done", "uploaded", "stored") or percent == 100
+    complete = state.lower() in ("complete", "completed", "done", "uploaded", "stored", "confirmed") or percent == 100
     words = [state.replace("_", " ").capitalize() or ("Complete" if complete else "Uploading")]
     if percent is not None:
         words.append(f"{percent}%")
@@ -415,6 +431,8 @@ def upload_view(data):
         words.append(f"({human(done)} of {human(total)})")
     elif parts is not None and of:
         words.append(f"({parts} of {of} parts)")
+    if isinstance(data.get("last_error"), str) and data["last_error"]:
+        words.append(f"· {data['last_error'][:300]}")
     return {"text": " ".join(words), "percent": percent, "complete": complete}
 
 
@@ -425,7 +443,7 @@ def human(size):
         size /= 1024
 
 
-def add_release(database, app_id, version, revision, repository, ref, subdirectory=None):
+def add_release(database, app_id, version, revision, repository, ref, subdirectory=None, store=None):
     import subprocess
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", version):
@@ -459,10 +477,16 @@ def add_release(database, app_id, version, revision, repository, ref, subdirecto
         archive = git("archive", "--format=zip", tree)
         if not archive or not any(entries):
             raise ValueError("The selected Git tree is empty.")
+        if connection.execute("SELECT 1 FROM releases WHERE app_id = ? AND version = ?", (app_id, version)).fetchone():
+            raise sqlite3.IntegrityError("UNIQUE constraint failed: releases.app_id, releases.version")
+        artifacts.migrate(connection)
+        ref = artifacts.save(connection, artifacts.put(
+            archive, kind="release_download", app_id=app_id, content_type="application/zip",
+            target=store or artifacts.from_env(database)))
         connection.execute(
-            """INSERT INTO releases(app_id,version,revision,commit_sha,archive,archive_sha)
-               VALUES (?,?,?,?,?,?)""",
-            (app_id, version, revision, commit, archive, hashlib.sha256(archive).hexdigest()),
+            """INSERT INTO releases(app_id,version,revision,commit_sha,archive,archive_sha,artifact_id)
+               VALUES (?,?,?,?,?,?,?)""",
+            (app_id, version, revision, commit, b"", ref.sha256, ref.id),
         )
     return commit
 
@@ -494,6 +518,7 @@ def create_app(database):
     )
     database = Path(database)
     database.parent.mkdir(parents=True, exist_ok=True)
+    artifacts.init_app(app, database)
 
     def db():
         if "db" not in g:
@@ -516,6 +541,12 @@ def create_app(database):
         scenarios.migrate(db())
         builds.migrate(db())
         event_ids.migrate(db())  # references by number become references by event_id
+        artifacts.migrate(db())
+        uploads.migrate(db())
+        if os.environ.get("TWINLAB2_ARTIFACT_MIGRATE", "1") != "0":
+            moved = artifacts.migrate_blobs(db())
+            for table, key, reason in moved["failed"]:
+                app.logger.warning("blob of %s %s not moved to artifact storage: %s", table, key, reason)
         columns = {row[1] for row in db().execute("PRAGMA table_info(apps)")}
         for column in ("owner", "purpose"):
             if column not in columns:
@@ -576,7 +607,7 @@ def create_app(database):
 
     @app.before_request
     def protect_forms():
-        if request.path.startswith("/api/agent/"):
+        if request.path.startswith(uploads.MACHINE_PATHS):
             return
         if "form_token" not in session:
             session["form_token"] = secrets.token_hex(32)
@@ -592,15 +623,17 @@ def create_app(database):
         return [row for row in rows if ids is None or row[key] in ids]
 
     def reviewer_of_recording(recording_id):
-        """Restricted evidence: who added the recording, and the owners of the applications it
-        is linked to."""
+        """Restricted evidence: who added the recording (imported it, or paired the machine that
+        sent or uploaded it), and the owners of the applications it is linked to."""
         return db().execute("""
             SELECT 1 FROM recording_uploads WHERE recording_id = ? AND added_by = ?
             UNION SELECT 1 FROM app_roles JOIN evidence ON evidence.app_id = app_roles.app_id
                   WHERE evidence.recording_id = ? AND app_roles.user_name = ? AND app_roles.role = 'owner'
             UNION SELECT 1 FROM app_roles JOIN recording_apps ON recording_apps.app_id = app_roles.app_id
                   WHERE recording_apps.recording_id = ? AND app_roles.user_name = ? AND app_roles.role = 'owner'
-        """, (recording_id, g.user) * 3).fetchone() is not None
+            UNION SELECT 1 FROM uploads JOIN machines ON machines.id = uploads.machine_id
+                  WHERE uploads.recording_id = ? AND machines.paired_by = ?
+        """, (recording_id, g.user) * 4).fetchone() is not None
 
     app.extensions["twinlab_reviewer_of_recording"] = reviewer_of_recording
 
@@ -805,7 +838,8 @@ def create_app(database):
     @auth.signed_in
     def setup():
         rows = visible(db().execute("SELECT id, name FROM apps ORDER BY name").fetchall())
-        return render_template("setup.html", apps=[r for r in rows if auth.can("owner", app_id=r["id"])])
+        return render_template("setup.html", apps=[r for r in rows if auth.can("owner", app_id=r["id"])],
+                               storage=artifacts.store().describe())
 
     @app.post("/apps/<int:app_id>/scenarios", defaults={"scenario_id": None})
     @app.post("/apps/<int:app_id>/scenarios/<int:scenario_id>")
@@ -849,10 +883,14 @@ def create_app(database):
         content = upload.read()
         if not content or len(content) > 4 * 1024 * 1024:
             abort(400, "Evidence files must be between 1 byte and 4 MiB.")
+        ref = artifacts.put(content, kind="restricted_evidence", app_id=app_id,
+                            content_type=artifacts.content_type_for(extension))
         with db():
+            ref = artifacts.save(db(), ref)
             attachment_id = db().execute(
-                "INSERT INTO attachments(app_id,title,kind,extension,content,share,added_by) VALUES (?,?,?,?,?,?,?)",
-                (app_id, title, kind, extension, content, share, g.user),
+                "INSERT INTO attachments(app_id,title,kind,extension,content,artifact_id,share,added_by) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (app_id, title, kind, extension, b"", ref.id, share, g.user),
             ).lastrowid
             record("evidence.upload", "attachment", attachment_id, app_id=app_id, title=title, kind=kind,
                    sha256=hashlib.sha256(content).hexdigest(), share=share)
@@ -999,16 +1037,18 @@ def create_app(database):
         return row
 
     def send_package(app_id, row):
+        """A frozen revision: a short-lived presigned URL when the store is S3 (its object carries
+        the approved SHA-256), else the bytes, checked against the approved SHA-256."""
         item = get_app(app_id)
-        data = packages.open_package(db(), row["storage_ref"])
-        if hashlib.sha256(data).hexdigest() != row["sha256"]:
+        stored = packages.stored_row(db(), row["storage_ref"])
+        ref = artifacts.ref_of(db(), stored)
+        if ref is not None and ref.sha256 != row["sha256"] or ref is None and                 hashlib.sha256(packages.open_package(db(), row["storage_ref"])).hexdigest() != row["sha256"]:
             abort(500, "The stored package does not match its approved SHA-256.")
         with db():
             record("package.download", "builder_package", f"{app_id}/rev{row['rev']}", app_id=app_id,
                    rev=row["rev"], sha256=row["sha256"])
         slug = re.sub(r"[^a-z0-9]+", "-", item["name"].lower()).strip("-") or "demo"
-        return send_file(io.BytesIO(data), mimetype="application/zip", as_attachment=True,
-                         download_name=f"{slug}-rev{row['rev']}-{row['revision'][:12]}.zip")
+        return send_stored(stored, "archive", f"{slug}-rev{row['rev']}-{row['revision'][:12]}.zip")
 
     @app.get("/apps/<int:app_id>/build-pack")
     @require_role("builder")
@@ -1076,15 +1116,27 @@ def create_app(database):
             return send_package(app_id, row)
         auth.ensure("owner", app_id=app_id)
         item = get_app(app_id)
-        stored = db().execute("""
-            SELECT archive FROM brief_packages JOIN briefs USING (revision)
-            WHERE app_id = ? AND revision = ?
-        """, (app_id, revision)).fetchone()
-        if stored is None:
-            abort(404)
         slug = re.sub(r"[^a-z0-9]+", "-", item["name"].lower()).strip("-") or "demo"
-        return send_file(io.BytesIO(stored["archive"]), mimetype="application/zip", as_attachment=True,
-                         download_name=f"{slug}-{revision[:12]}.zip")
+        return send_stored(pack_row(app_id, revision), "archive", f"{slug}-{revision[:12]}.zip")
+
+    def pack_row(app_id, revision):
+        row = db().execute("""
+            SELECT brief_packages.archive, brief_packages.artifact_id FROM brief_packages
+            JOIN briefs USING (revision) WHERE app_id = ? AND revision = ?
+        """, (app_id, revision)).fetchone()
+        if row is None:
+            abort(404)
+        return row
+
+    def send_stored(row, column, filename):
+        """A download of a stored artifact: a short-lived presigned URL when the store is S3,
+        else the bytes through the portal, checked against the ref's SHA-256."""
+        ref = artifacts.ref_of(db(), row)
+        if ref is not None and ref.backend == "s3":
+            return redirect(artifacts.presign_get(ref, 300, filename))
+        return send_file(io.BytesIO(artifacts.content(db(), row, column)), mimetype="application/zip",
+                         as_attachment=True, download_name=filename)
+
 
     def pack_view(app_id):
         """What a builder builds: the latest builder-approved (frozen) package, every file with its
@@ -1280,10 +1332,11 @@ def create_app(database):
             abort(404)
         if item["state"] != "published":
             auth.ensure("builder", app_id=item["app_id"])
-        return send_file(io.BytesIO(item["archive"]), mimetype="application/zip",
-                         as_attachment=True, download_name=f"demo-{item['app_id']}-{item['version']}.zip")
+        return send_stored(item, "archive", f"demo-{item['app_id']}-{item['version']}.zip")
 
     registry.register(app, db)
+    uploads.register(app, db)
+    auth.public(app.view_functions["artifact_download"])  # a signed, short-lived link is the credential
     builds_web.register(app, db, get_app, pack_view, database,
                         dev_worker=not auth.Settings.from_env().trust_proxy and os.environ.get("TWINLAB2_DEV_WORKER", "1") != "0")
     return app
@@ -1311,6 +1364,8 @@ if __name__ == "__main__":
     users.add_argument("name")
     users.add_argument("--admin", action="store_true", help="make the user a portal admin")
     users.add_argument("--password", action="store_true", help="set a password (asked for)")
+    moving = commands.add_parser("artifacts", help="Copy SQLite blobs to artifact storage and check them.")
+    moving.add_argument("--purge", action="store_true", help="then empty the blobs whose copy verifies")
     args = parser.parse_args()
     app = create_app(args.database)
     if args.command == "release":
@@ -1330,5 +1385,15 @@ if __name__ == "__main__":
             audit.record(connection, "cli", "user.save", "user", args.name, user=args.name,
                          is_admin=args.admin, password_changed=bool(secret))
         print(f"Saved user {args.name}.")
+    elif args.command == "artifacts":
+        with app.app_context(), closing(sqlite3.connect(args.database)) as connection:
+            connection.row_factory = sqlite3.Row
+            result = artifacts.migrate_blobs(connection)
+            print(f"Copied {result['copied']} blobs to {artifacts.store().backend} artifact storage.")
+            for table, key, reason in result["failed"]:
+                print(f"Not copied: {table} {key}: {reason}")
+            if args.purge:
+                purged = artifacts.purge_blobs(connection)
+                print(f"Emptied {purged['purged']} blobs; kept {len(purged['kept'])} whose copy did not verify.")
     else:
         app.run(host=args.host, port=args.port)

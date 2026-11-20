@@ -172,6 +172,7 @@ class RoleRefusalTest(Base):
             ("owner", "GET", f"/recordings/{r}", {}),
             ("owner", "POST", f"/recordings/{r}", {"app_id": str(a), "event": self.event}),
             ("owner", "POST", f"/recordings/{r}/completeness/accept", {}),
+            ("owner", "GET", f"/api/recordings/{r}/upload", {}),
             ("owner", "GET", f"/apps/{a}/setup", {}),
             ("owner", "GET", f"/apps/{a}/history", {}),
             ("owner", "GET", f"/apps/{a}/build-pack/preview", {}),
@@ -350,10 +351,15 @@ class PackageTest(Base):
         page = self.get(f"/apps/{self.app_id}/packages/2", "alice").data.decode()
         self.assertIn("Diff against revision 1", page)
         with closing(sqlite3.connect(self.database)) as db:
-            for sql in ("UPDATE builder_packages SET approved_by = 'mallory'", "DELETE FROM builder_packages",
-                        "UPDATE brief_packages SET archive = x'00'"):
+            for sql in ("UPDATE builder_packages SET approved_by = 'mallory'", "DELETE FROM builder_packages"):
                 with self.assertRaises(sqlite3.DatabaseError):
                     db.execute(sql)
+        # bytes swapped under a frozen revision are refused, not served
+        first_rev, second_rev = (r[0] for r in self.rows("SELECT revision FROM builder_packages ORDER BY rev"))
+        with closing(sqlite3.connect(self.database)) as db, db:
+            other = db.execute("SELECT artifact_id FROM brief_packages WHERE revision = ?", (second_rev,)).fetchone()[0]
+            db.execute("UPDATE brief_packages SET artifact_id = ? WHERE revision = ?", (other, first_rev))
+        self.assertEqual(self.get(f"/apps/{self.app_id}/packages/1/download", "alice").status_code, 500)
 
 
 class RedactionTest(Base):

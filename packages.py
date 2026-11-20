@@ -13,9 +13,9 @@ an immutable revision (rev 1, 2, …) with who approved it, when, the SHA-256, t
 report, a change summary and a diff against the previous revision. Revisions are never updated
 or deleted (code inserts only; SQLite triggers refuse changes).
 
-The ZIP itself is stored by `put_package` / `open_package`: today in the catalog's
-`brief_packages` table; switch these two functions to `artifacts.put(kind="builder_package")` /
-`artifacts.open` once the artifact store is on main.
+The ZIP itself is stored by `put_package` / `open_package` as an `artifacts` object of kind
+`builder_package` (local disk or S3), indexed by `brief_packages.artifact_id`; packages stored
+before that are read from the old blob column (`artifacts.content`).
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from __future__ import annotations
 import difflib
 import json
 
+import artifacts
 import audit
 import buildpack
 
@@ -41,8 +42,6 @@ CREATE TRIGGER IF NOT EXISTS builder_packages_no_update BEFORE UPDATE ON builder
 BEGIN SELECT RAISE(ABORT, 'a frozen builder package is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS builder_packages_no_delete BEFORE DELETE ON builder_packages
 BEGIN SELECT RAISE(ABORT, 'a frozen builder package is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS brief_packages_no_update BEFORE UPDATE ON brief_packages
-BEGIN SELECT RAISE(ABORT, 'a stored build package is immutable'); END;
 """
 
 DIFF_LIMIT = 200_000
@@ -51,6 +50,9 @@ DIFF_LIMIT = 200_000
 def migrate(db):
     db.executescript(SCHEMA)
     if audit.is_sqlite(db):
+        # brief_packages rows move their blob to the artifact store (artifacts.migrate_blobs), so
+        # only builder_packages is guarded; a package's bytes are checked against its sha256
+        db.executescript("DROP TRIGGER IF EXISTS brief_packages_no_update;")
         db.executescript(SQLITE_GUARDS)
 
 
@@ -58,19 +60,28 @@ def migrate(db):
 
 
 def put_package(db, app_id, revision, data: bytes) -> str:
-    """Store the package bytes; returns the reference `open_package` takes."""
-    db.execute("INSERT OR IGNORE INTO brief_packages VALUES (?, ?)", (revision, data))
+    """Store the package bytes as a `builder_package` artifact (once per revision: the same
+    revision is the same bytes); returns the reference `open_package` takes."""
+    if db.execute("SELECT 1 FROM brief_packages WHERE revision = ?", (revision,)).fetchone() is None:
+        ref = artifacts.save(db, artifacts.put(data, kind="builder_package", app_id=app_id,
+                                               content_type="application/zip"))
+        db.execute("INSERT INTO brief_packages(revision, archive, artifact_id) VALUES (?, ?, ?)",
+                   (revision, b"", ref.id))
     return f"brief_packages:{revision}"
 
 
-def open_package(db, storage_ref: str) -> bytes:
+def stored_row(db, storage_ref: str):
     kind, _, key = storage_ref.partition(":")
     if kind != "brief_packages":
         raise LookupError(storage_ref)
-    row = db.execute("SELECT archive FROM brief_packages WHERE revision = ?", (key,)).fetchone()
+    row = db.execute("SELECT archive, artifact_id FROM brief_packages WHERE revision = ?", (key,)).fetchone()
     if row is None:
         raise LookupError(storage_ref)
-    return bytes(row[0])
+    return row
+
+
+def open_package(db, storage_ref: str) -> bytes:
+    return artifacts.content(db, stored_row(db, storage_ref), "archive")
 
 
 # -- revisions ----------------------------------------------------------------------------------
@@ -166,7 +177,8 @@ def freeze(db, app_id, user, approved_sha256, note, version_path):
     summary = "\n".join(([note] if note else []) + lines)
     rev = (previous["rev"] if previous else 0) + 1
     at = audit.now()
-    db.execute("INSERT OR IGNORE INTO briefs VALUES (?, ?, ?)", (current.revision, app_id, current.manifest))
+    db.execute("INSERT INTO briefs VALUES (?, ?, ?) ON CONFLICT (revision) DO NOTHING",
+               (current.revision, app_id, current.manifest))
     ref = put_package(db, app_id, current.revision, current.package)
     db.execute("""INSERT INTO builder_packages(app_id, rev, revision, sha256, size, storage_ref, approved_by,
                   approved_at, summary, diff, report) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",

@@ -30,6 +30,7 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
+import artifacts
 import redact
 import scenarios
 
@@ -151,7 +152,7 @@ def manifest(db, app_id):
     for row in db.execute("SELECT * FROM attachments WHERE app_id = ? ORDER BY id", (app_id,)):
         path = f"attachments/{row['id']}{row['extension']}"
         share = row["share"] if "share" in row.keys() else "restricted"
-        content, outcome, reasons = redact.attachment(bytes(row["content"]), row["extension"], share)
+        content, outcome, reasons = redact.attachment(artifacts.content(db, row, "content"), row["extension"], share)
         if outcome != "included":
             report.append({"item": f"Attachment {row['id']}: {row['title']}", "kind": row["kind"],
                            "path": path, "outcome": outcome, "reasons": reasons})

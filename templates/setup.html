@@ -11,6 +11,13 @@
     <p><a href="{{ url_for('build_setup') }}">Build with Devin</a>: Devin and GitHub credentials, repository connections, storage and the build worker.</p>
     <h2>Automations</h2>
     <p><a href="{{ url_for('automations') }}">Automations</a>: the bots and processes recordings are made for, and the applications they touch.</p>
+    <h2>Artifact storage</h2>
+    <p class="muted">Where evidence, frozen build packs, reports and release downloads are kept. Set with <code>TWINLAB2_ARTIFACT_BACKEND</code> and the <code>TWINLAB2_S3_*</code> variables; credentials come from the environment and are never shown here.</p>
+    <dl id="artifact-storage">
+      {% for name, value in storage.items() %}
+        <dt>{{ name | replace("_", " ") }}</dt><dd>{% if value is sameas true %}yes{% elif value is sameas false %}no{% else %}{{ value }}{% endif %}</dd>
+      {% endfor %}
+    </dl>
   </section>
   <section>
     <h2>Applications</h2>

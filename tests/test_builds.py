@@ -144,7 +144,7 @@ class BuildTest(unittest.TestCase):
         self.assertIn(build["idempotency_tag"], session["tags"])
         self.assertIn(BASE, session["prompt"])
         uploaded = self.devin.attachments[session["attachment_urls"][0].rsplit("/", 1)[-1]]  # the multipart body
-        archive = bytes(self.db().execute("SELECT archive FROM brief_packages WHERE revision = ?", (revision,)).fetchone()[0])
+        archive = builds.stored_archive(self.db(), build["app_id"], revision)  # the pack's artifact
         self.assertEqual(hashlib.sha256(archive).hexdigest(), frozen)
         self.assertIn(archive, uploaded)
         self.assertIn("BUILD_TASK.md", ZipFile(io.BytesIO(archive)).namelist())

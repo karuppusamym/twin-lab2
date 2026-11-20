@@ -67,8 +67,9 @@ portal keeps the machine's contract version and recorder and shows them on the M
 
 ### References of a recorded session: `POST /api/agent/references`
 
-This is the only recording upload. The recording itself stays on the PC. The recorder sends the
-applications it recorded and, for each one, the steps as labels.
+This message holds no recording: the recorder sends the applications it recorded and, for each
+one, the steps as labels. The recording itself stays on the PC unless the person uploads it
+(Recording uploads, below).
 
 | Field | Required | Rule |
 |---|---|---|
@@ -171,6 +172,70 @@ Catalogs from before 1.1 are migrated at start-up (`event_ids.migrate`): stored 
 get their derived ids, and selections, suggestions and scenario links by number become links by
 `event_id`. Build briefs already exported are kept as they were.
 
+### Recording uploads: `/api/uploads`
+
+A recording file (TwinLabRecorder sends the session folder as a ZIP) goes up only when the person
+uploads it, through a resumable upload. This API is an addition within contract 1.x: it changes
+no message above, and a portal without it answers `404`, which leaves the upload queued on the PC.
+The portal checks `contract_version` at init exactly as for pairing (see Version).
+
+1. **Init**: `POST /api/uploads` with the machine token.
+
+   ```json
+   {"contract_version": "1.1.0", "session_id": "20261119T100000Z-0a1b2c3d", "size": 5242887,
+    "sha256": "<64 lowercase hex>", "content_type": "application/zip"}
+   ```
+
+   | Field | Required | Rule |
+   |---|---|---|
+   | `contract_version` | yes | see Version |
+   | `session_id` | yes | the recorded session (`session.id` of its references). The recording is `ws-<session_id>`. |
+   | `size` | yes | bytes, at least 1, at most the portal's limit (`TWINLAB2_UPLOAD_MAX`, 4 GiB by default) |
+   | `sha256` | yes | of the whole file, 64 lowercase hex characters |
+   | `content_type` | no | `application/zip` (the default), `application/x-ndjson`, `application/json` or `application/octet-stream` |
+
+   The answer (`201` for a new upload, `200` for one already under way or confirmed):
+
+   ```json
+   {"upload_id": "…", "upload_token": "…", "expires_at": "2026-11-20T10:00:00+00:00",
+    "state": "receiving", "received_bytes": 0, "total_bytes": 5242887, "chunk_size": 8388608,
+    "mode": "portal", "recording_id": "ws-20261119T100000Z-0a1b2c3d", "sha256": "…", "last_error": null}
+   ```
+
+   `upload_token` is the **upload authorisation**: it is valid for this upload only, until
+   `expires_at` (an hour by default), and goes in `Authorization: Bearer <upload_token>` on the
+   calls below. Init again with the same `session_id`, `size` and `sha256` to resume: the answer
+   is the same `upload_id` with a new token (the old one stops working) and the offset received
+   so far. Init with another `sha256` replaces an upload of that session still in progress. A
+   session recorded by another machine is refused with `409`.
+
+2. **Where to resume**: `GET /api/uploads/<upload_id>` answers the same fields (and the header
+   `Upload-Offset`). `received_bytes` is read from storage, so it is right after a portal restart.
+   In `direct` mode, `parts` lists the parts storage has: `{"number", "size"}`.
+
+3. **Send the rest**, in chunks of exactly `chunk_size` bytes except the last:
+   - `mode: "portal"`: `PUT /api/uploads/<upload_id>?offset=<received_bytes>` with the chunk as
+     the body (`application/octet-stream`). The answer is `{"received_bytes", "total_bytes"}`. A
+     chunk at another offset is refused with `409` and the `received_bytes` to resume at.
+   - `mode: "direct"` (S3 storage the PC may reach): `POST /api/uploads/<upload_id>/parts` with
+     `{"parts": [1, 2, …]}` (at most 100) answers `{"urls": {"1": "https://…"}, "expires_in": 900}`.
+     PUT part *n* (bytes `(n-1)·chunk_size` onwards) to its URL, without the portal's headers.
+     The URLs are HTTPS (HTTP only for storage on the same machine).
+
+4. **Finish**: `POST /api/uploads/<upload_id>/complete`. The portal reads the whole file back and
+   checks its SHA-256. Only when it matches is the upload `confirmed` (`200`, with
+   `"artifact": {"sha256", "size", "kind": "restricted_evidence", "created_at"}`); the recorder
+   may then delete its copy. A mismatch answers `422`, the upload becomes `rejected` with
+   `last_error`, and what was received is deleted: init again to send the file again. Complete
+   before everything arrived answers `409` with `received_bytes`.
+
+States: `receiving`, `verifying`, `confirmed`, `rejected`. An expired upload token answers `401`
+with `"expired": true`: init again to resume.
+
+The portal's own pages read an upload's progress at `GET /api/recordings/<recording_id>/upload`
+(signed-in users, not the recorder): `{"state", "received_bytes", "total_bytes", "last_error"}`,
+`state` `none` when the recording has no upload.
+
 ## What the portal records
 
 For each recording, the portal keeps the table `recording_contracts`: the contract version, the
@@ -198,6 +263,10 @@ it is. A resend with different completeness withdraws that acceptance.
   commit's collectors emit 1.0.0, which is the `contract_version` in `twinlab.lock.json`; the pin
   moves to collectors that assign event ids at capture time once Twin Lab has them.
 - **The portal** (`registry.py`) checks every pairing and upload with `recorder_contract.validate`.
+  `uploads.py` serves recording uploads and stores them with `artifacts.py`.
+- **The recorder's upload queue** (`agent/upload_queue.py`, commands `upload` and `uploads`) keeps
+  each upload on disk, resumes it after a restart or a network failure, and deletes its copy only
+  once the portal confirms.
 
 ## Changing the contract
 
