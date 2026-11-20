@@ -32,6 +32,8 @@ import yaml
 import audit
 import auth
 from auth import require_role
+import completeness as compl
+import event_ids
 import recorder_contract as contract
 
 SCHEMA = """
@@ -79,6 +81,10 @@ CREATE TABLE IF NOT EXISTS recording_contracts (
     recorder TEXT NOT NULL, recorder_version TEXT NOT NULL, twinlab_commit TEXT,
     received_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS recording_completeness (
+    recording_id TEXT PRIMARY KEY REFERENCES recordings(id), completeness TEXT, preflight TEXT,
+    accepted_by TEXT, accepted_at TEXT, updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS machine_contracts (
     machine_id INTEGER PRIMARY KEY REFERENCES machines(id), contract_version TEXT NOT NULL,
     recorder TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -96,7 +102,8 @@ KEY = re.compile(r"^(desktop:[^\x00-\x1f]{1,200}|exe:[\w .()+-]{1,80}\.exe"
                  r"|mainframe:[\w.\-\[\]:]{1,200}:\d{1,5})$",
                  re.I)  # fmt: skip
 SESSION_KEY = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$")
-FLOW_FIELDS = {"n": int, "action": str, "control": str, "label": str, "screen": str, "key": str}
+FLOW_FIELDS = {"n": int, "action": str, "control": str, "label": str, "screen": str, "key": str,
+               "channel": str, "captured_at": str, "seq": int}  # and event_id, checked on its own
 
 
 def now():
@@ -243,6 +250,7 @@ def clean_references(doc):
     keys = {a["key"] for a in apps}
     flows = {}
     raw_flows = doc.get("flows") if isinstance(doc.get("flows"), dict) else {}
+    seen_ids = set()
     for key, steps in raw_flows.items():
         nkey = normalise_key(key)
         if nkey not in keys or not isinstance(steps, list):
@@ -260,6 +268,16 @@ def clean_references(doc):
                     kind is int or (0 < len(value) <= 160 and not re.search(r"[\x00-\x1f]", value))
                 ):
                     row[field] = value
+            if row.get("channel") not in (None, *compl.CHANNELS):
+                del row["channel"]
+            if step.get("event_id") is not None:
+                event_id = event_ids.clean(step["event_id"])
+                if event_id is None:
+                    raise ValueError("event_id")
+                if event_id in seen_ids:
+                    raise ValueError(f"event_id {event_id} appears twice")
+                seen_ids.add(event_id)
+                row["event_id"] = event_id
             clean.append(row)
         flows[nkey] = clean
     timeline = []
@@ -271,8 +289,33 @@ def clean_references(doc):
         if app is None or (app != "presence" and app not in keys):
             raise ValueError("timeline app")
         timeline.append({"app": app, "steps": run["steps"]})
-    return {"format": "twinlab-references/1", "session": out_session, "apps": apps,
-            "flows": flows, "timeline": timeline}  # fmt: skip
+    out = {"format": "twinlab-references/1", "session": out_session, "apps": apps,
+           "flows": flows, "timeline": timeline}  # fmt: skip
+    for name, cleaner in (("completeness", compl.clean), ("preflight", compl.clean_preflight)):
+        value = cleaner(doc.get(name))
+        if value is not None:
+            out[name] = value
+    return out
+
+
+def recording_status(db, recording_id):
+    """What the pages say about a recording's completeness: the recorder's report (None from an
+    older recorder or an imported event log), its preflight, the owner's acceptance, and the
+    sentence and label to show. `attention` is True for a partial or failed recording nobody has
+    accepted: a stopped recording is not complete by itself."""
+    row = db.execute("SELECT * FROM recording_completeness WHERE recording_id = ?", (recording_id,)).fetchone()
+    workstation = db.execute("SELECT 1 FROM session_refs WHERE recording_id = ?", (recording_id,)).fetchone()
+    data = json.loads(row["completeness"]) if row is not None and row["completeness"] else None
+    accepted = bool(row is not None and row["accepted_at"])
+    if data is None:
+        text = compl.UNKNOWN_OLDER if workstation else compl.UNKNOWN_IMPORTED
+    else:
+        text = compl.summary(data)
+    return {"completeness": data, "accepted": accepted,
+            "accepted_by": row["accepted_by"] if accepted else None, "accepted_at": row["accepted_at"] if accepted else None,
+            "preflight": json.loads(row["preflight"]) if row is not None and row["preflight"] else None,
+            "summary": text, "label": compl.label(data, accepted), "attention": compl.needs_attention(data, accepted),
+            "workstation": bool(workstation)}
 
 
 def contract_refusal(error):
@@ -615,7 +658,7 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
             out.append((app_id, item["key"], rest, created))
         return out
 
-    def link_evidence(app_id, recording_id, numbers, seen):
+    def link_evidence(app_id, recording_id, numbers, seen):  # numbers: the event ids received
         """The application's evidence link to the recording. A first receipt (or one the owner
         has not reviewed yet) selects every step, as before. Once the owner has reviewed the
         selection it is never changed by a resend: events that are new in the resend are kept as
@@ -668,13 +711,23 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                              (recording_id,)).fetchone()  # fmt: skip
         if owner is not None and owner["machine_id"] != machine["id"]:
             return jsonify(error="this session belongs to another machine"), 409
+        # an older recorder's steps get the id stored for them by an earlier send, else one
+        # derived now (event_ids): every reference below is to event_id, never to n or seq
+        known = event_ids.stored_ids(db(), recording_id)
+        for steps in refs["flows"].values():
+            event_ids.assign(steps, recording_id, known)
         names = {a["key"]: a.get("display") or a["key"] for a in refs["apps"]}
         events = []
         for key, steps in refs["flows"].items():
             for step in steps:
-                events.append({"seq": step["n"], "source": names.get(key, key)[:150],
-                               "action": step.get("action", "other")})  # fmt: skip
-        events.sort(key=lambda e: e["seq"])
+                event = {"event_id": step["event_id"], "seq": step.get("seq", step["n"]),
+                         "source": names.get(key, key)[:150], "action": step.get("action", "other")}
+                if step.get("captured_at"):
+                    event["time"] = step["captured_at"]
+                if step.get("channel"):
+                    event["channel"] = step["channel"]
+                events.append(event)
+        events.sort(key=lambda e: (e["seq"], e.get("time") or "", e["event_id"]))
         mapped, discovered = [], []
         with db():
             db().execute("""INSERT INTO recordings VALUES (?, ?, ?)
@@ -687,9 +740,9 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                           automation_id, json.dumps(refs), now()))  # fmt: skip
             seen = {}  # what earlier sends of this recording had, per application
             for row in db().execute("SELECT app_id, flow FROM recording_apps WHERE recording_id = ?", (recording_id,)):
-                seen.setdefault(row["app_id"], set()).update(st["n"] for st in json.loads(row["flow"]))
+                seen.setdefault(row["app_id"], set()).update(st["event_id"] for st in json.loads(row["flow"]))
             db().execute("DELETE FROM recording_apps WHERE recording_id = ?", (recording_id,))
-            received = {}  # app_id -> step numbers in this send
+            received = {}  # app_id -> event ids in this send
             for item in refs["apps"]:
                 for app_id, key, steps, created in assign_steps(item, refs["flows"].get(item["key"], [])):
                     old = db().execute("SELECT flow FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",
@@ -698,7 +751,7 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                         steps = json.loads(old["flow"]) + steps
                     db().execute("INSERT OR REPLACE INTO recording_apps VALUES (?, ?, ?, ?, ?)",
                                  (recording_id, app_id, key, item["level"], json.dumps(steps)))  # fmt: skip
-                    received.setdefault(app_id, set()).update(st["n"] for st in steps)
+                    received.setdefault(app_id, set()).update(st["event_id"] for st in steps)
                     if automation_id is not None:
                         db().execute("INSERT OR IGNORE INTO automation_apps VALUES (?, ?)", (automation_id, app_id))
                     if app_id not in mapped and app_id not in discovered:
@@ -713,6 +766,17 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                     audit.record(db(), f"machine:{machine['id']}", "role.assign", "role",
                                  f"{app_id}/{machine['paired_by']}", app_id=app_id, user=machine["paired_by"],
                                  role="owner", previous=None, reason="paired the machine that discovered it")
+            report = refs.get("completeness")
+            old = db().execute("SELECT * FROM recording_completeness WHERE recording_id = ?", (recording_id,)).fetchone()
+            text = json.dumps(report, sort_keys=True) if report else None
+            # an owner's acceptance of a partial recording holds only for what they accepted
+            accepted = (old["accepted_by"], old["accepted_at"]) if old is not None and old["completeness"] == text else (None, None)
+            db().execute("""INSERT INTO recording_completeness VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(recording_id) DO UPDATE SET completeness = excluded.completeness,
+                            preflight = excluded.preflight, accepted_by = excluded.accepted_by,
+                            accepted_at = excluded.accepted_at, updated_at = excluded.updated_at""",
+                         (recording_id, text, json.dumps(refs["preflight"], sort_keys=True) if refs.get("preflight") else None,
+                          *accepted, now()))  # fmt: skip
             if capture is not None:
                 db().execute("UPDATE capture_sessions SET status = 'recorded', recording_id = ? WHERE id = ?",
                              (recording_id, capture["id"]))  # fmt: skip
@@ -750,7 +814,11 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         timeline = [dict(run, name=name_of(run["app"])) for run in payload["timeline"]]
         sender = db().execute("SELECT * FROM recording_contracts WHERE recording_id = ?",
                               (recording_id,)).fetchone()  # fmt: skip
+        status = recording_status(db(), recording_id)
         return {"ref": ref, "session": payload["session"], "timeline": timeline, "contract": sender,
+                "status": status,
+                "ranges": compl.ranges(status["completeness"], payload["session"].get("started"),
+                                       payload["session"].get("ended")),
                 "apps": [dict(a, steps=json.loads(a["flow"])) for a in apps]}  # fmt: skip
 
     def app_recordings(app_id):
@@ -771,6 +839,7 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         """, (app_id,)).fetchall()
 
     app.jinja_env.globals.update(recording_refs=recording_refs, app_recordings=app_recordings,
+                                 recording_status=lambda rid: recording_status(db(), rid),
                                  app_automations=app_automations, app_identities=identities)  # fmt: skip
 
     @app.get("/recordings")
@@ -787,7 +856,30 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
             LEFT JOIN automations ON automations.id = session_refs.automation_id
             ORDER BY session_refs.received_at DESC, recordings.name
         """).fetchall()
-        return render_template("recordings.html", recordings=[r for r in rows if reviewer_of_recording(r["id"])])
+        return render_template("recordings.html", recordings=[dict(r, status=recording_status(db(), r["id"]))
+                                                              for r in rows if reviewer_of_recording(r["id"])])
+
+    @app.post("/recordings/<recording_id>/completeness/accept")
+    @auth.signed_in
+    def accept_recording(recording_id):
+        """The owner accepts a partial or failed recording as it is: it no longer holds up the
+        journey of the applications it recorded. A resend with other completeness undoes it.
+        Restricted evidence: its uploader and the owners of the applications it is linked to."""
+        if not reviewer_of_recording(recording_id):
+            abort(403, "Only the recording's uploader and the owners of its applications can accept it.")
+        status = recording_status(db(), recording_id)
+        if status["completeness"] is None:
+            abort(404)
+        with db():
+            db().execute("UPDATE recording_completeness SET accepted_by = ?, accepted_at = ? WHERE recording_id = ?",
+                         (current_user(), now(), recording_id))  # fmt: skip
+            linked = [r[0] for r in db().execute(
+                "SELECT app_id FROM evidence WHERE recording_id = ? UNION SELECT app_id FROM recording_apps "
+                "WHERE recording_id = ?", (recording_id, recording_id))]
+            for app_id in linked or [None]:
+                record("recording.accept", "recording", recording_id, app_id=app_id,
+                       overall=status.get("overall") if isinstance(status, dict) else None)
+        return redirect(url_for("recording", recording_id=recording_id))
 
     @app.post("/apps/<int:app_id>/identity")
     @require_role("owner")
@@ -901,10 +993,16 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                 moving.append({"recording_id": row["recording_id"], "name": row["name"],
                                "selected": len(json.loads(row["selection"]))})  # fmt: skip
             else:
+                order = {e["event_id"]: e["seq"] for e in json.loads(db().execute(
+                    "SELECT events FROM recordings WHERE id = ?", (row["recording_id"],)).fetchone()[0])}
+                link = combine_links(keep, row, source["name"])
                 combined.append({"recording_id": row["recording_id"], "name": row["name"],
+                                 # what the page shows: the events' display numbers, in order
+                                 "shown": sorted(order.get(i, 0) for i in link["selection"]),
+                                 "shown_suggested": sorted(order.get(i, 0) for i in link["suggested"]),
                                  "source": json.loads(row["selection"]), "target": json.loads(keep["selection"]),
                                  "source_notes": row["notes"], "target_notes": keep["notes"],
-                                 **combine_links(keep, row, source["name"])})  # fmt: skip
+                                 **link})  # fmt: skip
         flows = db().execute("""SELECT recording_apps.recording_id, recording_apps.key, recordings.name,
                                        EXISTS (SELECT 1 FROM recording_apps t WHERE t.app_id = ?
                                                AND t.recording_id = recording_apps.recording_id
@@ -954,10 +1052,11 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                     db().execute("UPDATE recording_apps SET app_id = ? WHERE recording_id = ? AND app_id = ? AND key = ?",
                                  (into, row["recording_id"], app_id, row["key"]))  # fmt: skip
                     continue
-                steps = {st["n"]: st for st in json.loads(row["flow"])}
-                steps.update({st["n"]: st for st in json.loads(keep["flow"])})
+                steps = {st["event_id"]: st for st in json.loads(row["flow"])}
+                steps.update({st["event_id"]: st for st in json.loads(keep["flow"])})
+                merged = sorted(steps.values(), key=lambda st: (st.get("seq", st["n"]), st["event_id"]))
                 db().execute("UPDATE recording_apps SET flow = ? WHERE recording_id = ? AND app_id = ? AND key = ?",
-                             (json.dumps([steps[n] for n in sorted(steps)]), row["recording_id"], into, row["key"]))
+                             (json.dumps(merged), row["recording_id"], into, row["key"]))
                 db().execute("DELETE FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",
                              (row["recording_id"], app_id, row["key"]))  # fmt: skip
             for link in plan["combined"]:

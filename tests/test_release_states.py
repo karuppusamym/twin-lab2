@@ -14,6 +14,7 @@ from zipfile import ZipFile
 
 from support import freeze
 from portal import VERSION_PATH, add_release, create_app
+from test_registry import eid
 
 
 class VersionStub:
@@ -59,9 +60,10 @@ class ReleaseStatesTest(unittest.TestCase):
         self.app_path = self.post("/apps", name="Billing").location
         recording = self.post("/recordings", name="Invoice", log=(
             io.BytesIO(b'{"seq":1,"action":"submit","url":"http://billing.local/"}\n'), "steps.jsonl")).location
-        self.post(recording, app_id="1", event="1", notes="Invoice is saved\nwith its number")
+        recording_id = recording.rsplit("/", 1)[1]
+        self.post(recording, app_id="1", event=eid(recording_id, 1), notes="Invoice is saved\nwith its number")
         self.post(self.app_path + "/scenarios", name="Invoice is saved", expected="The invoice has its number.",
-                  event=recording.rsplit("/", 1)[1] + "#1")
+                  event=f"{recording_id}#{eid(recording_id, 1)}")
         with ZipFile(io.BytesIO(freeze(self.client, self.token, self.app_path).data)) as archive:
             self.revision = archive.read("BUILD_TASK.md").decode().split("`")[1]
             self.task = archive.read("BUILD_TASK.md").decode()

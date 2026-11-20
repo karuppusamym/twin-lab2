@@ -19,6 +19,7 @@ from zipfile import ZipFile
 import auth
 from portal import create_app
 import redact
+from test_registry import eid
 
 RECORDING_LOG = b'{"seq":1,"action":"submit","url":"http://billing.local/?customer=jane@corp.com"}\n' \
                 b'{"seq":2,"action":"click","url":"http://billing.local/"}\n'
@@ -124,8 +125,9 @@ class RoleRefusalTest(Base):
         rec = self.client.post("/recordings", headers={"X-Forwarded-User": "alice"}, data={
             "token": self.token, "name": "Invoice run", "log": (io.BytesIO(RECORDING_LOG), "steps.jsonl")})
         self.recording = rec.location.rsplit("/", 1)[1]
-        self.assertEqual(self.post(rec.location, "alice", app_id=str(self.app_id), event="1").status_code, 302)
-        self.post(f"/apps/{self.app_id}/scenarios", "alice", name="Save an invoice", event=f"{self.recording}#1")
+        self.event = eid(self.recording, 1)
+        self.assertEqual(self.post(rec.location, "alice", app_id=str(self.app_id), event=self.event).status_code, 302)
+        self.post(f"/apps/{self.app_id}/scenarios", "alice", name="Save an invoice", event=f"{self.recording}#{self.event}")
         upload = self.client.post(f"/apps/{self.app_id}/attachments", headers={"X-Forwarded-User": "alice"}, data={
             "token": self.token, "title": "Contract", "kind": "API",
             "file": (io.BytesIO(b'{"endpoint": "/invoice"}'), "contract.json")})
@@ -168,7 +170,8 @@ class RoleRefusalTest(Base):
             ("owner", "POST", f"/apps/{a}/verify-commit", {"repo": "octo/billing", "sha": "not-a-sha"}),
             ("owner", "POST", f"/apps/{a}/verification", {"target_platform": "web"}),
             ("owner", "GET", f"/recordings/{r}", {}),
-            ("owner", "POST", f"/recordings/{r}", {"app_id": str(a), "event": "1"}),
+            ("owner", "POST", f"/recordings/{r}", {"app_id": str(a), "event": self.event}),
+            ("owner", "POST", f"/recordings/{r}/completeness/accept", {}),
             ("owner", "GET", f"/apps/{a}/setup", {}),
             ("owner", "GET", f"/apps/{a}/history", {}),
             ("owner", "GET", f"/apps/{a}/build-pack/preview", {}),
@@ -176,7 +179,7 @@ class RoleRefusalTest(Base):
             ("owner", "POST", f"/apps/{a}", {"purpose": "Demo"}),
             ("owner", "POST", f"/apps/{a}/roles", {"user": "zed", "role": "viewer"}),
             ("owner", "POST", f"/apps/{a}/scenarios", {"name": "Another"}),
-            ("owner", "POST", f"/apps/{a}/scenarios/1", {"name": "Save an invoice", "event": f"{r}#1"}),
+            ("owner", "POST", f"/apps/{a}/scenarios/1", {"name": "Save an invoice", "event": f"{r}#{self.event}"}),
             ("owner", "POST", f"/apps/{a}/attachments/1/share", {"share": "reviewed"}),
             ("owner", "POST", f"/apps/{a}/identity", {"key": "Billing.exe"}),
             ("owner", "POST", f"/apps/{a}/status", {"status": "known"}),
@@ -272,7 +275,8 @@ class AuditTest(Base):
         other = self.make_app("Duplicate")
         rec = self.client.post("/recordings", headers={"X-Forwarded-User": "alice"}, data={
             "token": self.token, "name": "Run", "log": (io.BytesIO(RECORDING_LOG), "steps.jsonl")})
-        self.post(rec.location, "alice", app_id=str(app_id), event="1", notes="Saves the invoice")
+        self.post(rec.location, "alice", app_id=str(app_id), event=eid(rec.location.rsplit("/", 1)[1], 1),
+                  notes="Saves the invoice")
         self.post(f"/apps/{app_id}/scenarios", "alice", name="Save")
         self.client.post(f"/apps/{app_id}/attachments", headers={"X-Forwarded-User": "alice"}, data={
             "token": self.token, "title": "Shot", "kind": "Screen", "file": (io.BytesIO(png()), "shot.png")})

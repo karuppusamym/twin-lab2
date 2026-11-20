@@ -172,11 +172,10 @@ def freeze(db, app_id, user, approved_sha256, note, version_path):
                   approved_at, summary, diff, report) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                (app_id, rev, current.revision, current.sha256, len(current.package), ref, user, at,
                 summary, diff, json.dumps(current.report, ensure_ascii=False)))
-    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    if "frozen_packs" in tables:  # the index Build with Devin (builds.py) references
-        if db.execute("SELECT 1 FROM frozen_packs WHERE revision = ?", (current.revision,)).fetchone() is None:
-            db.execute("INSERT INTO frozen_packs (revision, app_id, sha256, frozen_by, frozen_at) VALUES (?, ?, ?, ?, ?)",
-                       (current.revision, app_id, current.sha256, user, at))
+    # frozen_packs: the index Build with Devin (builds.py) references
+    if db.execute("SELECT 1 FROM frozen_packs WHERE revision = ?", (current.revision,)).fetchone() is None:
+        db.execute("INSERT INTO frozen_packs (revision, app_id, sha256, frozen_by, frozen_at) VALUES (?, ?, ?, ?, ?)",
+                   (current.revision, app_id, current.sha256, user, at))
     audit.record(db, user, "package.freeze", "builder_package", f"{app_id}/rev{rev}", app_id=app_id,
                  rev=rev, sha256=current.sha256, revision=current.revision, summary=summary,
                  report=current.summary())
