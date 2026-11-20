@@ -76,7 +76,7 @@
     <h2>Releases</h2>
     {% for release in releases %}
       <p><a href="{{ url_for('release', release_id=release.id) }}">{{ release.version }}</a>
-        <code>{{ release.commit_sha[:12] }}</code></p>
+        <code>{{ release.commit_sha[:12] }}</code> <span class="badge {{ release.state }}">{{ release.state | capitalize }}</span></p>
     {% else %}
       <p>Register a committed demo with the release command in the project README.</p>
     {% endfor %}

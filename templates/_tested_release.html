@@ -1,0 +1,15 @@
+{# The latest tested release of a catalog app: `release` from portal.tested_releases(). #}
+{% if release %}
+<div class="tested-release">
+  <span>Tested release <a href="{{ url_for('release', release_id=release.id) }}">{{ release.version }}</a></span>
+  <span class="badge {{ release.state }}">{{ release.state | capitalize }}</span>
+  <span class="muted">{{ release.counts.pass }} pass · {{ release.counts.fail }} fail · {{ release.counts["not-run"] }} not run · {{ release.platform }}</span>
+  <span class="actions">
+    {% if release.deployment %}
+      <a class="button" href="{{ release.deployment.url }}">Open demo</a>
+      <span class="badge {{ release.deployment.verification }}">{{ deployment_label(release.deployment) }}</span>
+    {% endif %}
+    <a class="button secondary" href="{{ url_for('download_release', release_id=release.id) }}">Download tested release</a>
+  </span>
+</div>
+{% endif %}

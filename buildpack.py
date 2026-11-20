@@ -128,7 +128,7 @@ def manifest(db, app_id):
     return data, files
 
 
-def task_markdown(data, revision):
+def task_markdown(data, revision, version_path):
     out = [f"# Build {data['app']['name']}", "", f"Brief revision `{revision}`", ""]
     out += ["Build a repeatable copy of this application for the business scenarios below. "
             "`evidence.json` has the same scenarios with the recorded events (screen, control and label), "
@@ -160,15 +160,19 @@ def task_markdown(data, revision):
     if data["unresolved_questions"]:
         out += ["## Other unresolved questions", ""]
         out += [f"- {q}" for q in data["unresolved_questions"]] + [""]
+    out += ["## Version endpoint", "",
+            f"A server demo answers `GET /{version_path}` (relative to its deployed URL) with HTTP 200 "
+            "and JSON `{\"commit\": \"<full 40-character Git commit it was built from>\"}`, so the "
+            "catalog can verify which release a deployment runs.", ""]
     return "\n".join(out)
 
 
-def build(db, app_id):
+def build(db, app_id, version_path):
     """(revision, manifest JSON text, {path: bytes} in archive order, archive bytes)."""
     data, attachments = manifest(db, app_id)
     contents = json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2)
     revision = hashlib.sha256(contents.encode("utf-8")).hexdigest()
-    files = {"BUILD_TASK.md": task_markdown(data, revision).encode("utf-8"),
+    files = {"BUILD_TASK.md": task_markdown(data, revision, version_path).encode("utf-8"),
              "evidence.json": contents.encode("utf-8"), **attachments}
     return revision, contents, files, archive(files)
 
