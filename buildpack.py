@@ -11,10 +11,18 @@ Raw capture never enters a pack: the references payload a recorder sent (kept in
 schema stay in the catalog database or on the recording machine. `build` reads only the
 projected events, the flow labels and the owner-written scenarios.
 
+Uploaded evidence is *restricted*: an attachment enters the pack only once the owner has marked
+it reviewed or synthetic, and then only after `redact` has removed what it recognises (HAR
+credentials and bodies, sensitive JSON fields, image metadata, e-mail addresses, card numbers,
+…). Every string the pack carries passes the same text rules. `draft` returns, beside the pack,
+the pre-freeze report: each item excluded or redacted, and why.
+
 The archive is deterministic (sorted JSON, fixed ZIP timestamps), so the same catalog state
 gives the same bytes; the portal stores each revision and serves the stored bytes.
 """
 
+from collections import Counter
+from dataclasses import dataclass, field
 import hashlib
 import io
 import json
@@ -22,10 +30,11 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
+import redact
 import scenarios
 
 FORMAT = 2
-TEXT_EXTENSIONS = {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".sql"}
+TEXT_EXTENSIONS = {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".sql", ".har"}
 NAMED_KEY = re.compile(
     r"^(?:(?:Ctrl|Control|Alt|Shift|Win|Meta|Cmd)\+)*(?:Enter|Return|Tab|Esc|Escape|Backspace|Delete|Del|Insert"
     r"|Home|End|PageUp|PageDown|Page_Up|Page_Down|Up|Down|Left|Right|Arrow(?:Up|Down|Left|Right)|Space|F\d{1,2})$"
@@ -114,18 +123,41 @@ def manifest(db, app_id):
     items = [scenario_entry(s, events) for s in scenarios.load(db, app_id)]
     used = {ref for s in scenarios.load(db, app_id) for ref in s["events"]}
     unlinked = sorted(set(events) - used)
-    attachments = []
-    files = {}
+    attachments, files, report = [], {}, []
     for row in db.execute("SELECT * FROM attachments WHERE app_id = ? ORDER BY id", (app_id,)):
         path = f"attachments/{row['id']}{row['extension']}"
-        files[path] = bytes(row["content"])
-        attachments.append({"path": path, "title": row["title"], "kind": row["kind"],
-                            "sha256": hashlib.sha256(files[path]).hexdigest()})
+        share = row["share"] if "share" in row.keys() else "restricted"
+        content, outcome, reasons = redact.attachment(bytes(row["content"]), row["extension"], share)
+        if outcome != "included":
+            report.append({"item": f"Attachment {row['id']}: {row['title']}", "kind": row["kind"],
+                           "path": path, "outcome": outcome, "reasons": reasons})
+        if content is None:
+            continue
+        files[path] = content
+        attachments.append({"path": path, "title": redact.redact_text(row["title"]), "kind": row["kind"],
+                            "share": share, "sha256": hashlib.sha256(content).hexdigest()})
     data = {
         "format": FORMAT, "app": dict(app), "scenarios": items, "evidence": linked, "attachments": attachments,
         "unresolved_questions": [f"Selected event {ref} is not part of any scenario." for ref in unlinked],
     }
-    return data, files
+    for section, label in (("scenarios", "Scenario text"), ("evidence", "Recorded steps and notes")):
+        found = Counter()
+        data[section] = redact_strings(data[section], found)
+        if found:
+            report.append({"item": f"{label} in evidence.json", "kind": "text", "path": "evidence.json",
+                           "outcome": "redacted", "reasons": redact.describe(found)})
+    return data, files, report
+
+
+def redact_strings(value, found):
+    """Every string in the value through the text rules (keys are the pack's own schema)."""
+    if isinstance(value, dict):
+        return {k: redact_strings(v, found) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact_strings(v, found) for v in value]
+    if isinstance(value, str):
+        return redact.redact_text(value, found)
+    return value
 
 
 def task_markdown(data, revision, version_path):
@@ -167,14 +199,50 @@ def task_markdown(data, revision, version_path):
     return "\n".join(out)
 
 
-def build(db, app_id, version_path):
-    """(revision, manifest JSON text, {path: bytes} in archive order, archive bytes)."""
-    data, attachments = manifest(db, app_id)
+@dataclass
+class Draft:
+    """A pack built from the catalog's current state, not yet frozen."""
+    revision: str  # SHA-256 of evidence.json
+    manifest: str  # evidence.json text
+    files: dict  # path -> bytes, in archive order
+    package: bytes  # the ZIP
+    report: list = field(default_factory=list)  # items excluded or redacted, with reasons
+
+    @property
+    def sha256(self):
+        return hashlib.sha256(self.package).hexdigest()
+
+    @property
+    def excluded(self):
+        return [item for item in self.report if item["outcome"] == "excluded"]
+
+    @property
+    def redacted(self):
+        return [item for item in self.report if item["outcome"] == "redacted"]
+
+    def summary(self):
+        """The report in one line: N items excluded, reasons; M items redacted."""
+        reasons = Counter(reason for item in self.excluded for reason in item["reasons"])
+        text = f"{len(self.excluded)} item{'s' if len(self.excluded) != 1 else ''} excluded"
+        if reasons:
+            text += ": " + "; ".join(f"{n} × {reason}" if n > 1 else reason for reason, n in reasons.items())
+        text += f". {len(self.redacted)} item{'s' if len(self.redacted) != 1 else ''} redacted."
+        return text
+
+
+def draft(db, app_id, version_path):
+    data, attachments, report = manifest(db, app_id)
     contents = json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2)
     revision = hashlib.sha256(contents.encode("utf-8")).hexdigest()
     files = {"BUILD_TASK.md": task_markdown(data, revision, version_path).encode("utf-8"),
              "evidence.json": contents.encode("utf-8"), **attachments}
-    return revision, contents, files, archive(files)
+    return Draft(revision, contents, files, archive(files), report)
+
+
+def build(db, app_id, version_path):
+    """(revision, manifest JSON text, {path: bytes} in archive order, archive bytes)."""
+    d = draft(db, app_id, version_path)
+    return d.revision, d.manifest, d.files, d.package
 
 
 def archive(files):

@@ -1,12 +1,44 @@
 {% extends "base.html" %}
-{% block title %}Build pack preview · {{ item.name }} · TwinLab2{% endblock %}
+{% block title %}Builder package preview · {{ item.name }} · TwinLab2{% endblock %}
 {% block content %}
-<h1>Build pack preview: <a href="{{ url_for('demo', app_id=item.id) }}">{{ item.name }}</a></h1>
+<h1>Builder package preview: <a href="{{ url_for('demo', app_id=item.id) }}">{{ item.name }}</a></h1>
+<p class="muted">This draft is what freezing stores and what the builder will get: {{ files | length }} file{{ "s" if files | length != 1 }},
+  {{ size }} bytes, archive SHA-256 <code id="archive-sha256">{{ sha256 }}</code>. Revision <code>{{ revision }}</code>.
+  Nothing here is shared until you approve it.</p>
+
+<section id="report">
+  <h2>Pre-freeze report</h2>
+  <p id="report-summary"><strong>{{ draft.summary() }}</strong></p>
+  {% if draft.report %}
+  <table class="flow">
+    <thead><tr><th>Item</th><th>Outcome</th><th>Reasons</th></tr></thead>
+    <tbody>{% for entry in draft.report %}
+      <tr class="report-{{ entry.outcome }}"><td>{{ entry.item }}</td><td>{{ entry.outcome }}</td><td>{{ entry.reasons | join("; ") }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% else %}
+  <p>Nothing was excluded or redacted.</p>
+  {% endif %}
+</section>
+
+<section id="approve">
+  <h2>Approve for the builder</h2>
+  {% if unchanged %}
+    <p>Nothing changed since <a href="{{ url_for('package', app_id=item.id, rev=latest.rev) }}">revision {{ latest.rev }}</a>, which is still the latest package.</p>
+  {% else %}
+  <form method="post" action="{{ url_for('freeze_package', app_id=item.id) }}">
+    <input type="hidden" name="token" value="{{ session.form_token }}">
+    <input type="hidden" name="sha256" value="{{ sha256 }}">
+    <label>Change summary {% if latest %}(since revision {{ latest.rev }}){% endif %}
+      <textarea name="summary" rows="2" placeholder="What changed and why"></textarea></label>
+    <label class="check"><input name="approve" type="checkbox" value="yes" required>
+      I reviewed this package and approve exactly these bytes (SHA-256 {{ sha256[:12] }}…) for the builder.</label>
+    <button>Freeze as revision {{ (latest.rev if latest else 0) + 1 }}</button>
+  </form>
+  {% endif %}
+</section>
+
 <section>
-  <p>This is exactly what the download contains: {{ files | length }} file{{ "s" if files | length != 1 }},
-    {{ size }} bytes, archive SHA-256 <code id="archive-sha256">{{ sha256 }}</code>.
-    Revision <code>{{ revision }}</code>.</p>
-  <p><a href="{{ url_for('download_brief', app_id=item.id, revision=revision) }}">Download this build pack</a></p>
   <table class="flow">
     <thead><tr><th>File</th><th>Bytes</th><th>SHA-256</th></tr></thead>
     <tbody>{% for file in files %}

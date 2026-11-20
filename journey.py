@@ -130,10 +130,11 @@ def app_journey(
                          "Twin Lab steps.jsonl.")
         examples_href, examples_action = "/sessions", "Request a recording"
     if briefs:
-        build_hint = ("Have the app built from the build pack, then register the committed build "
-                      "as a release (README: Releases).")
+        build_hint = ("Have the app built from the approved builder package, then register the "
+                      "committed build as a release (README: Releases).")
     else:
-        build_hint = "Download the build pack and have the app built from it."
+        build_hint = ("Preview the builder package, check its pre-freeze report, approve and "
+                      "freeze it, and have the app built from it.")
     if latest:
         verify_hint = (f"Replay the recorded examples against release {latest['version']} and mark "
                        "it tested.")
@@ -148,8 +149,9 @@ def app_journey(
              "Review the recorded examples and add a business scenario for each outcome the "
              "demo must reproduce: starting conditions, actions, expected result, failure cases.",
              f"{base}#behaviour", "Add a scenario"),
-        Step("build", JOURNEY[3], bool(releases), build_hint, f"{base}#build",
-             "Register a release" if briefs else "Download build pack"),
+        Step("build", JOURNEY[3], bool(releases), build_hint,
+             f"{base}#build" if briefs else f"{base}/build-pack/preview",
+             "Register a release" if briefs else "Freeze builder package"),
         Step("verify", JOURNEY[4], state in VERIFIED_STATES, verify_hint, release_href,
              "Verify release"),
         Step("open", JOURNEY[5], state in OPEN_STATES,
@@ -186,9 +188,15 @@ def facts(db, app) -> dict:
         "machines": db.execute("SELECT count(*) FROM machines WHERE revoked_at IS NULL").fetchone()[0],
         "examples": examples,
         "behaviour": behaviour_reviewed(db, app),
-        "briefs": count("SELECT count(*) FROM briefs WHERE app_id = ?"),
+        # frozen builder packages (briefs of catalogs from before freezing count too)
+        "briefs": count("SELECT count(*) FROM builder_packages WHERE app_id = ?") if "builder_packages" in tables(db)
+        else count("SELECT count(*) FROM briefs WHERE app_id = ?"),
         "releases": releases,
     }
+
+
+def tables(db) -> set:
+    return {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
 
 
 def behaviour_reviewed(db, app) -> bool:

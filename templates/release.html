@@ -4,10 +4,10 @@
 <p><a href="{{ url_for('demo', app_id=item.id) }}">{{ item.name }}</a></p>
 <h1>{{ item.name }} {{ release.version }} <span class="badge {{ release.state }}">{{ release.state | capitalize }}</span></h1>
 <p class="muted">Packaged → Tested → Published. A release is Tested once its test results are recorded here, and only a Tested release can be published.</p>
-<p><a href="{{ url_for('download_release', release_id=release.id) }}">Download release ZIP</a></p>
+{% if release.state == "published" or builder %}<p><a href="{{ url_for('download_release', release_id=release.id) }}">Download release ZIP</a></p>{% endif %}
 <dl class="release-details">
   <dt>Git commit</dt><dd><code>{{ release.commit_sha }}</code></dd>
-  <dt>Build brief</dt><dd><a href="{{ url_for('download_brief', app_id=item.id, revision=release.revision) }}"><code>{{ release.revision }}</code></a></dd>
+  <dt>Build brief</dt><dd>{% if builder %}<a href="{{ url_for('download_brief', app_id=item.id, revision=release.revision) }}"><code>{{ release.revision }}</code></a>{% else %}<code>{{ release.revision }}</code>{% endif %}</dd>
   <dt>ZIP checksum</dt><dd><code>{{ release.archive_sha }}</code></dd>
   {% if release.published_at %}<dt>Published</dt><dd>{{ release.published_at }}</dd>{% endif %}
 </dl>
@@ -30,7 +30,7 @@
   {% else %}
     <p>Not tested yet: what this release does is unknown until its scenarios are run.</p>
   {% endif %}
-  {% if release.state != "published" %}
+  {% if release.state != "published" and owner %}
     {% if scenarios %}
     <form method="post" action="{{ url_for('test_release', release_id=release.id) }}">
       <input type="hidden" name="token" value="{{ session.form_token }}">
@@ -55,7 +55,7 @@
       <p>The build brief names no scenarios, so this release cannot be tested. Link a recording to the app and export a new brief.</p>
     {% endif %}
   {% endif %}
-  {% if release.state == "tested" %}
+  {% if release.state == "tested" and owner %}
     <form method="post" action="{{ url_for('publish_release', release_id=release.id) }}">
       <input type="hidden" name="token" value="{{ session.form_token }}">
       <button>Publish this release</button>
@@ -68,15 +68,15 @@
   {% for deployment in deployments %}
     <h3>{{ deployment.environment }} <span class="badge {{ deployment.verification }}">{{ deployment_label(deployment) }}</span></h3>
     <p><a href="{{ deployment.url }}">Open demo</a> <span class="muted">{{ deployment_reason(deployment) }}{% if deployment.checked_at %} Checked {{ deployment.checked_at }}.{% endif %}</span></p>
-    <form class="inline" method="post" action="{{ url_for('check_deployment', release_id=release.id) }}">
+    {% if builder %}<form class="inline" method="post" action="{{ url_for('check_deployment', release_id=release.id) }}">
       <input type="hidden" name="token" value="{{ session.form_token }}">
       <input type="hidden" name="environment" value="{{ deployment.environment }}">
       <button class="secondary">Check version again</button>
-    </form>
+    </form>{% endif %}
     {% if deployment.username %}<p>Demo username <code>{{ deployment.username }}</code></p>{% endif %}
     {% if deployment.secret_ref %}<p>Demo secret reference <code>{{ deployment.secret_ref }}</code></p>{% endif %}
   {% endfor %}
-  <details class="advanced" id="deployment-setup">
+  {% if owner %}<details class="advanced" id="deployment-setup">
   <summary>Setup / Advanced: deployment configuration</summary>
   <form method="post">
     <input type="hidden" name="token" value="{{ session.form_token }}">
@@ -86,6 +86,6 @@
     <label>Demo secret reference <input name="secret_ref" placeholder="vault:demo/billing"></label>
     <button>Save deployment</button>
   </form>
-  </details>
+  </details>{% endif %}
 </section>
 {% endblock %}
