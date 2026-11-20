@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Build · {{ item.name }} · TwinLab2{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="{{ url_for('demo', app_id=item.id) }}">{{ item.name }}</a> · Build</p>
+<h1>Build {{ item.name }} with Devin</h1>
+
+{% if current %}
+<section class="nextcard">
+  <p>A build is in progress: <a href="{{ url_for('build_progress', build_id=current.id) }}">attempt {{ current.attempt }}</a>,
+    <span class="badge {{ current.state }}">{{ build_label(current.state) }}</span>. Another build can start once it finishes or is cancelled.</p>
+</section>
+{% endif %}
+
+{% if problem %}
+<section><p class="error">{{ problem }}</p></section>
+{% else %}
+<section id="pack">
+  <h2>1. The build pack</h2>
+  {% if frozen %}
+    <p><span class="badge verified">Frozen</span> by {{ frozen.frozen_by }} at {{ frozen.frozen_at[:19] | replace("T", " ") }} UTC.
+      A build sends exactly these bytes.</p>
+  {% else %}
+    <p>Review the pack, then freeze it: a build sends only a frozen pack, byte for byte.</p>
+    <form method="post" action="{{ url_for('freeze_pack', app_id=item.id) }}" class="inline">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <input type="hidden" name="revision" value="{{ pack.revision }}">
+      <button>Freeze this pack</button>
+    </form>
+  {% endif %}
+  {% include "_pack_preview.html" %}
+</section>
+
+<section id="start">
+  <h2>2. Target and budget</h2>
+  {% if devin_ready %}<p class="error">{{ devin_ready }}</p>{% endif %}
+  {% if not repos %}
+    <p class="error">No GitHub repository is connected yet: an owner connects one under
+      <a href="{{ url_for('build_setup') }}#repos">Setup, Build with Devin</a>.</p>
+  {% endif %}
+  {% if previous and previous.revision != pack.revision %}
+    <p>The previous build (attempt {{ previous.attempt }}) used revision <code>{{ previous.revision[:12] }}</code>
+      {% if previous.pr_number %}and opened <a href="{{ previous.pr_url }}">pull request #{{ previous.pr_number }}</a>{% endif %}.
+      Devin gets this pack, that revision and your summary of what changed.</p>
+    {% if changes %}<ul class="muted">{% for change in changes %}<li>{{ change }}</li>{% endfor %}</ul>{% endif %}
+  {% endif %}
+  <form method="post" action="{{ url_for('start_build', app_id=item.id) }}" id="build-form">
+    <input type="hidden" name="token" value="{{ session.form_token }}">
+    <input type="hidden" name="revision" value="{{ pack.revision }}">
+    <label>Repository
+      <select name="repo" required>
+        {% for repo in repos %}<option value="{{ repo.repo }}" data-branch="{{ repo.default_branch }}">{{ repo.repo }}</option>{% endfor %}
+      </select></label>
+    <label>Base branch <input name="base_branch" placeholder="{{ repos[0].default_branch if repos else 'main' }} (the repository's default)"></label>
+    <p class="muted">The branch is resolved to its commit when the build is queued; Devin starts from that commit.</p>
+    <label>What changed since the previous build
+      <textarea name="change_summary" rows="4" {% if previous and previous.revision != pack.revision %}required{% endif %}
+        placeholder="{{ 'Required for a later build of a changed pack' if previous else 'Optional for the first build' }}"></textarea></label>
+    <label>ACU budget <input name="acu_budget" type="number" min="1" max="1000" value="{{ budget }}" required></label>
+    <p class="muted">Sent to Devin as the session's ACU limit.</p>
+    <button {% if not frozen or current or not repos or devin_ready %}disabled{% endif %}>Build with Devin</button>
+    {% if not frozen %}<span class="muted">Freeze the pack first.</span>{% endif %}
+  </form>
+</section>
+{% endif %}
+
+{% if history %}
+<section id="history">
+  <h2>Builds</h2>
+  <table class="flow">
+    <thead><tr><th>Attempt</th><th>State</th><th>Revision</th><th>Repository</th><th>Pull request</th></tr></thead>
+    <tbody>{% for b in history %}
+      <tr><td><a href="{{ url_for('build_progress', build_id=b.id) }}">{{ b.attempt }}</a></td>
+        <td><span class="badge {{ b.state }}">{{ build_label(b.state) }}</span></td>
+        <td><code>{{ b.revision[:12] }}</code></td><td>{{ b.repo }}@{{ b.base_branch }}</td>
+        <td>{% if b.pr_number %}<a href="{{ b.pr_url }}">#{{ b.pr_number }}</a>{% endif %}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}
