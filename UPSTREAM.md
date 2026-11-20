@@ -12,11 +12,11 @@ between them through the versioned [recorder contract](RECORDER-CONTRACT.md).
 | Field | Value |
 |---|---|
 | Repository | `https://github.com/karuppusamym/twin-lab` |
-| Commit | `4385949ffd0c6878e8402083e596fb8f7a1dd00b` (twin-lab `main`, 2026-11-20: merge of #63 after #62 and #61: each collector in its own process under a supervisor, capture preflight, event ids at capture time, a durable capture journal, crash recovery and the completeness manifest) |
+| Commit | `90bdd917414a24a4da7f09fb66e8edb49ba3bfee` (twin-lab `main`, 2026-11-20: merge of #64, the desktop Driver waits for the foreground, a covered point and a filling list; on top of #61-#63: isolated collectors, capture preflight, event ids at capture time, a durable capture journal, crash recovery and the completeness manifest) |
 | Tree | `lab/labctl/labctl` |
-| Tree SHA-256 | `f6cae98133738a57e764c3dfaa7b1ce8cfb1ce72b3c38eb2efa69cdbe1390194` |
+| Tree SHA-256 | `8eea5b58d9ca2bb670a077883bf67d12413b52817525dee965267ba6dc5c323a` |
 | Recorder contract | `1.1.0` |
-| Previous pin | `430dfe538965b46ccbe824f8f2b4f415c5576483` (2026-11-19, contract 1.0.0) |
+| Previous pins | `4385949ffd0c6878e8402083e596fb8f7a1dd00b` (2026-11-20, contract 1.1.0); `430dfe538965b46ccbe824f8f2b4f415c5576483` (2026-11-19, contract 1.0.0) |
 
 ```powershell
 python -m agent.twinlab fetch
@@ -25,7 +25,7 @@ python -m agent.twinlab verify
 
 `fetch` downloads that commit's archive from GitHub. It takes only `lab/labctl/labctl`, only regular
 files, never links or paths outside the tree. It computes the tree digest and refuses the copy when
-the digest is not the lock's. The copy goes to `vendor/twin-lab-4385949ffd0c/`, which Git ignores.
+the digest is not the lock's. The copy goes to `vendor/twin-lab-90bdd917414a/`, which Git ignores.
 Without network access, use `--from-checkout <a twin-lab clone>`. It takes the same commit with
 `git archive` and passes the same check.
 
@@ -68,8 +68,8 @@ The recorder run from source then prints a note. `agent/build.py` refuses it unl
 1. Review what changed upstream in a separate twin-lab clone:
 
    ```powershell
-   git -C ../twin-lab log --oneline 4385949ffd0c6878e8402083e596fb8f7a1dd00b..origin/main -- lab/labctl/labctl
-   git -C ../twin-lab diff --stat 4385949ffd0c6878e8402083e596fb8f7a1dd00b..origin/main -- lab/labctl/labctl
+   git -C ../twin-lab log --oneline 90bdd917414a24a4da7f09fb66e8edb49ba3bfee..origin/main -- lab/labctl/labctl
+   git -C ../twin-lab diff --stat 90bdd917414a24a4da7f09fb66e8edb49ba3bfee..origin/main -- lab/labctl/labctl
    ```
 
    Read the changes to `workstation/timeline.py` (`outbox`) and `workstation/flow.py` (`label_step`)

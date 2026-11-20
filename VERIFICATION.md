@@ -31,6 +31,16 @@ The live capture used a browser. The mixed desktop test used recorded input fixt
 
 Run `python -m unittest discover -s tests -v` from the project directory to repeat the automated catalog, recovery and release checks.
 
+## Pin moved to Twin Lab 90bdd91: the desktop Driver waits itself (2026-11-20)
+
+All **Locally tested** (Windows 11, Edge, .NET 6). Twin Lab #64 moved the waits that `tests/test_agent_e2e.py` had added around the Driver (foreground lock, a covered point, a drop-down list still filling) into `labctl.desktop.drive`, so the test's `to_front()` and `patient_driver()` are gone. Upstream changed only `desktop/drive.py` and `desktop/win.py`.
+
+| Check | Result |
+|---|---|
+| Pin | Tree digest `8eea5b58…` from a clean detached worktree of twin-lab `90bdd91`; `fetch` agrees. |
+| Click-driving end to end (`TWINLAB_AGENT_E2E=1`), no test-side workarounds | Pass, 3 runs in a row. |
+| Suite | `python -m pytest`: 225 passed, 3 skipped (opt-in e2e and two live-provider tests). |
+
 ## Pin moved to Twin Lab 4385949: contract 1.1 collectors (2026-11-20)
 
 Windows 11, Python 3.13, PyInstaller 6, Twin Lab `4385949` (twin-lab #61, #62, #63). All **Locally tested**.
