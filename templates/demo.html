@@ -111,6 +111,7 @@
 <section id="build">
   <h2>4. Build</h2>
   {% if scenarios %}
+    <p><a class="button" href="{{ url_for('build_page', app_id=item.id) }}">Build with Devin</a></p>
     <p><a href="{{ url_for('preview_pack', app_id=item.id) }}">Preview build pack</a> ·
       <a href="{{ url_for('build_pack', app_id=item.id) }}">Download build pack</a></p>
   {% else %}
