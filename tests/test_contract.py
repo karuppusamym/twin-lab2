@@ -81,6 +81,7 @@ class SchemaTest(unittest.TestCase):
             ("references", dict(new, completeness=partial), True),
             ("references", dict(new, contract_version="1.7.3", future_field={"x": 1}), True),
             ("references", changed(lambda d: d.pop("preflight")), True),  # preflight is optional
+            ("references", changed(lambda d: step(d).pop("seq")), True),  # ordered by n, which equals it
             ("references", changed(lambda d: d["completeness"].update(loss_window_seconds=12.5, recovered=True)), True),
             ("references", dict(good, contract_version="1.1.0"), False),  # 1.1 needs event ids
             ("references", changed(lambda d: d.pop("completeness")), False),

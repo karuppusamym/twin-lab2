@@ -159,14 +159,13 @@
       }
     },
     "step_1_1": {
-      "description": "A step from a contract 1.1 recorder: event_id, channel, captured_at and seq are required.",
+      "description": "A step from a contract 1.1 recorder: event_id, channel and captured_at are required. seq should be sent; without it the portal orders by n, which equals it.",
       "$ref": "#/$defs/step",
       "required": [
         "n",
         "event_id",
         "channel",
-        "captured_at",
-        "seq"
+        "captured_at"
       ]
     },
     "app": {

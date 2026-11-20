@@ -123,7 +123,7 @@ Each step also carries:
 | `event_id` | yes | a UUIDv7, lowercase canonical form, assigned **when the event is captured**. Finalisation, crash recovery and reordering never change it. Unique within the recording. |
 | `channel` | yes | `web`, `desktop`, `mainframe` or `network` |
 | `captured_at` | yes | ISO-8601 UTC with milliseconds: `2026-11-20T10:02:00.123Z` (`+00:00` and microseconds are accepted) |
-| `seq` | yes | integer ≥ 0, the display order. It may be recomputed. **It is never used as a reference.** `n` stays required for 1.0 portals and equals `seq`. |
+| `seq` | should be sent | integer ≥ 0, the display order. It may be recomputed. **It is never used as a reference.** `n` stays required for 1.0 portals and equals `seq`; a step without `seq` is ordered by `n`. |
 
 The references also carry the recording's `completeness` (required in 1.1) and may carry the
 recorder's `preflight`:
