@@ -432,7 +432,7 @@ def create_app(database):
 
     def links(app_id):
         return db().execute("""
-            SELECT recordings.*, evidence.selection, evidence.notes
+            SELECT recordings.*, evidence.selection, evidence.notes, evidence.reviewed, evidence.suggested
             FROM evidence JOIN recordings ON recordings.id = evidence.recording_id
             WHERE evidence.app_id = ? ORDER BY recordings.id
         """, (app_id,)).fetchall()
@@ -624,10 +624,12 @@ def create_app(database):
             if not selected or not selected <= {event["seq"] for event in events}:
                 abort(400, "Choose one or more events from this recording.")
             with db():
+                # the owner's review: a resend never changes this selection (registry.link_evidence)
                 db().execute("""
-                    INSERT INTO evidence VALUES (?, ?, ?, ?)
+                    INSERT INTO evidence(app_id, recording_id, selection, notes, reviewed, suggested)
+                    VALUES (?, ?, ?, ?, 1, '[]')
                     ON CONFLICT(app_id, recording_id) DO UPDATE
-                    SET selection = excluded.selection, notes = excluded.notes
+                    SET selection = excluded.selection, notes = excluded.notes, reviewed = 1, suggested = '[]'
                 """, (app_id, recording_id, json.dumps(sorted(selected)),
                       request.form.get("notes", "").strip()))
             return redirect(url_for("demo", app_id=app_id))
@@ -639,6 +641,7 @@ def create_app(database):
         return render_template(
             "recording.html", item=item, events=events, app_id=app_id, saved=saved,
             selected=set(json.loads(saved["selection"])) if saved else set(),
+            suggested=set(json.loads(saved["suggested"])) if saved else set(),
             apps=db().execute("SELECT * FROM apps ORDER BY name").fetchall(),
         )
 

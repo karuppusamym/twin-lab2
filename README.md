@@ -35,6 +35,8 @@ Each capability carries one of three labels:
 | OpenShift manifest for a demo (`openshift.py`) | Implemented | Manifest wiring checked locally; never applied to a cluster |
 | Portal on OpenShift (`Dockerfile`, `deploy/openshift-portal.yaml`) | Locally tested (image), Implemented (manifest) | The image ran locally as an arbitrary UID; the manifest, OAuth proxy, route and volume have not run on a cluster |
 | Machine pairing, agent API, references mapped to applications | Locally tested | `tests/test_registry.py`, `tests/test_agent.py` |
+| Evidence integrity: a resend keeps the reviewed selection, merge with a preview, web identity by path | Locally tested | `tests/test_integrity.py` |
+| Business scenarios and build-pack preview | Locally tested | `tests/test_buildpack.py`; no coding agent has built from these packs yet |
 | Portable recorder (built program): web, desktop and synthetic mainframe | Locally tested | One developer PC, unsigned build; no managed PC, endpoint protection or AppLocker; no real mainframe or emulator |
 | UiPath: targets from a project, the robot's log | Implemented | Unit tests in Twin Lab; no real UiPath robot has been recorded |
 | Recording recovery after an interrupted capture | Locally tested | Fixture logs (`tests/test_workflow.py`) |
@@ -47,6 +49,12 @@ Each capability carries one of three labels:
 2. Give each application an identity on its **Setup / Advanced** page (its executable, such as `CaseDesk.exe`, or its web address), then **Request a recording**: name, machine, target applications (full or steps only), and optionally the automation it is for. Or start a session on the recorder itself (**My own session**).
 3. On the PC, choose the requested session and **Start**. The recorder opens its own Edge window for web targets; use the applications as the process does. **Stop recording** when done.
 4. Review what will be sent (**Recordings on this PC**) and **Send references**. The portal's **Recordings** page shows the session, its applications and the timeline across them; an application's page shows its recorded flows and the automations that touch it.
+
+Applications that share a host are told apart by path: give each one its address with its path (`https://example.test/orders`, `https://example.test/billing`) and the portal assigns each recorded web step by the path of its page, the longest matching path winning; a host-only address (`https://example.test`) takes the steps no path claims. The recorder still records the whole origin. On an application's page **Web addresses match → the whole host** is the owner's override for an application that is its whole host.
+
+The first time a recording arrives, each application's link selects all of its steps (*not yet reviewed*). Once the owner saves the assignment on the recording's page, sending the recording again never changes that selection: events new in the resend are shown as *new, not yet reviewed* and stay out of the build pack until the owner selects them.
+
+**Merge** on an application's page opens a preview first: the identities, recorded flows, linked recordings, automations, scenarios and build briefs that move, and every recording both applications link, with the combined selection and notes. A reviewed selection is not widened by an unreviewed one; those events become suggestions. Earlier build briefs and their downloads move to the surviving application. An application with releases or attachments cannot be merged.
 
 Command line: `sessions`, `record --session N` (or `--exe X.exe --origin https://…`), `show <id>`, `send <id>`, `recover`. Add `--portable-data` to keep everything in `data\` beside the program, `--ca-bundle` for a private certificate authority. Recordings are in `%LOCALAPPDATA%\TwinLabRecorder\recordings\`.
 

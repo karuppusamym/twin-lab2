@@ -18,6 +18,17 @@
       <label>Executable name, web address or mainframe host <input name="key" required placeholder="CaseDesk.exe, https://billing.example.test or tn3270://mainframe.example.test:23"></label>
       <button>Add identity</button>
     </form>
+    {% if app_identities(item.id) | selectattr("surface", "equalto", "web") | list %}
+    <form method="post" action="{{ url_for('set_url_match', app_id=item.id) }}">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <label>Web addresses match
+        <select name="url_match">
+          <option value="path" {% if item.url_match != "host" %}selected{% endif %}>by path (the longest matching path wins)</option>
+          <option value="host" {% if item.url_match == "host" %}selected{% endif %}>the whole host</option>
+        </select></label>
+      <button class="secondary">Save matching</button>
+    </form>
+    {% endif %}
   </section>
   <section id="git">
     <h2>Git repository</h2>
