@@ -12,6 +12,28 @@ Open `http://127.0.0.1:8765`. Create a demo app, import a Twin Lab `steps.jsonl`
 
 The portal is local and writes its catalog to `.state/catalog.db`. Use `--database` and `--port` to override those defaults. Run `python -m unittest discover -s tests -v` to check the catalog, recording recovery and release workflows. [Verification results](VERIFICATION.md)
 
+## TwinLabRecorder: a portable recorder that tells the portal what it recorded
+
+`TwinLabRecorder.exe` is one folder: copy it to a Windows PC and run it, with no install and no administrator rights. It records one session across the applications a person or a robot uses. The session's **target** applications are recorded in full. Every other application is recorded only as having been used, and Windows itself, Adobe, Outlook, Teams and password managers always stay that way. **The recording stays on the PC.** The portal receives only references: the applications recorded and each one's steps as labels (control ids and the application's own words, never a typed value). It maps the recording to its applications and registers an application it has not seen as *discovered*. Design: `twin-lab/docs/11-session-recorder.md`.
+
+1. In the portal, **Machines → Make a pairing code**. On the PC, run `TwinLabRecorder.exe` and choose **Pair with portal…** (or `TwinLabRecorder.exe pair --portal https://… --code ABCDE-FGHJK --name "Workstation 7"`).
+2. Give each application an identity on its page (its executable, such as `CaseDesk.exe`, or its web address), then **Sessions → Offer a session**: name, machine, target applications (full or steps only), and optionally the automation it is for. Or start a session on the recorder itself (**My own session**).
+3. On the PC, choose the offered session and **Start**. The recorder opens its own Edge window for web targets; use the applications as the process does. **Stop recording** when done.
+4. Review what will be sent (**Recordings on this PC**) and **Send references**. The portal's **Recordings** page shows the session, its applications and the timeline across them; an application's page shows its recorded flows and the automations that touch it.
+
+Command line: `sessions`, `record --session N` (or `--exe X.exe --origin https://…`), `show <id>`, `send <id>`, `recover`. Add `--portable-data` to keep everything in `data\` beside the program, `--ca-bundle` for a private certificate authority. Recordings are in `%LOCALAPPDATA%\TwinLabRecorder\recordings\`.
+
+Build the folder from a Twin Lab checkout that has `labctl.workstation`:
+
+```powershell
+$env:TWINLAB_PATH = "..\twin-lab"
+python agent\build.py
+```
+
+The build is not signed. Sign it before it runs on any machine other than a developer's: an unsigned program with keyboard hooks is likely to be stopped by endpoint protection.
+
+**The portal on OpenShift.** `Dockerfile` and `deploy/openshift-portal.yaml` run the portal behind the OpenShift OAuth proxy (people sign in with OpenShift; recorders use their machine token on `/api/agent/`). Locally it serves only this machine, or anyone with `TWINLAB2_PASSWORD`. Settings: `TWINLAB2_SECRET_KEY`, `TWINLAB2_HOSTS`, `TWINLAB2_DATABASE`, `TWINLAB2_TRUST_PROXY_USER`.
+
 ## Capture with the workstation recorder
 
 Install the recorder dependencies from a clean Twin Lab checkout and provision its browser.

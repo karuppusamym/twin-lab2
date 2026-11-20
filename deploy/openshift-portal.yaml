@@ -1,0 +1,104 @@
+# The TwinLab2 portal on OpenShift. Not applied to a real cluster yet: review before use.
+#
+#   oc create secret generic twinlab2 --from-literal=secret-key=$(openssl rand -hex 32) \
+#     --from-literal=cookie-secret=$(openssl rand -base64 32 | head -c 32)
+#   oc apply -f deploy/openshift-portal.yaml        (after setting the image and host below)
+#
+# People sign in through the OpenShift OAuth proxy; the recorders reach /api/agent/ with their
+# machine token (the proxy lets those paths through without a sign-in). One replica: the
+# catalog is SQLite on the volume.
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: twinlab2
+      annotations:
+        serviceaccounts.openshift.io/oauth-redirectreference.primary: >-
+          {"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"twinlab2"}}
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: twinlab2-data
+    spec:
+      accessModes: [ReadWriteOnce]
+      resources:
+        requests:
+          storage: 1Gi
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: twinlab2
+      labels: {app.kubernetes.io/name: twinlab2}
+    spec:
+      replicas: 1
+      strategy: {type: Recreate}
+      selector:
+        matchLabels: {app.kubernetes.io/name: twinlab2}
+      template:
+        metadata:
+          labels: {app.kubernetes.io/name: twinlab2}
+        spec:
+          serviceAccountName: twinlab2
+          containers:
+            - name: portal
+              image: REGISTRY/twinlab2-portal:TAG
+              env:
+                - name: TWINLAB2_SECRET_KEY
+                  valueFrom: {secretKeyRef: {name: twinlab2, key: secret-key}}
+                - name: TWINLAB2_HOSTS
+                  value: twinlab2.apps.example.test
+              volumeMounts:
+                - {name: data, mountPath: /data}
+              resources:
+                requests: {cpu: 50m, memory: 128Mi}
+                limits: {memory: 512Mi}
+            - name: oauth-proxy
+              image: registry.redhat.io/openshift4/ose-oauth-proxy:latest
+              args:
+                - --https-address=:8443
+                - --provider=openshift
+                - --openshift-service-account=twinlab2
+                - --upstream=http://127.0.0.1:8080
+                - --tls-cert=/etc/tls/private/tls.crt
+                - --tls-key=/etc/tls/private/tls.key
+                - --cookie-secret-file=/etc/proxy/secret/cookie-secret
+                - --pass-user-headers=true
+                - --skip-auth-regex=^/api/agent/
+                - --skip-auth-regex=^/healthz$
+              ports:
+                - {name: https, containerPort: 8443}
+              readinessProbe:
+                httpGet: {path: /oauth/healthz, port: https, scheme: HTTPS}
+              volumeMounts:
+                - {name: tls, mountPath: /etc/tls/private}
+                - {name: proxy-secret, mountPath: /etc/proxy/secret}
+          volumes:
+            - name: data
+              persistentVolumeClaim: {claimName: twinlab2-data}
+            - name: tls
+              secret: {secretName: twinlab2-tls}
+            - name: proxy-secret
+              secret:
+                secretName: twinlab2
+                items: [{key: cookie-secret, path: cookie-secret}]
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: twinlab2
+      annotations:
+        service.beta.openshift.io/serving-cert-secret-name: twinlab2-tls
+    spec:
+      selector: {app.kubernetes.io/name: twinlab2}
+      ports:
+        - {name: https, port: 443, targetPort: https}
+  - apiVersion: route.openshift.io/v1
+    kind: Route
+    metadata:
+      name: twinlab2
+    spec:
+      host: twinlab2.apps.example.test
+      to: {kind: Service, name: twinlab2}
+      port: {targetPort: https}
+      tls: {termination: reencrypt, insecureEdgeTerminationPolicy: Redirect}

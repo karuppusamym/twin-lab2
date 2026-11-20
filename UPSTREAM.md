@@ -22,3 +22,10 @@ python capture.py start .state/captures/upstream-trial --twin-lab ../twin-lab --
 ```
 
 Run the catalog checks and a representative capture with the candidate. Review any CLI, event format or sequence changes before updating this baseline. Keep historical session metadata for traceability.
+
+## Workstation recorder
+
+`agent/` imports Twin Lab's `labctl.workstation` (and the web and desktop collectors' session
+mode). Until that work is merged into Twin Lab's main branch, build and test against the branch
+that has it (`claude/new-session-6114b2`): `TWINLAB_PATH=<that checkout>`. Each build writes the
+Twin Lab commit, and whether it had uncommitted changes, into `_build.json`.

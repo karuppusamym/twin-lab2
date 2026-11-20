@@ -7,7 +7,19 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='portal.css') }}">
 </head>
 <body>
-  <header><a href="{{ url_for('home') }}">TwinLab2</a></header>
+  <header>
+    <a class="brand" href="{{ url_for('home') }}">TwinLab2</a>
+    {% if current_user() %}
+    <nav>
+      <a href="{{ url_for('home') }}">Applications</a>
+      <a href="{{ url_for('recordings') }}">Recordings</a>
+      <a href="{{ url_for('sessions') }}">Sessions</a>
+      <a href="{{ url_for('automations') }}">Automations</a>
+      <a href="{{ url_for('machines') }}">Machines</a>
+      <span class="who">{{ current_user() }}</span>
+    </nav>
+    {% endif %}
+  </header>
   <main>{% block content %}{% endblock %}</main>
 </body>
 </html>

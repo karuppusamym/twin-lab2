@@ -2,6 +2,24 @@
 {% block title %}{{ item.name }} · TwinLab2{% endblock %}
 {% block content %}
 <h1>{{ item.name }}</h1>
+{% set refs = recording_refs(item.id) %}
+{% if refs %}
+<section>
+  <h2>Recorded applications</h2>
+  <p class="muted">Recorded on {{ refs.ref.machine or "a machine since revoked" }}{% if refs.session.started %}, {{ refs.session.started[:16] | replace("T", " ") }}{% endif %}{% if refs.session.ended %} to {{ refs.session.ended[11:16] }}{% endif %}{% if refs.ref.automation %} · for {{ refs.ref.automation }}{% endif %}{% if refs.session.state == "recovered" %} · recovered after the recorder stopped{% endif %}. The recording stays on that machine at <code>recordings/{{ refs.session.id }}</code>.</p>
+  <ol class="timeline">{% for run in refs.timeline %}
+    <li class="{{ 'presence' if run.app == 'presence' else '' }}">{{ run.name }} <span class="muted">{{ run.steps }} step{{ "s" if run.steps != 1 }}</span></li>
+  {% endfor %}</ol>
+  {% for a in refs.apps %}
+    <details {% if loop.first %}open{% endif %}>
+      <summary><a href="{{ url_for('demo', app_id=a.app_id) }}">{{ a.name }}</a>
+        {% if a.status != "known" %}<span class="badge {{ a.status }}">{{ a.status | replace("_", " ") }}</span>{% endif %}
+        <span class="muted">{{ a.level }} · <code>{{ a.key }}</code></span></summary>
+      {% with steps = refs.flows[a.app_id] %}{% include "_flow.html" %}{% endwith %}
+    </details>
+  {% endfor %}
+</section>
+{% endif %}
 <p>{{ events | length }} events. Select the events and describe the outcome for the chosen demo app.</p>
 {% if apps %}
   <form method="get" id="app-picker">
