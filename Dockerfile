@@ -13,9 +13,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt "gunicorn>=23,<24"
-COPY portal.py registry.py openshift.py buildpack.py scenarios.py journey.py recorder_contract.py \
-     db.py migrations.py ./
+# every module at the root: the portal imports most of them, and a new one is not forgotten
+COPY *.py twinlab.lock.json ./
 COPY contract contract
+# release verification (independent.py) reads the Twin Lab pin through agent/twinlab.py
+COPY agent agent
 COPY templates templates
 COPY static static
 RUN mkdir -p /data && chgrp -R 0 /data /app && chmod -R g=u /data /app
