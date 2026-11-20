@@ -8,7 +8,7 @@ python -m pip install -r requirements.txt
 python portal.py
 ```
 
-Open `http://127.0.0.1:8765`. Create a demo app, import a Twin Lab `steps.jsonl`, and assign events and notes from the recording page. Save requirements on the app page and download the build pack. For an existing multi-app example, use `../rebuild-trial/judge/recording/order-to-invoice/steps.jsonl`.
+Open `http://127.0.0.1:8765`. Create a demo app, import a Twin Lab `steps.jsonl`, and assign events and notes from the recording page. On the app page, add one business scenario per outcome the copy must reproduce (starting conditions, actions linked to selected events, expected result, failure cases, synthetic example values, unresolved questions), preview the build pack file by file, and download it. Existing free-text requirements are moved into a scenario's notes. For an existing multi-app example, use `../rebuild-trial/judge/recording/order-to-invoice/steps.jsonl`.
 
 The portal is local and writes its catalog to `.state/catalog.db`. Use `--database` and `--port` to override those defaults. Run `python -m unittest discover -s tests -v` to check the catalog, recording recovery and release workflows. [Verification results](VERIFICATION.md)
 

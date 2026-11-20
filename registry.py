@@ -592,6 +592,7 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
             db().execute("UPDATE OR IGNORE automation_apps SET app_id = ? WHERE app_id = ?", (into, app_id))
             db().execute("DELETE FROM automation_apps WHERE app_id = ?", (app_id,))
             db().execute("DELETE FROM briefs WHERE app_id = ? AND revision NOT IN (SELECT revision FROM releases)", (app_id,))
+            db().execute("UPDATE scenarios SET app_id = ? WHERE app_id = ?", (into, app_id))
             db().execute("DELETE FROM apps WHERE id = ?", (app_id,))
         return redirect(url_for("demo", app_id=into))
 
