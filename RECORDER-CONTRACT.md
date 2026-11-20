@@ -257,11 +257,14 @@ it is. A resend with different completeness withdraws that acceptance.
 
 - **TwinLabRecorder** (`agent/`, version 0.2.0 or later) speaks contract 1.x. The references are
   built by Twin Lab's collectors (`labctl.workstation.timeline.outbox`) at the commit pinned in
-  `twinlab.lock.json`. That outbox does not carry `contract_version` yet. The recorder stamps the
-  version its shape is (1.1.0 when the outbox reports `completeness`, else 1.0.0) and itself on
-  the outbox, then validates it, before it sends (`agent.main.contract_references`). The pinned
-  commit's collectors emit 1.0.0, which is the `contract_version` in `twinlab.lock.json`; the pin
-  moves to collectors that assign event ids at capture time once Twin Lab has them.
+  `twinlab.lock.json`. Since `4385949` that outbox declares `contract_version` 1.1.0 itself, with
+  event ids assigned at capture time and a completeness manifest. The recorder stamps itself on
+  the outbox, then validates it, before it sends (`agent.main.contract_references`). An outbox
+  without a version (an older Twin Lab) gets the version its shape is (1.1.0 when it reports
+  `completeness`, else 1.0.0). Twin Lab also writes 1.1.0 when it rebuilds a session recorded
+  before event ids: if no step has an `event_id`, the recorder sends it as 1.0.0 without
+  `completeness` (that manifest was computed without a capture journal), and the portal derives
+  stable ids at ingest. A recording in which only some steps have ids is refused.
 - **The portal** (`registry.py`) checks every pairing and upload with `recorder_contract.validate`.
   `uploads.py` serves recording uploads and stores them with `artifacts.py`.
 - **The recorder's upload queue** (`agent/upload_queue.py`, commands `upload` and `uploads`) keeps

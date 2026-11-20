@@ -154,8 +154,13 @@ class FixtureRecordingTest(unittest.TestCase):
 
     def test_the_fixture_built_by_the_pinned_twinlab_conforms(self):
         built = json.loads(BUILT.read_text(encoding="utf-8"))
-        self.assertNotIn("contract_version", built)  # Twin Lab does not stamp it yet: the recorder does
+        # Twin Lab stamps 1.1.0 on every outbox since 4385949, also on this session, which was
+        # recorded before event ids: no step has one, so the recorder sends it as contract 1.0
+        self.assertEqual(built["contract_version"], "1.1.0")
+        self.assertFalse(any(s.get("event_id") for steps in built["flows"].values() for s in steps))
         doc = agent_main.contract_references(built)
+        self.assertEqual(doc["contract_version"], "1.0.0")
+        self.assertNotIn("completeness", doc)  # computed without a capture journal: not known
         self.assertEqual(contract.errors(doc, "references"), [])
         self.assertEqual({a["surface"] for a in doc["apps"]}, {"desktop", "web", "mainframe"})
         labels = {s.get("label") for steps in doc["flows"].values() for s in steps}
@@ -246,14 +251,29 @@ class PortalContractTest(unittest.TestCase):
 
 
 class RecorderStampTest(unittest.TestCase):
+    def test_a_recording_with_event_ids_on_only_some_steps_is_refused(self):
+        doc = references_1_1()
+        steps = [s for flow in doc["flows"].values() for s in flow]
+        self.assertGreater(len(steps), 1)
+        for field in ("event_id", "channel", "captured_at"):
+            steps[-1].pop(field, None)
+        with self.assertRaises(agent_main.PortalError) as caught:
+            agent_main.contract_references(doc)
+        self.assertIn("event_id: required", str(caught.exception))
+        self.assertEqual(agent_main.contract_references(references_1_1())["contract_version"],
+                         references_1_1()["contract_version"])  # fmt: skip
+
     def test_the_recorder_stamps_and_checks_before_sending(self):
         box = json.loads(BUILT.read_text(encoding="utf-8"))
         doc = agent_main.contract_references(box)
-        self.assertEqual(doc["contract_version"], "1.0.0")  # the pinned collectors' shape
+        self.assertEqual(doc["contract_version"], "1.0.0")  # a session recorded before event ids
         newer = {k: v for k, v in references_1_1().items() if k != "contract_version"}
         self.assertEqual(agent_main.contract_references(newer)["contract_version"], "1.1.0")
+        unstamped = {k: v for k, v in box.items() if k not in ("contract_version", "completeness")}
+        self.assertEqual(agent_main.contract_references(unstamped)["contract_version"], "1.0.0")
         self.assertEqual(doc["recorder"]["name"], "TwinLabRecorder")
-        self.assertNotIn("contract_version", box)  # the outbox on disk is left as it is
+        self.assertEqual(box["contract_version"], "1.1.0")  # the outbox on disk is left as it is
+        self.assertIn("completeness", box)
         with self.assertRaises(PortalError):
             agent_main.contract_references(dict(box, contract_version="2.0.0"))
         broken = copy.deepcopy(box)
