@@ -11,10 +11,10 @@ The first delivery follows one demo from evidence import to a coding agent's inb
 
 ## Implemented data flow
 
-- A demo app contains a name, Git URL and owner-authored build requirements.
+- A demo app contains a name, Git URL and owner-authored business scenarios.
 - Workstation recordings retain their session ID and per-channel event identity across recoveries. Standalone Twin Lab logs are identified by a digest of their input lines. Reimporting returns the same catalog entry.
 - An evidence link joins an app and recording. It stores the selected event numbers and the owner's account of the business outcome. Saving the same link again updates that selection.
-- The catalog stores a projection of each recording with action names and source labels for assignment. Build packs include selected events, owner requirements, notes and approved visual or contract attachments. Raw capture artifacts stay in the recorder's source folder.
+- The catalog stores a projection of each recording with action names and source labels for assignment. Build packs include the selected events with their reviewed screen, control and label references, the owner's structured scenarios (expected results, synthetic example values, unresolved questions), notes and approved visual or contract attachments; the portal previews a pack's exact contents before download. Raw capture artifacts stay in the recorder's source folder.
 - A ZIP contains Markdown instructions and a machine-readable evidence manifest. Its content hash identifies the exact exported brief. The app owner supplies the behavior and acceptance details needed to turn the event summary into an implementable task.
 - The release command archives a committed Git tree and associates it with the stored brief. The portal keeps previous release downloads and registers deployment URLs against a specific release.
 

@@ -54,12 +54,13 @@ class ReleaseStatesTest(unittest.TestCase):
         self.assertEqual(self.client.get("/").status_code, 200)
         with self.client.session_transaction() as session:
             self.token = session["form_token"]
-        # An app, a recording linked to it (the brief's one scenario), its brief and a release.
+        # An app, a recording linked to it, the brief's one scenario, its brief and a release.
         self.app_path = self.post("/apps", name="Billing").location
-        self.post(self.app_path, requirements="Build Billing.")
         recording = self.post("/recordings", name="Invoice", log=(
             io.BytesIO(b'{"seq":1,"action":"submit","url":"http://billing.local/"}\n'), "steps.jsonl")).location
         self.post(recording, app_id="1", event="1", notes="Invoice is saved\nwith its number")
+        self.post(self.app_path + "/scenarios", name="Invoice is saved", expected="The invoice has its number.",
+                  event=recording.rsplit("/", 1)[1] + "#1")
         with ZipFile(io.BytesIO(self.client.get(self.app_path + "/build-pack").data)) as archive:
             self.revision = archive.read("BUILD_TASK.md").decode().split("`")[1]
             self.task = archive.read("BUILD_TASK.md").decode()
@@ -72,7 +73,7 @@ class ReleaseStatesTest(unittest.TestCase):
         self.git("add", "run.py")
         self.git("commit", "-qm", "Release")
         self.commit = add_release(self.database, 1, "1.0", self.revision, self.repo, "HEAD")
-        self.scenario = "result:recording:" + recording.rsplit("/", 1)[1]
+        self.scenario = "result:scenario-1"
 
     def git(self, *args):
         return subprocess.check_output(["git", "-C", str(self.repo), *args], text=True).strip()

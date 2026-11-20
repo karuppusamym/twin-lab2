@@ -91,7 +91,7 @@ class ResendTest(Base):
         self.assertIn("new, not yet reviewed", self.client.get(f"/recordings/{RECORDING}?app_id=1").data.decode())
         self.assertIn("1 new, not yet reviewed", self.client.get("/apps/1").data.decode())
         # the build pack has only the reviewed selection
-        self.post("/apps/1", requirements="A case desk")
+        self.post("/apps/1/scenarios", name="Find a case")
         with ZipFile(io.BytesIO(self.client.get("/apps/1/build-pack").data)) as pack:
             evidence = json.loads(pack.read("evidence.json"))["evidence"]
         self.assertEqual([e["seq"] for e in evidence[0]["events"]], [1])
@@ -119,7 +119,7 @@ class MergeTest(Base):
         self.post("/apps", name="Showcase")  # app 3
 
     def test_a_merge_keeps_historical_briefs_and_their_packages(self):
-        self.post("/apps/2", requirements="Billing screens")
+        self.post("/apps/2/scenarios", name="Save a case")
         package = self.client.get("/apps/2/build-pack")
         self.assertEqual(package.status_code, 200)
         with closing(sqlite3.connect(self.database)) as db:
@@ -128,6 +128,7 @@ class MergeTest(Base):
         page, done = self.merge(2, 3)
         self.assertIn(revision[:12], page)
         self.assertIn("kept with its download", page)
+        self.assertIn("Save a case", page)  # its scenario moves too
         self.assertEqual(done.location, "/apps/3")
         self.assertEqual(self.client.get("/apps/2").status_code, 404)
         again = self.client.get(f"/apps/3/briefs/{revision}")

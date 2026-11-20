@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt "gunicorn>=23,<24"
-COPY portal.py registry.py openshift.py ./
+COPY portal.py registry.py openshift.py buildpack.py scenarios.py ./
 COPY templates templates
 COPY static static
 RUN mkdir -p /data && chgrp -R 0 /data /app && chmod -R g=u /data /app

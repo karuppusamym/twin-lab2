@@ -727,11 +727,11 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
 
     # -- merging two applications ------------------------------------------------------------------
     # Moved to the surviving application: identities, recorded flows, evidence links,
-    # automations and historical build briefs with their packages. An evidence link both
+    # automations, scenarios and historical build briefs with their packages. An evidence link both
     # applications have to the same recording is combined (shown in the preview first); nothing
     # is dropped. Rows in any other table that refers to the application block the merge.
 
-    MOVED = {"app_identities", "recording_apps", "evidence", "automation_apps", "briefs"}
+    MOVED = {"app_identities", "recording_apps", "evidence", "automation_apps", "briefs", "scenarios"}
 
     def combine_links(keep, gone, gone_name):
         """One evidence link from two links to the same recording. A reviewed selection is never
@@ -805,6 +805,8 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
             "briefs": [{"revision": r["revision"], "package": bool(r["package"])} for r in db().execute(
                 """SELECT revision, EXISTS (SELECT 1 FROM brief_packages p WHERE p.revision = briefs.revision)
                    AS package FROM briefs WHERE app_id = ? ORDER BY revision""", (app_id,))],  # fmt: skip
+            "scenarios": [r["name"] for r in db().execute(
+                "SELECT name FROM scenarios WHERE app_id = ? ORDER BY position, id", (app_id,))],
             "blockers": blockers,
         }
         plan["fingerprint"] = sha(json.dumps(plan, sort_keys=True))[:16]
@@ -850,6 +852,10 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                          "WHERE app_id = ?", (into, app_id))  # fmt: skip
             db().execute("DELETE FROM automation_apps WHERE app_id = ?", (app_id,))
             db().execute("UPDATE briefs SET app_id = ? WHERE app_id = ?", (into, app_id))
+            # scenarios follow the target's own, in their order
+            db().execute("""UPDATE scenarios SET app_id = ?, position = position +
+                            (SELECT COALESCE(MAX(position), 0) FROM scenarios WHERE app_id = ?) WHERE app_id = ?""",
+                         (into, into, app_id))  # fmt: skip
             db().execute("DELETE FROM apps WHERE id = ?", (app_id,))
         return redirect(url_for("demo", app_id=into))
 

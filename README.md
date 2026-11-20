@@ -8,7 +8,7 @@ python -m pip install -r requirements.txt
 python portal.py
 ```
 
-Open `http://127.0.0.1:8765`. Create a demo app, import a Twin Lab `steps.jsonl`, and assign events and notes from the recording page. Save requirements on the app page and download the build pack. For an existing multi-app example, use `../rebuild-trial/judge/recording/order-to-invoice/steps.jsonl`.
+Open `http://127.0.0.1:8765`. Create a demo app, import a Twin Lab `steps.jsonl`, and assign events and notes from the recording page. On the app page, add one business scenario per outcome the copy must reproduce (starting conditions, actions linked to selected events, expected result, failure cases, synthetic example values, unresolved questions), preview the build pack file by file, and download it. Existing free-text requirements are moved into a scenario's notes. For an existing multi-app example, use `../rebuild-trial/judge/recording/order-to-invoice/steps.jsonl`.
 
 The portal is local and writes its catalog to `.state/catalog.db`. Use `--database` and `--port` to override those defaults. Run `python -m unittest discover -s tests -v` to check the catalog, recording recovery and release workflows. [Verification results](VERIFICATION.md)
 
@@ -25,7 +25,7 @@ Applications that share a host are told apart by path: give each one its address
 
 The first time a recording arrives, each application's link selects all of its steps (*not yet reviewed*). Once the owner saves the assignment on the recording's page, sending the recording again never changes that selection: events new in the resend are shown as *new, not yet reviewed* and stay out of the build pack until the owner selects them.
 
-**Merge** on an application's page opens a preview first: the identities, recorded flows, linked recordings, automations and build briefs that move, and every recording both applications link, with the combined selection and notes. A reviewed selection is not widened by an unreviewed one; those events become suggestions. Earlier build briefs and their downloads move to the surviving application. An application with releases or attachments cannot be merged.
+**Merge** on an application's page opens a preview first: the identities, recorded flows, linked recordings, automations, scenarios and build briefs that move, and every recording both applications link, with the combined selection and notes. A reviewed selection is not widened by an unreviewed one; those events become suggestions. Earlier build briefs and their downloads move to the surviving application. An application with releases or attachments cannot be merged.
 
 Command line: `sessions`, `record --session N` (or `--exe X.exe --origin https://…`), `show <id>`, `send <id>`, `recover`. Add `--portable-data` to keep everything in `data\` beside the program, `--ca-bundle` for a private certificate authority. Recordings are in `%LOCALAPPDATA%\TwinLabRecorder\recordings\`.
 

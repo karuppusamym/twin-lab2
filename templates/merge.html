@@ -23,6 +23,8 @@
     {% for link in plan.links %}<p>{{ link.name }} <span class="muted">· {{ link.selected }} events selected</span></p>{% else %}<p class="muted">None.</p>{% endfor %}
     <h3>Automations</h3>
     {% for name in plan.automations %}<p>{{ name }}</p>{% else %}<p class="muted">None.</p>{% endfor %}
+    <h3>Scenarios</h3>
+    {% for name in plan.scenarios %}<p>{{ name }}</p>{% else %}<p class="muted">None.</p>{% endfor %}
     <h3>Build briefs</h3>
     {% for brief in plan.briefs %}
       <p><code>{{ brief.revision[:12] }}</code> <span class="muted">· {{ "kept with its download" if brief.package else "kept" }}</span></p>
