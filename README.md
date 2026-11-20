@@ -12,7 +12,7 @@ Open `http://127.0.0.1:8765`. The **Applications** page follows each application
 
 A recording can also register applications it finds as *Discovered: decide scope*. On the application page, the **Scope decision** makes it a **Confirmed application** (replicate it), merges it into the application it is the same as, or marks it **Not replicated** (later recordings note it only as used). In the database these are the statuses `known`, `discovered` and `not_replicated`. For an existing multi-app example, use `../rebuild-trial/judge/recording/order-to-invoice/steps.jsonl`.
 
-The portal is local and writes its catalog to `.state/catalog.db`. Use `--database` and `--port` to override those defaults. Run `python -m unittest discover -s tests -v` to check the catalog, recording recovery and release workflows. [Verification results](VERIFICATION.md)
+The portal is local and writes its catalog to `.state/catalog.db` (SQLite). Use `--database` (a file or a `DATABASE_URL`) and `--port` to override those defaults. A shared deployment uses PostgreSQL instead: see [The portal database](#the-portal-database). Run `python -m pytest` to check the catalog, recording recovery and release workflows. [Verification results](VERIFICATION.md)
 
 ## What works today
 
@@ -70,7 +70,61 @@ The recorder and the portal speak the versioned [recorder contract](RECORDER-CON
 
 The build is not signed. Sign it before it runs on any machine other than a developer's: an unsigned program with keyboard hooks is likely to be stopped by endpoint protection.
 
-**The portal on OpenShift.** `Dockerfile` and `deploy/openshift-portal.yaml` run the portal behind the OpenShift OAuth proxy (people sign in with OpenShift; recorders use their machine token on `/api/agent/`). Locally it serves only this machine, or anyone with `TWINLAB2_PASSWORD`. Settings: `TWINLAB2_SECRET_KEY`, `TWINLAB2_HOSTS`, `TWINLAB2_DATABASE`, `TWINLAB2_TRUST_PROXY_USER`.
+**The portal on OpenShift.** `Dockerfile` and `deploy/openshift-portal.yaml` run the portal behind the OpenShift OAuth proxy (people sign in with OpenShift; recorders use their machine token on `/api/agent/`). Locally it serves only this machine, or anyone with `TWINLAB2_PASSWORD`. Settings: `DATABASE_URL` (PostgreSQL, see [Shared deployment](#shared-deployment)), `TWINLAB2_SECRET_KEY`, `TWINLAB2_HOSTS`, `TWINLAB2_DATABASE` (the SQLite file when there is no `DATABASE_URL`), `TWINLAB2_TRUST_PROXY_USER`.
+
+## The portal database
+
+One setting chooses it: `DATABASE_URL`.
+
+- **Local development and tests: SQLite.** Without `DATABASE_URL` the portal uses the file `TWINLAB2_DATABASE` (default `.state/catalog.db`). `--database` takes a file path or a URL. Nothing to install.
+- **Shared deployment: PostgreSQL.** `DATABASE_URL=postgresql://user:password@host:5432/twinlab2` (add `?sslmode=require` for a remote server). `psycopg` is in `requirements.txt`. The portal keeps no other state, so several workers or replicas can share one database.
+
+`db.py` is the only module that talks to a driver. Its connection works like `sqlite3`'s on both engines: `?` placeholders, rows by index or name, `with connection:` as one transaction, and `db.IntegrityError` for either engine. `migrations.py` holds the schema as numbered migrations. They are recorded in `schema_migrations`, and the portal applies pending ones at every start (on PostgreSQL under an advisory lock). Migration 1 is the baseline, and it also upgrades a catalog made by an older portal.
+
+```powershell
+python migrations.py status --database postgresql://twinlab2:…@host/twinlab2
+python migrations.py migrate
+```
+
+### Shared deployment
+
+1. Create a PostgreSQL 13+ database and an owner role for TwinLab2. Use `C` collation (`createdb --locale=C --template=template0 twinlab2`) so lists sort the way they do on SQLite.
+2. Give the portal `DATABASE_URL`. On OpenShift, put it in the `twinlab2` secret as `database-url`; [deploy/openshift-portal.yaml](deploy/openshift-portal.yaml) reads it, so the pod no longer needs a volume. [deploy/docker-compose.yaml](deploy/docker-compose.yaml) runs the portal and PostgreSQL together on one machine.
+3. To move an existing portal, copy its SQLite catalog into the new, empty database before the first start. The copy migrates both databases, copies every table in foreign-key order, moves the identity counters past the copied ids and checks the row counts. It refuses a database that already has rows.
+
+```powershell
+python migrations.py copy .state/catalog.db "postgresql://twinlab2:…@host:5432/twinlab2"
+```
+
+### Tests on both engines
+
+`python -m pytest` runs on SQLite. Set `TWINLAB2_TEST_DATABASE_URL` to run the same suite on PostgreSQL. Every test gets a new database on that server, and the databases are dropped at the end of the run:
+
+```powershell
+docker run -d --name twinlab2-pg -e POSTGRES_PASSWORD=twinlab2 -e POSTGRES_INITDB_ARGS="--locale=C" -p 55432:5432 postgres:16
+```
+
+```powershell
+$env:TWINLAB2_TEST_DATABASE_URL = "postgresql://postgres:twinlab2@localhost:55432/postgres"; python -m pytest
+```
+
+CI ([.github/workflows/test.yml](.github/workflows/test.yml)) runs the suite on both.
+
+### Portable SQL rules
+
+Follow these rules in every new query and table so they work on SQLite and PostgreSQL. CI on both engines catches what they miss.
+
+- **Schema changes go in `migrations.py`**: append a new numbered migration and never edit one that has shipped. Don't use `CREATE TABLE` or `ALTER TABLE` anywhere else, and don't put `SCHEMA` strings in modules.
+- **DDL types:** `{id}` for an integer primary key the database assigns, `{blob}` for bytes, `TEXT` for strings and JSON, `INTEGER` for counts and flags (0/1, not `BOOLEAN`). Timestamps are `TEXT` in UTC ISO-8601 from `registry.now()`, so they compare as strings on both engines. Every table with a foreign key to `apps(id)` names it with `REFERENCES`, because the application merge checks for such keys.
+- **Placeholders:** always `?`. Don't build SQL from values with f-strings; f-strings are only for table and column names from code.
+- **Inserts name their columns** (`INSERT INTO t(a, b) VALUES (?, ?)`). Never use `INSERT INTO t VALUES (…)`, because column order differs between a migrated catalog and a new one.
+- **New ids:** `INSERT … RETURNING id`, then `.fetchone()[0]`. Never use `cursor.lastrowid`, which is SQLite only.
+- **Upserts:** `ON CONFLICT DO NOTHING`, or `ON CONFLICT(key columns) DO UPDATE SET c = excluded.c`. Never use `INSERT OR IGNORE`, `INSERT OR REPLACE` or `REPLACE INTO`.
+- **No engine-specific functions or catalog queries:** use `string_agg(x, ', ')` (not `group_concat`), `COALESCE`, `substr`, `||`, `count(*)`. Use `connection.tables()`, `columns(t)` and `foreign_keys(t)` instead of `PRAGMA` or `sqlite_master`. Don't use `strftime`, `datetime('now')`, `now()`, `ILIKE` or `::` casts.
+- **NULL ordering differs between engines**, so order a nullable column with `NULLS FIRST` or `NULLS LAST`.
+- **Types are strict on PostgreSQL:** compare a column with a value of its own type (an `INTEGER` id with an `int`, not `'3'`). `LIKE` is case-sensitive on PostgreSQL. `EXISTS(…)` and comparisons return `True`/`False` there and `1`/`0` on SQLite, so use them as truth values only.
+- **Transactions:** wrap each change in `with db():`. On PostgreSQL a failed statement aborts the rest of the transaction, so don't catch an error and keep using the same transaction. Roll back first, or check before you write.
+- **Large files** (packs, release archives, attachments) are `{blob}` columns for now. They move to object storage with artifact references.
 
 ## Capture with the workstation recorder
 

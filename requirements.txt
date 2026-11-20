@@ -1,2 +1,4 @@
 Flask>=3.1,<4
 PyYAML>=6
+# PostgreSQL for a shared deployment (DATABASE_URL=postgresql://...); SQLite needs nothing extra
+psycopg[binary]>=3.2,<4

@@ -173,7 +173,7 @@ def facts(db, app) -> dict:
     examples = (count("SELECT count(*) FROM recording_apps WHERE app_id = ?")
                 + count("SELECT count(*) FROM evidence WHERE app_id = ?")
                 + count("SELECT count(*) FROM attachments WHERE app_id = ?"))  # fmt: skip
-    columns = {row[1] for row in db.execute("PRAGMA table_info(releases)")}
+    columns = set(db.columns("releases"))
     wanted = ["id", "version"] + [c for c in ("state", "status") if c in columns]
     releases = [dict(zip(wanted, row)) for row in db.execute(
         f"SELECT {', '.join(wanted)} FROM releases WHERE app_id = ? ORDER BY id DESC", (app_id,))]
@@ -194,7 +194,7 @@ def facts(db, app) -> dict:
 def behaviour_reviewed(db, app) -> bool:
     """Required behaviour is written down once the app has a business scenario (the build pack
     needs one); a catalog from before scenarios counts its free-text requirements."""
-    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    tables = db.tables()
     if "scenarios" in tables and db.execute(
             "SELECT 1 FROM scenarios WHERE app_id = ? LIMIT 1", (app["id"],)).fetchone():
         return True

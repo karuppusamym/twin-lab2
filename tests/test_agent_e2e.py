@@ -33,6 +33,7 @@ from werkzeug.serving import make_server
 from agent import main as agent_main
 from agent import settings as st
 from portal import create_app
+from support import new_database
 
 PAGE = b"""<!DOCTYPE html><html><head><title>Orders</title></head><body>
 <form id="f" onsubmit="event.preventDefault(); fetch('/api/find?q=' + q.value).then(r => r.json())
@@ -69,7 +70,7 @@ class EndToEndTest(unittest.TestCase):
         site = ThreadingHTTPServer(("127.0.0.1", 0), Site)
         threading.Thread(target=site.serve_forever, daemon=True).start()
         site_url = f"http://127.0.0.1:{site.server_address[1]}"
-        app = create_app(work / "catalog.db")
+        app = create_app(new_database(work))
         server = make_server("127.0.0.1", 0, app, threaded=True)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         portal = f"http://127.0.0.1:{server.server_port}"

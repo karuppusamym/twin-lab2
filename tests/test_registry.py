@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import re
-import sqlite3
 from contextlib import closing
 import tempfile
 import unittest
@@ -12,6 +11,7 @@ from unittest import mock
 from portal import create_app
 import recorder_contract
 import registry
+from support import connect, new_database
 
 DESK = "desktop:Twin Lab reference/CaseDesk"
 WEB = "web:http://127.0.0.1:8080"
@@ -45,7 +45,7 @@ class RegistryTest(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
-        self.database = Path(self.work.name) / "catalog.db"
+        self.database = new_database(self.work.name)
         self.app = create_app(self.database)
         self.app.testing = True
         self.client = self.app.test_client()
@@ -73,7 +73,7 @@ class RegistryTest(unittest.TestCase):
         again = self.client.post("/api/agent/pair", json={"contract_version": CV, "code": code, "name": "Other"})
         self.assertEqual(again.status_code, 403)
         self.assertEqual(self.client.post("/api/agent/pair", json={"contract_version": CV, "code": "AAAAAAAAAA", "name": "X"}).status_code, 403)
-        with closing(sqlite3.connect(self.database)) as db, db:
+        with closing(connect(self.database)) as db, db:
             stored = db.execute("SELECT token_sha FROM machines").fetchone()[0]
             codes = [r[0] for r in db.execute("SELECT code_sha FROM pairing_codes")]
         self.assertEqual(stored, registry.sha(token))
@@ -88,7 +88,7 @@ class RegistryTest(unittest.TestCase):
     def test_expired_codes_and_too_many_failures_are_refused(self):
         self.post("/machines/pair")
         code = re.search(r'id="pair-code">([A-Z0-9-]+)<', self.client.get("/machines").data.decode()).group(1)
-        with closing(sqlite3.connect(self.database)) as db, db:
+        with closing(connect(self.database)) as db, db:
             db.execute("UPDATE pairing_codes SET expires_at = '2000-01-01T00:00:00+00:00'")
         self.assertEqual(self.client.post("/api/agent/pair", json={"contract_version": CV, "code": code, "name": "X"}).status_code, 403)
         for _ in range(registry.FAILURES_PER_10_MIN):
@@ -119,7 +119,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(again.json["discovered"], [])
         self.assertEqual(sorted(again.json["mapped"]), [1, 2])
         # the catalog's evidence links: each application's steps are selected
-        with closing(sqlite3.connect(self.database)) as db, db:
+        with closing(connect(self.database)) as db, db:
             links = dict(db.execute("SELECT app_id, selection FROM evidence").fetchall())
         self.assertEqual(json.loads(links[1]), [1, 2])
 
@@ -194,7 +194,7 @@ class SignInTest(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
-        self.database = Path(self.work.name) / "catalog.db"
+        self.database = new_database(self.work.name)
 
     def make(self, **env):
         with mock.patch.dict(os.environ, env):

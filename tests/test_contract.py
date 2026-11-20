@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import sqlite3
 from contextlib import closing
 import subprocess
 import sys
@@ -19,6 +18,7 @@ from agent import twinlab
 from agent.client import PortalError
 import recorder_contract as contract
 from test_registry import RegistryTest, references
+from support import connect
 
 try:
     import jsonschema
@@ -164,7 +164,7 @@ class PortalContractTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.data)  # the code still worked
         self.assertEqual(response.json["contract_version"], CV)
         self.assertIn("contract 1.0.0", self.client.get("/machines").data.decode())
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM pairing_failures").fetchone()[0], 0)
 
     def test_upload_refuses_an_old_or_major_bumped_contract(self):
@@ -175,7 +175,7 @@ class PortalContractTest(unittest.TestCase):
             response = self.client.post("/api/agent/references", json=doc, headers=self.agent(token))
             self.assertEqual(response.status_code, 426, doc.get("contract_version"))
             self.assertEqual(response.json["update"], update)
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM recordings").fetchone()[0], 0)
         shape = dict(references(), apps=[{"key": "desktop:X", "level": "admin"}])
         response = self.client.post("/api/agent/references", json=shape, headers=self.agent(token))
@@ -189,7 +189,7 @@ class PortalContractTest(unittest.TestCase):
         response = self.client.post("/api/agent/references", json=doc, headers=self.agent(token))
         self.assertEqual(response.status_code, 200, response.data)
         recording_id = response.json["recording_id"]
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             row = db.execute("SELECT contract_version, recorder, recorder_version, twinlab_commit "
                              "FROM recording_contracts WHERE recording_id = ?", (recording_id,)).fetchone()  # fmt: skip
         self.assertEqual(row, ("1.2.0", "TwinLabRecorder", "0.2.0", "430dfe538965b46ccbe824f8f2b4f415c5576483"))

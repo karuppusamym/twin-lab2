@@ -11,6 +11,7 @@ from zipfile import ZipFile
 from capture import recover
 from openshift import resources
 from portal import add_release, create_app
+from support import new_database
 
 
 class WorkflowTest(unittest.TestCase):
@@ -18,7 +19,7 @@ class WorkflowTest(unittest.TestCase):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
         self.root = Path(self.work.name)
-        self.database = self.root / "catalog.db"
+        self.database = new_database(self.root)
         self.app = create_app(self.database)
         self.app.testing = True
         self.client = self.app.test_client()

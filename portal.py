@@ -11,62 +11,22 @@ import json
 from pathlib import Path
 import re
 import secrets
-import sqlite3
 from urllib.parse import urlsplit, urlunsplit
 import urllib.request
 
 from flask import Flask, abort, g, redirect, render_template, request, send_file, session, url_for
 
 import buildpack
+import db as database
 import journey
+import migrations
 import registry
 import scenarios
 
 LOCAL = {"127.0.0.1", "::1"}
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS apps (
-    id INTEGER PRIMARY KEY, name TEXT NOT NULL, git_url TEXT NOT NULL,
-    requirements TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS recordings (
-    id TEXT PRIMARY KEY, name TEXT NOT NULL, events TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS evidence (
-    app_id INTEGER NOT NULL REFERENCES apps(id),
-    recording_id TEXT NOT NULL REFERENCES recordings(id),
-    selection TEXT NOT NULL, notes TEXT NOT NULL,
-    PRIMARY KEY (app_id, recording_id)
-);
-CREATE TABLE IF NOT EXISTS attachments (
-    id INTEGER PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id),
-    title TEXT NOT NULL, kind TEXT NOT NULL, extension TEXT NOT NULL, content BLOB NOT NULL
-);
-CREATE TABLE IF NOT EXISTS briefs (
-    revision TEXT PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id),
-    manifest TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS brief_packages (
-    revision TEXT PRIMARY KEY REFERENCES briefs(revision), archive BLOB NOT NULL
-);
-CREATE TABLE IF NOT EXISTS releases (
-    id INTEGER PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id),
-    version TEXT NOT NULL, revision TEXT NOT NULL REFERENCES briefs(revision),
-    commit_sha TEXT NOT NULL, archive BLOB NOT NULL, archive_sha TEXT NOT NULL,
-    UNIQUE (app_id, version)
-);
-CREATE TABLE IF NOT EXISTS deployments (
-    release_id INTEGER NOT NULL REFERENCES releases(id), environment TEXT NOT NULL,
-    url TEXT NOT NULL, username TEXT NOT NULL, secret_ref TEXT NOT NULL,
-    PRIMARY KEY (release_id, environment)
-);
-CREATE TABLE IF NOT EXISTS release_tests (
-    release_id INTEGER PRIMARY KEY REFERENCES releases(id), commit_sha TEXT NOT NULL,
-    platform TEXT NOT NULL, launch TEXT NOT NULL, reset_result TEXT NOT NULL,
-    reset_notes TEXT NOT NULL, results TEXT NOT NULL, tested_by TEXT NOT NULL, tested_at TEXT NOT NULL
-);
-"""
+# The tables are created and changed only by migrations.py.
 
 # A release is Packaged when its committed tree is archived, Tested once its acceptance evidence
 # is stored (release_tests), and Published only after it was Tested.
@@ -76,22 +36,6 @@ RESULTS = ("pass", "fail", "not-run")
 # {"commit": "<40-hex Git commit>"} equal to the release's commit. Anything else leaves it a
 # registered URL that is not verified.
 VERSION_PATH = ".twinlab/version"
-
-
-def migrate_releases(connection):
-    """Release states and deployment verification for catalogs made before them: an existing
-    release becomes Packaged and an existing deployment an unverified registered URL."""
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(releases)")}
-    if "state" not in columns:
-        connection.execute("ALTER TABLE releases ADD COLUMN state TEXT NOT NULL DEFAULT 'packaged'")
-    if "published_at" not in columns:
-        connection.execute("ALTER TABLE releases ADD COLUMN published_at TEXT")
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(deployments)")}
-    for name, definition in (("verification", "TEXT NOT NULL DEFAULT 'unverified'"),
-                             ("observed_commit", "TEXT NOT NULL DEFAULT ''"), ("checked_at", "TEXT")):
-        if name not in columns:
-            connection.execute(f"ALTER TABLE deployments ADD COLUMN {name} {definition}")
-    connection.commit()
 
 
 def brief_scenarios(manifest):
@@ -151,7 +95,8 @@ def record_test(connection, release_id, commit, platform, launch, reset_result, 
             raise ValueError(f"Record pass, fail or not-run for “{item['name']}”.")
         rows.append({"id": item["id"], "name": item["name"], "result": result})
     connection.execute("""
-        INSERT INTO release_tests VALUES (?,?,?,?,?,?,?,?,?)
+        INSERT INTO release_tests(release_id, commit_sha, platform, launch, reset_result, reset_notes,
+                                  results, tested_by, tested_at) VALUES (?,?,?,?,?,?,?,?,?)
         ON CONFLICT(release_id) DO UPDATE SET commit_sha = excluded.commit_sha,
         platform = excluded.platform, launch = excluded.launch, reset_result = excluded.reset_result,
         reset_notes = excluded.reset_notes, results = excluded.results, tested_by = excluded.tested_by,
@@ -278,13 +223,12 @@ def recording_projection(log):
     return session_id or digest, ordered(events.values())
 
 
-def add_release(database, app_id, version, revision, repository, ref, subdirectory=None):
+def add_release(target, app_id, version, revision, repository, ref, subdirectory=None):
     import subprocess
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", version):
         raise ValueError("Use a version such as 1.0.0.")
-    with closing(sqlite3.connect(database)) as connection, connection:
-        connection.execute("PRAGMA foreign_keys = ON")
+    with closing(database.connect(target)) as connection, connection:
         brief = connection.execute(
             "SELECT 1 FROM briefs WHERE revision = ? AND app_id = ?", (revision, app_id),
         ).fetchone()
@@ -316,7 +260,9 @@ def add_release(database, app_id, version, revision, repository, ref, subdirecto
     return commit
 
 
-def create_app(database):
+def create_app(target):
+    """The portal on the database at `target`: a DATABASE_URL (sqlite:///…, postgresql://…) or a
+    SQLite file path. Pending migrations are applied first."""
     app = Flask(__name__)
     hosts = [h.strip() for h in os.environ.get("TWINLAB2_HOSTS", "").split(",") if h.strip()]
     app.config.update(
@@ -329,14 +275,13 @@ def create_app(database):
     )
     trust_proxy = os.environ.get("TWINLAB2_TRUST_PROXY_USER") == "1"
     password = os.environ.get("TWINLAB2_PASSWORD", "")
-    database = Path(database)
-    database.parent.mkdir(parents=True, exist_ok=True)
+    target = str(target)
+    if database.engine_of(target) == "sqlite":
+        database.sqlite_path(target).parent.mkdir(parents=True, exist_ok=True)
 
     def db():
         if "db" not in g:
-            g.db = sqlite3.connect(database)
-            g.db.row_factory = sqlite3.Row
-            g.db.execute("PRAGMA foreign_keys = ON")
+            g.db = database.connect(target)
         return g.db
 
     @app.teardown_appcontext
@@ -346,15 +291,9 @@ def create_app(database):
             connection.close()
 
     with app.app_context():
-        db().executescript(SCHEMA)
-        migrate_releases(db())
-        registry.migrate(db())
-        scenarios.migrate(db())
-        columns = {row[1] for row in db().execute("PRAGMA table_info(apps)")}
-        for column in ("owner", "purpose"):
-            if column not in columns:
-                db().execute(f"ALTER TABLE apps ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
-        db().commit()
+        migrations.run(db())
+        with db():  # requirements text written by older portals (or by hand) becomes a scenario
+            scenarios.import_requirements(db())
 
     app.jinja_env.filters["status_label"] = lambda status: journey.STATUS_LABELS.get(
         status, str(status).replace("_", " "))
@@ -489,11 +428,11 @@ def create_app(database):
             abort(400, "Enter a demo app name.")
         with db():
             result = db().execute(
-                "INSERT INTO apps(name, git_url, requirements, owner, purpose) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO apps(name, git_url, requirements, owner, purpose) VALUES (?, ?, ?, ?, ?) RETURNING id",
                 (name, git_url, requirements, owner, purpose),
-            )
-        scenarios.migrate(db())
-        return redirect(url_for("demo", app_id=result.lastrowid))
+            ).fetchone()[0]
+            scenarios.import_requirements(db())
+        return redirect(url_for("demo", app_id=result))
 
     def selected_events(app_id):
         """The events selected for the app, as `recording#seq` with their pack references."""
@@ -591,7 +530,7 @@ def create_app(database):
             abort(400, str(error))
         with db():
             inserted = db().execute(
-                "INSERT OR IGNORE INTO recordings VALUES (?, ?, ?) RETURNING id",
+                "INSERT INTO recordings(id, name, events) VALUES (?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
                 (digest, name, json.dumps(events)),
             ).fetchone()
             if inserted is None:
@@ -653,8 +592,10 @@ def create_app(database):
             abort(400, "Add a business scenario before exporting.")
         revision, contents, _, package = buildpack.build(db(), app_id, VERSION_PATH)
         with db():
-            db().execute("INSERT OR IGNORE INTO briefs VALUES (?, ?, ?)", (revision, app_id, contents))
-            db().execute("INSERT OR IGNORE INTO brief_packages VALUES (?, ?)", (revision, package))
+            db().execute("INSERT INTO briefs(revision, app_id, manifest) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                         (revision, app_id, contents))
+            db().execute("INSERT INTO brief_packages(revision, archive) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                         (revision, package))
         return revision
 
     def stored_pack(app_id, revision):
@@ -786,15 +727,17 @@ def create_app(database):
 
 
 def wsgi():
-    """The portal for a WSGI server (gunicorn "portal:wsgi()"), its catalog at TWINLAB2_DATABASE."""
-    return create_app(Path(os.environ.get("TWINLAB2_DATABASE", Path(__file__).parent / ".state/catalog.db")))
+    """The portal for a WSGI server (gunicorn "portal:wsgi()"): its database at DATABASE_URL
+    (else the SQLite file TWINLAB2_DATABASE, else .state/catalog.db)."""
+    return create_app(database.from_env())
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--database", type=Path, default=Path(__file__).parent / ".state/catalog.db")
+    parser.add_argument("--database", default=database.from_env(),
+                        help="a DATABASE_URL (sqlite:///…, postgresql://…) or a SQLite file")
     commands = parser.add_subparsers(dest="command")
     publish = commands.add_parser("release", help="Register a ZIP from a committed Git tree.")
     publish.add_argument("app_id", type=int)
@@ -810,7 +753,7 @@ if __name__ == "__main__":
         try:
             commit = add_release(args.database, args.app_id, args.version, args.revision,
                                  args.repository, args.ref, args.subdirectory)
-        except (ValueError, sqlite3.IntegrityError, CalledProcessError, OSError) as error:
+        except (ValueError, *database.IntegrityError, CalledProcessError, OSError) as error:
             parser.exit(1, f"Release registration failed: {error}\n")
         print(f"Registered {args.version} from {commit}.")
     else:
