@@ -153,16 +153,26 @@ def contract_references(box: dict) -> dict:
     """The outbox as recorder contract references: the contract version and this recorder
     stamped on it, then checked against the schema here, before anything leaves the PC.
 
-    Twin Lab's outbox (labctl.workstation.timeline) does not carry a contract version yet. An
-    outbox without one is stamped with the version its shape is: 1.1.0 when it reports the
-    recording's `completeness` (the collectors that assign event ids at capture time), else
-    1.0.0, which is what the pinned commit's outbox is. An outbox that declares a version must be
-    of the major this recorder speaks."""
+    Twin Lab's outbox (labctl.workstation.timeline) declares contract 1.1.0 since 4385949. An
+    outbox without a version (an older Twin Lab) is stamped with the version its shape is: 1.1.0
+    when it reports the recording's `completeness`, else 1.0.0. A 1.1 outbox in which no step has
+    an event id is a session recorded before event ids and is sent as 1.0.0 (see below). An
+    outbox that declares a version must be of the major this recorder speaks."""
     declared = box.get("contract_version")
     if declared is not None and (contract.parse(declared) or (None,))[0] != contract.parse(contract.CONTRACT_VERSION)[0]:
         raise PortalError(f"these references are for recorder contract {declared}; this recorder speaks "
                           f"{contract.CONTRACT_VERSION}: update TwinLabRecorder")  # fmt: skip
     doc = dict(box, contract_version=declared or ("1.1.0" if "completeness" in box else "1.0.0"))
+    steps = [s for flow in (doc.get("flows") or {}).values() for s in flow]
+    if steps and contract.has_event_ids(doc["contract_version"]) and not any(s.get("event_id") for s in steps):
+        # Twin Lab since 4385949 writes 1.1.0 on every outbox, also when it rebuilds a session
+        # recorded before event ids: no step then has one, and its completeness was computed
+        # without a capture journal. That is a contract 1.0 recording; send it as one (the portal
+        # derives stable event ids at ingest, and shows completeness as unknown). A recording in
+        # which only some steps carry ids still fails the 1.1 check below.
+        doc["contract_version"] = "1.0.0"
+        doc.pop("completeness", None)
+        doc.pop("preflight", None)
     recorder = {"name": st.APP, "version": st.VERSION}
     commit = (box.get("session") or {}).get("twinlab_commit") or _build_info().get("twinlab_commit")
     if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{7,40}", commit):
@@ -784,4 +794,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # The pinned Twin Lab runs each collector in its own "spawn" process; in the frozen
+    # TwinLabRecorder those children re-enter this executable and must stop here.
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     sys.exit(main())

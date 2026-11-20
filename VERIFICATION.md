@@ -16,6 +16,20 @@ The live capture used a browser. The mixed desktop test used recorded input fixt
 
 Run `python -m unittest discover -s tests -v` from the project directory to repeat the automated catalog, recovery and release checks.
 
+## Pin moved to Twin Lab 4385949: contract 1.1 collectors (2026-11-20)
+
+Windows 11, Python 3.13, PyInstaller 6, Twin Lab `4385949` (twin-lab #61, #62, #63). All **Locally tested**.
+
+| Check | Result |
+|---|---|
+| Pin | Tree digest `f6cae981…` from a clean detached worktree of twin-lab `4385949`; `fetch` and `verify` agree. No new third-party dependencies upstream (`requirements-recorder.txt` unchanged). |
+| Fixture references | Rebuilt by the pinned collectors from `tests/fixtures/workstation-session/`: the only differences are two added fields, `contract_version` (1.1.0) and `completeness`, so the fixture was regenerated within contract 1.x. That session was recorded before event ids: its steps carry none, and the recorder now sends it as 1.0.0 without `completeness` (the portal derives stable ids). A recording in which only some steps carry ids is refused (`test_a_recording_with_event_ids_on_only_some_steps_is_refused`). |
+| Suite | `python -m pytest`: 202 passed, 1 skipped (the opt-in click-driving end to end). |
+| Built program | `python agent/build.py` (249 MB), `_build.json`: pinned, `4385949`, contract 1.1.0. Collectors now run in "spawn" processes, so `agent/main.py` calls `multiprocessing.freeze_support()`. A one-minute `--portable-data record --exe notepad.exe` with the frozen program: the desktop collector ran in its own process and stopped at its time limit, both steps carry UUIDv7 `event_id`s and `channel`, `completeness` is `complete` (desktop complete, others not requested, loss window 2 s), and `contract_references` accepts the outbox as 1.1.0. |
+| Click-driving end to end (`TWINLAB_AGENT_E2E=1`) | **Fails, and fails the same way on the previous pin** (`430dfe5`, `main` at `8cbf770`): the CaseDesk flow records the login steps but not `btnSave`. Not caused by this pin; still to be investigated. |
+
+Not run: capture preflight. Twin Lab's `workstation/preflight.py` exists at this pin, but the recorder does not call it yet, so recordings carry no `preflight` block. Not sent to a live portal with the frozen program.
+
 ## Build sessions: providers, chat, isolation (2026-11-20)
 
 | Check | Status | Result |
