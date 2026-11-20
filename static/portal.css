@@ -52,3 +52,8 @@ table.flow th { color: #5b6d80; font-weight: 600; }
 .timeline li.presence { background: #f1f3f5; color: #5b6d80; }
 .timeline li + li::before { content: "→ "; color: #8194a9; }
 code { overflow-wrap: anywhere; }
+#scenarios { margin-top: 1rem; }
+.scenario-events { grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr)); }
+.scenario-events label { align-items: flex-start; gap: .35rem; }
+.pack-file { margin-top: 1rem; }
+pre.file { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f7fa; border: 1px solid #d9e3ec; border-radius: .35rem; padding: .75rem; font-size: .85rem; max-height: 40rem; overflow-y: auto; }
