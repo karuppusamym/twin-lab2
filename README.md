@@ -21,6 +21,12 @@ The portal is local and writes its catalog to `.state/catalog.db`. Use `--databa
 3. On the PC, choose the offered session and **Start**. The recorder opens its own Edge window for web targets; use the applications as the process does. **Stop recording** when done.
 4. Review what will be sent (**Recordings on this PC**) and **Send references**. The portal's **Recordings** page shows the session, its applications and the timeline across them; an application's page shows its recorded flows and the automations that touch it.
 
+Applications that share a host are told apart by path: give each one its address with its path (`https://example.test/orders`, `https://example.test/billing`) and the portal assigns each recorded web step by the path of its page, the longest matching path winning; a host-only address (`https://example.test`) takes the steps no path claims. The recorder still records the whole origin. On an application's page **Web addresses match → the whole host** is the owner's override for an application that is its whole host.
+
+The first time a recording arrives, each application's link selects all of its steps (*not yet reviewed*). Once the owner saves the assignment on the recording's page, sending the recording again never changes that selection: events new in the resend are shown as *new, not yet reviewed* and stay out of the build pack until the owner selects them.
+
+**Merge** on an application's page opens a preview first: the identities, recorded flows, linked recordings, automations, scenarios and build briefs that move, and every recording both applications link, with the combined selection and notes. A reviewed selection is not widened by an unreviewed one; those events become suggestions. Earlier build briefs and their downloads move to the surviving application. An application with releases or attachments cannot be merged.
+
 Command line: `sessions`, `record --session N` (or `--exe X.exe --origin https://…`), `show <id>`, `send <id>`, `recover`. Add `--portable-data` to keep everything in `data\` beside the program, `--ca-bundle` for a private certificate authority. Recordings are in `%LOCALAPPDATA%\TwinLabRecorder\recordings\`.
 
 Build the folder from a Twin Lab checkout that has `labctl.workstation`:

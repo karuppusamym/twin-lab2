@@ -133,7 +133,7 @@ class RegistryTest(unittest.TestCase):
         targets = offered["sessions"][0]["targets"]
         self.assertIn({"level": "steps", "app_id": 1, "name": "Case desk", "exe": "casedesk.exe"}, targets)
         self.assertIn({"level": "steps", "app_id": 1, "name": "Case desk",
-                       "origin": "https://billing.example.test"}, targets)
+                       "origin": "https://billing.example.test", "path": "/x"}, targets)
         refs = references(portal_session_id=1, apps=[
             {"key": DESK, "level": "steps", "display": "CaseDesk", "exe": "CaseDesk.exe", "app_id": 1}])
         refs["timeline"] = [{"app": DESK, "steps": 2}, {"app": "presence", "steps": 1}]
@@ -170,7 +170,11 @@ class RegistryTest(unittest.TestCase):
         _, token = self.pair()
         self.client.post("/api/agent/references", json=references(), headers=self.agent(token))
         self.post("/apps", name="Showcase")
-        self.assertEqual(self.post("/apps/2/merge", into="3").status_code, 302)
+        unconfirmed = self.post("/apps/2/merge", into="3")
+        self.assertEqual(unconfirmed.location, "/apps/2/merge?into=3")  # the preview first
+        preview = self.client.get(unconfirmed.location).data.decode()
+        fingerprint = re.search(r'name="confirm" value="([0-9a-f]+)"', preview).group(1)
+        self.assertEqual(self.post("/apps/2/merge", into="3", confirm=fingerprint).location, "/apps/3")
         page = self.client.get("/apps/3").data.decode()
         self.assertIn(WEB, page)
         yaml_doc = b"id: case-update\nname: Case update\ntype: uipath\ntouches:\n- app: showcase\n- app: missing\n"
