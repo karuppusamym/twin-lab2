@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/karuppusamym/twin-lab2/security/advisories/new
+    about: Report vulnerabilities or leaked data privately, not as an issue.
