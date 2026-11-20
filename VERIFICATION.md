@@ -1,12 +1,16 @@
 # Local verification
 
+Every result below is **Locally tested** (on the developer's Windows PC) unless it says otherwise; labels as in the README's *What works today*. **Nothing here is externally validated**: there has been no recorder trial on a live managed PC, no OpenShift deployment, no fresh coding-agent rebuild from a build pack and no clean-machine install. The Orders/Billing release replay used previously built fixture apps.
+
+Since 2026-11-20 the portal calls offering a session **Request a recording** (the stored session status is still `offered`) and a confirmed application **Confirmed application** (stored status `known`). The results below keep the wording of the day they were run.
+
 | Check | Result |
 |---|---|
 | Live Chromium recorder | Attached to a local Chromium session with CDP and recorded nine events across tabs, including interactions. The session retained the upstream commit and stable event IDs. |
 | Mixed-source recovery | Automated fixture combined web and Windows channel logs, recovered an incomplete final line, reimported without deleting later events, and kept the original event linked. |
 | Catalog and Git releases | Automated tests verified many-to-many recording assignments, reviewed attachments, immutable older build packs, packaging from the committed tree, running the extracted ZIP, earlier release downloads and deployment registration. |
 | Orders/Billing release replay | Imported the existing 108-event recording, exported separate briefs, packaged the previously built fixture apps from temporary Git commits, downloaded both ZIPs and launched both extracted apps. The existing judge replayed all 107 executable steps. All 16 acceptance cases passed within the declared scope. |
-| OpenShift | Manifest wiring was checked locally. Cluster rollout, image registry access, and route behavior need a target OpenShift project. |
+| OpenShift | Implemented only. Manifest wiring was checked locally. Cluster rollout, image registry access, and route behavior need a target OpenShift project. |
 
 The live capture used a browser. The mixed desktop test used recorded input fixtures. A fresh enterprise desktop capture, fresh agent rebuild, and clean-machine dependency installation were outside this test run. Interface evidence for direct API, database and utility calls is supplied through reviewed attachments.
 
@@ -82,3 +86,13 @@ Windows 11, Python 3.13. Locally tested with automated tests on temporary databa
 | Merge | Pass. An application with an exported brief merges (it failed with `IntegrityError: FOREIGN KEY constraint failed` before); the brief and its package download from the surviving application, byte for byte. The preview lists what moves and what is combined; the merge needs the preview's confirmation and refuses one made before the applications changed. Two reviewed links to one recording become the union of the selections with both notes; an unreviewed link adds suggestions only. Rows in a table the merge does not move (attachments, releases) block it. |
 | Web identity by path | Pass. `https://example.test/orders` and `/billing` are two identities; one host's steps go to Orders, Billing, a longer `/orders/lines` and a host-only identity by the longest matching path; steps no path claims go to a discovered application, not to a path target; the owner's whole-host override; a second claim on the same host and path is refused. Path identities are not sent to the recorder as deny keys. |
 | Migration | Pass. A catalog without the new columns opens; its links count as reviewed and keep their selection and notes; a host-only identity stored before still maps references; migrating twice is harmless. |
+
+## The onboarding journey (2026-11-20)
+
+| Check | Result |
+|---|---|
+| Journey stage, missing information and one next action (`tests/test_journey.py`) | Pass. The first step not done is the stage; a discovered application asks for a scope decision; examples need an identity, then a paired machine; Verify is done once the latest release is Tested and Open or download once it is Published; a not-replicated application is out of the journey. |
+| Pages (`tests/test_journey.py`) | Pass. Each catalog card shows owner, purpose, stage, missing information and exactly one action; identities and the Git repository are on the Setup / Advanced page; machines are reached from Setup / Advanced, not the main navigation; the application page's forms no longer overwrite each other's fields. |
+| Local render | The catalog, an application page, its Setup / Advanced page, Request a recording and Setup / Advanced rendered from `python portal.py --port 8791` with a sample catalog. |
+
+Not checked: onboarding with real users.

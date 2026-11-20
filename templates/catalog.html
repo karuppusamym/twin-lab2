@@ -1,18 +1,35 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Demo catalog</h1>
+<h1>Applications</h1>
+<p class="journey">{% for step in journey_steps %}<span>{{ step }}</span>{% endfor %}</p>
+{% if apps %}
+<div class="cards">{% for app, j in apps %}
+  <article class="card">
+    <h2><a href="{{ url_for('demo', app_id=app.id) }}">{{ app.name }}</a>
+      <span class="badge {{ app.status }}">{{ app.status | status_label }}</span></h2>
+    <dl class="about">
+      <dt>Owner</dt><dd>{{ app.owner or "not set" }}</dd>
+      <dt>Purpose</dt><dd>{{ app.purpose or "not set" }}</dd>
+      <dt>Stage</dt><dd>{{ j.stage }}</dd>
+      {% if j.missing %}<dt>Missing</dt><dd>{{ j.missing | join(", ") }}</dd>{% endif %}
+    </dl>
+    {% with release = tested.get(app.id) %}{% include "_tested_release.html" %}{% endwith %}
+    {% if j.out_of_scope %}
+      <p class="muted">Recordings note it only as used.</p>
+    {% elif j.next %}
+      <p><a class="button" href="{{ j.next.href }}" title="{{ j.next.hint }}">{{ j.next.action }}</a></p>
+    {% endif %}
+  </article>
+{% endfor %}</div>
+{% else %}<p>No applications yet. Add one below, or a recording registers the applications it finds.</p>{% endif %}
 <div class="columns">
   <section>
-    <h2>Applications</h2>
-    {% if apps %}<ul class="list">{% for app in apps %}
-      <li><a href="{{ url_for('demo', app_id=app.id) }}">{{ app.name }}</a>
-        {% if app.status != "known" %}<span class="badge {{ app.status }}">{{ app.status | replace("_", " ") }}</span>{% endif %}
-        {% if app.surface %}<span class="muted">{{ app.surface }}</span>{% endif %}
-        {% with release = tested.get(app.id) %}{% include "_tested_release.html" %}{% endwith %}</li>
-    {% endfor %}</ul>{% else %}<p>No applications yet. A recording registers the applications it finds.</p>{% endif %}
+    <h2>Add an application</h2>
     <form action="{{ url_for('add_app') }}" method="post">
       <input type="hidden" name="token" value="{{ session.form_token }}">
       <label>Demo name <input name="name" required></label>
+      <label>Owner <input name="owner"></label>
+      <label>Purpose <input name="purpose" placeholder="What the demo is for"></label>
       <button>Create demo app</button>
     </form>
   </section>

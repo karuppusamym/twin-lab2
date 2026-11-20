@@ -76,6 +76,8 @@
     {% if deployment.username %}<p>Demo username <code>{{ deployment.username }}</code></p>{% endif %}
     {% if deployment.secret_ref %}<p>Demo secret reference <code>{{ deployment.secret_ref }}</code></p>{% endif %}
   {% endfor %}
+  <details class="advanced" id="deployment-setup">
+  <summary>Setup / Advanced: deployment configuration</summary>
   <form method="post">
     <input type="hidden" name="token" value="{{ session.form_token }}">
     <label>Environment <input name="environment" required placeholder="OpenShift demo"></label>
@@ -84,5 +86,6 @@
     <label>Demo secret reference <input name="secret_ref" placeholder="vault:demo/billing"></label>
     <button>Save deployment</button>
   </form>
+  </details>
 </section>
 {% endblock %}

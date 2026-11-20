@@ -18,6 +18,7 @@ import urllib.request
 from flask import Flask, abort, g, redirect, render_template, request, send_file, session, url_for
 
 import buildpack
+import journey
 import registry
 import scenarios
 
@@ -349,6 +350,15 @@ def create_app(database):
         migrate_releases(db())
         registry.migrate(db())
         scenarios.migrate(db())
+        columns = {row[1] for row in db().execute("PRAGMA table_info(apps)")}
+        for column in ("owner", "purpose"):
+            if column not in columns:
+                db().execute(f"ALTER TABLE apps ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        db().commit()
+
+    app.jinja_env.filters["status_label"] = lambda status: journey.STATUS_LABELS.get(
+        status, str(status).replace("_", " "))
+    app.jinja_env.globals["journey_steps"] = journey.JOURNEY
     app.jinja_env.globals.update(deployment_label=deployment_label, deployment_reason=deployment_reason,
                                  version_path=VERSION_PATH)
 
@@ -461,8 +471,9 @@ def create_app(database):
 
     @app.get("/")
     def home():
+        apps = db().execute("SELECT * FROM apps ORDER BY status = 'not_replicated', name").fetchall()
         return render_template(
-            "catalog.html", apps=db().execute("SELECT * FROM apps ORDER BY status = 'not_replicated', name").fetchall(),
+            "catalog.html", apps=[(row, journey.for_app(db(), row)) for row in apps],
             recordings=db().execute("SELECT id, name FROM recordings ORDER BY name").fetchall(),
             tested=tested_releases(),
         )
@@ -472,12 +483,14 @@ def create_app(database):
         name = request.form.get("name", "").strip()
         git_url = request.form.get("git_url", "").strip()
         requirements = request.form.get("requirements", "").strip()
+        owner = request.form.get("owner", "").strip()[:120]
+        purpose = request.form.get("purpose", "").strip()[:500]
         if not name:
             abort(400, "Enter a demo app name.")
         with db():
             result = db().execute(
-                "INSERT INTO apps(name, git_url, requirements) VALUES (?, ?, ?)",
-                (name, git_url, requirements),
+                "INSERT INTO apps(name, git_url, requirements, owner, purpose) VALUES (?, ?, ?, ?, ?)",
+                (name, git_url, requirements, owner, purpose),
             )
         scenarios.migrate(db())
         return redirect(url_for("demo", app_id=result.lastrowid))
@@ -491,17 +504,32 @@ def create_app(database):
     def demo(app_id):
         item = get_app(app_id)
         if request.method == "POST":
+            # Each form on the application and setup pages sends only its own fields.
+            limits = {"owner": 120, "purpose": 500, "git_url": 500}
             with db():
-                db().execute("UPDATE apps SET git_url = ? WHERE id = ?",
-                             (request.form.get("git_url", "").strip(), app_id))
-            return redirect(url_for("demo", app_id=app_id))
+                for column, limit in limits.items():
+                    if column in request.form:
+                        db().execute(f"UPDATE apps SET {column} = ? WHERE id = ?",
+                                     (request.form[column].strip()[:limit], app_id))
+            target = request.form.get("next")
+            return redirect(url_for("app_setup", app_id=app_id) if target == "setup"
+                            else url_for("demo", app_id=app_id))
         return render_template(
             "demo.html", item=item, links=links(app_id), loads=json.loads,
+            journey=journey.for_app(db(), item),
             attachments=attachments(app_id), kinds=ATTACHMENT_TYPES, releases=releases(app_id),
             others=db().execute("SELECT id, name FROM apps WHERE id != ? ORDER BY name", (app_id,)).fetchall(),
             scenarios=scenarios.load(db(), app_id), choices=selected_events(app_id),
             fields=scenarios.FIELDS,
         )
+
+    @app.get("/apps/<int:app_id>/setup")
+    def app_setup(app_id):
+        return render_template("app_setup.html", item=get_app(app_id), releases=releases(app_id))
+
+    @app.get("/setup")
+    def setup():
+        return render_template("setup.html", apps=db().execute("SELECT id, name FROM apps ORDER BY name").fetchall())
 
     @app.post("/apps/<int:app_id>/scenarios", defaults={"scenario_id": None})
     @app.post("/apps/<int:app_id>/scenarios/<int:scenario_id>")

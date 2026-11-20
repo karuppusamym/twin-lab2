@@ -13,9 +13,8 @@
     <nav>
       <a href="{{ url_for('home') }}">Applications</a>
       <a href="{{ url_for('recordings') }}">Recordings</a>
-      <a href="{{ url_for('sessions') }}">Sessions</a>
-      <a href="{{ url_for('automations') }}">Automations</a>
-      <a href="{{ url_for('machines') }}">Machines</a>
+      <a href="{{ url_for('sessions') }}">Request a recording</a>
+      <a href="{{ url_for('setup') }}">Setup / Advanced</a>
       <span class="who">{{ current_user() }}</span>
     </nav>
     {% endif %}

@@ -13,7 +13,7 @@
   {% for a in refs.apps %}
     <details {% if loop.first %}open{% endif %}>
       <summary><a href="{{ url_for('demo', app_id=a.app_id) }}">{{ a.name }}</a>
-        {% if a.status != "known" %}<span class="badge {{ a.status }}">{{ a.status | replace("_", " ") }}</span>{% endif %}
+        <span class="badge {{ a.status }}">{{ a.status | status_label }}</span>
         <span class="muted">{{ a.level }} · <code>{{ a.key }}</code></span></summary>
       {% with steps = a.steps %}{% include "_flow.html" %}{% endwith %}
     </details>

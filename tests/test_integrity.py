@@ -135,7 +135,7 @@ class MergeTest(Base):
         self.assertEqual(again.status_code, 200)
         self.assertEqual(again.data, package.data)
         self.assertEqual(self.link(3)["selection"], [5])
-        self.assertIn(WEB, self.client.get("/apps/3").data.decode())
+        self.assertIn(WEB, self.client.get("/apps/3/setup").data.decode())
 
     def test_overlapping_reviewed_links_are_combined_not_dropped(self):
         self.assign(1, [1], notes="Search for the case")
@@ -257,7 +257,7 @@ class UrlIdentityTest(Base):
         self.pair()
         orders = self.make("Orders", "https://example.test/orders")
         billing = self.make("Billing", "https://example.test/billing")
-        self.assertIn("Web addresses match", self.client.get(f"/apps/{billing}").data.decode())
+        self.assertIn("Web addresses match", self.client.get(f"/apps/{billing}/setup").data.decode())
         self.assertEqual(self.post(f"/apps/{billing}/url-match", url_match="host").status_code, 302)
         self.send(shared_host_references(["https://example.test/orders/1", "https://example.test/help"]))
         self.assertEqual(self.flows(), {(orders, "web:https://example.test/orders"): ["b1"],
