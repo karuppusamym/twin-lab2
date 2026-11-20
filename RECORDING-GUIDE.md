@@ -16,6 +16,9 @@ One session records everything the process does on this PC. The session's target
    - **an emulator (IBM PCOMM, Reflection, BlueZone, wc3270):** change the session profile's host to `127.0.0.1` and port to `23270` for the recording.
    Try it without the mainframe first (below, *A check run*). Stop the recording only after the robot has finished with the mainframe: stopping ends the terminal's connection to the host.
 
+4. **Targets from the workflow:** **Targets from a UiPath project…** in the window (or `TwinLabRecorder.exe propose <project folder>`) reads the project's XAML and proposes the applications, web addresses, terminal hosts and browser it uses, with notes for Simulate input and for addresses held in variables. Check the list before recording.
+5. **The robot's log:** set UiPath Assistant's logging level to *Verbose* for the recording run. The recorder then reads the robot's execution log at the end and says which UI activities left no recorded step (**Recordings on this PC**, and `robot\coverage.json` in the session folder).
+
 ## Record
 
 **With the portal:** in the portal give each application an identity on its page (`CaseDesk.exe`, `https://orders.example.test`, `tn3270://mainframe.example.test:23`), then **Sessions → Offer a session** to the PC, with the automation it is for. On the PC choose the session and **Start**.
@@ -36,7 +39,7 @@ or from a command prompt:
 
 Then:
 
-1. Wait until the window says *Recording* (Edge opens on the first web target if there is one). For a mainframe target it also shows the address the terminal connects to.
+1. Wait until the window says *The browser is ready* when there is a web target (Edge opens on the first one), or *Recording* otherwise. For a mainframe target it also shows the address the terminal connects to.
 2. Run the UiPath process (from Studio or UiPath Assistant). Leave the PC alone while it runs: anything you do in a target application is recorded too.
 3. Press **Stop recording** (or Ctrl+C at the command prompt). Finishing takes a few seconds; the browser the recorder started closes.
 4. **Recordings on this PC** shows what was recorded per application. **Send references to the portal** sends only that summary; without a portal, nothing leaves the PC.

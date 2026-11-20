@@ -8,8 +8,10 @@ administrator rights). It carries Python, Twin Lab's collectors (labctl), UI Aut
 wrapper generated beforehand (comtypes.gen: the program's folder may be read-only), Playwright's
 driver, and `_build.json` (the Twin Lab commit). No browser: it uses the Edge on the PC.
 
-The build is not signed. Sign it before it runs on any machine other than a developer's: an
-unsigned program with low-level keyboard hooks is likely to be stopped by endpoint protection.
+Signing: with `TWINLAB_SIGN_CERT` set to the SHA-1 thumbprint of a code-signing certificate in
+the user's or machine's store, the program and Playwright's `node.exe` are signed with signtool
+(Windows SDK) and timestamped (`TWINLAB_SIGN_TIMESTAMP`). Unsigned, a program with low-level
+keyboard hooks is likely to be stopped by endpoint protection on a managed PC.
 """
 
 from __future__ import annotations
@@ -64,6 +66,16 @@ def main() -> int:
     print(" ".join(args))
     subprocess.run(args, check=True, cwd=PROJECT)
     exe = dist / "TwinLabRecorder" / "TwinLabRecorder.exe"
+    thumb = os.environ.get("TWINLAB_SIGN_CERT")  # a code-signing certificate's SHA-1 thumbprint
+    if thumb:
+        signtool = shutil.which("signtool") or "signtool"
+        stamp = os.environ.get("TWINLAB_SIGN_TIMESTAMP", "http://timestamp.digicert.com")
+        for target in [exe, *(dist / "TwinLabRecorder").rglob("node.exe")]:
+            subprocess.run([signtool, "sign", "/sha1", thumb, "/fd", "SHA256", "/tr", stamp,
+                            "/td", "SHA256", str(target)], check=True)  # fmt: skip
+        print(f"signed with certificate {thumb[:8]}...")
+    else:
+        print("not signed: set TWINLAB_SIGN_CERT to a code-signing certificate's thumbprint")
     size = sum(f.stat().st_size for f in (dist / "TwinLabRecorder").rglob("*") if f.is_file())
     print(f"built {exe} ({size / 1e6:.0f} MB); Twin Lab {commit[:12]}{' (with uncommitted changes)' if dirty else ''}")
     return 0

@@ -7,6 +7,7 @@
     TwinLabRecorder record --exe CaseDesk.exe --origin https://billing.example.test
     TwinLabRecorder record --tn3270 mainframe.example.test:23 --keep-browser-profile ...
     TwinLabRecorder browser              open the kept browser profile (install UiPath's extension)
+    TwinLabRecorder propose <project>    targets proposed from a UiPath project's XAML
     TwinLabRecorder show <session-id>    the references that would be sent
     TwinLabRecorder send <session-id>    send them (asks first; --yes to skip the question)
     TwinLabRecorder recover              finalise sessions an earlier run left unfinished
@@ -149,6 +150,10 @@ def describe(box: dict, notes: list[str] | None = None) -> str:
                      f"{len(box['flows'].get(a['key'], []))} steps")  # fmt: skip
     presence = sum(r["steps"] for r in box["timeline"] if r["app"] == "presence")
     lines.append(f"  other applications: used {presence} time(s), not named")
+    rb = box.get("robot")
+    if rb:
+        lines.append(f"  robot log: {rb['activities']} activities; {rb['covered']} of {rb['ui_activities']} "
+                     f"UI activities left a recorded step ({rb['gaps']} not seen: robot\\coverage.json)")  # fmt: skip
     if not box["apps"]:
         lines.append("  NO TARGET APPLICATION WAS RECORDED: see the notes below")
     for note in notes or []:
@@ -255,8 +260,12 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
               "(https://...), a mainframe host (tn3270://host:port):").pack(anchor="w")  # fmt: skip
     extra = tk.Text(tab_own, height=3)
     extra.pack(fill="x")
-    start_own = ttk.Button(tab_own, text="Start my session")
-    start_own.pack(anchor="w", pady=4)
+    own_buttons = ttk.Frame(tab_own)
+    own_buttons.pack(fill="x", pady=4)
+    start_own = ttk.Button(own_buttons, text="Start my session")
+    start_own.pack(side="left")
+    propose_btn = ttk.Button(own_buttons, text="Targets from a UiPath project…")
+    propose_btn.pack(side="left", padx=8)
 
     opts = ttk.LabelFrame(root, text="Browser", padding=6)
     opts.pack(fill="x", padx=10, pady=(6, 0))
@@ -384,6 +393,7 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
                                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # fmt: skip
         log.close()
         state["session"] = conf["id"]
+        state["ready"] = False
         lines = mainframe_addresses(conf)
         rec_status.set(f"Recording {conf['name']}…" + ("\n" + "\n".join(lines) if lines else ""))
         stop_btn.configure(state="normal")
@@ -396,6 +406,11 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
         if proc is None:
             return
         if proc.poll() is None:
+            journal = cfg.recordings / state["session"] / "journal.jsonl"
+            if not state.get("ready") and journal.is_file() and '"kind": "browser"' in journal.read_text(
+                    encoding="utf-8", errors="replace"):  # fmt: skip
+                state["ready"] = True
+                rec_status.set(rec_status.get() + "\nThe browser is ready: start the process now.")
             root.after(1000, watch)
             return
         state["proc"] = None
@@ -498,6 +513,37 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
                             "Install UiPath's extension there (or sign in to the applications), "
                             "then close that browser before you start recording.")  # fmt: skip
 
+    def on_propose():
+        from tkinter import filedialog
+
+        folder = filedialog.askdirectory(title="The UiPath project folder (with Main.xaml)")
+        if not folder:
+            return
+        _labctl()
+        from labctl.workstation.propose import propose
+
+        try:
+            got = propose(Path(folder))
+        except FileNotFoundError as exc:
+            messagebox.showerror("TwinLab Recorder", str(exc))
+            return
+        lines = []
+        for t in got["targets"]:
+            if t.get("exe"):
+                lines.append(t["exe"])
+            elif t.get("origin"):
+                lines.append(t["origin"])
+            elif t.get("tn3270"):
+                lines.append("tn3270://" + t["tn3270"])
+        extra.delete("1.0", "end")
+        extra.insert("end", "\n".join(lines))
+        if got["browser"]:
+            browser_var.set(got["browser"])
+        messagebox.showinfo("TwinLab Recorder", f"{len(lines)} target(s) from {got['files']} workflow file(s)."
+                            + ("\n\n" + "\n".join(got["notes"]) if got["notes"] else "")
+                            + "\n\nCheck them before you start.")  # fmt: skip
+
+    propose_btn.configure(command=on_propose)
     profile_btn.configure(command=on_profile)
     pair_btn.configure(command=on_pair)
     stop_btn.configure(command=on_stop)
@@ -566,6 +612,8 @@ def main(argv: list[str] | None = None) -> int:
     sd.add_argument("--yes", action="store_true")
     sub.add_parser("recover")
     sub.add_parser("browser", help="open the kept browser profile to install an extension")
+    pr = sub.add_parser("propose", help="targets proposed from a UiPath project's XAML")
+    pr.add_argument("project")
     sub.add_parser("gui")
     sub.add_parser("version")
     args = parser.parse_args(argv)
@@ -649,6 +697,20 @@ def main(argv: list[str] | None = None) -> int:
             open_profile(browser_profile(cfg), url="https://microsoftedge.microsoft.com/addons/search/uipath")
             print(f"opened the kept profile {browser_profile(cfg)}: install UiPath's extension, close "
                   "the browser, then record with --keep-browser-profile")  # fmt: skip
+        elif args.command == "propose":
+            _labctl()
+            from labctl.workstation.propose import propose
+
+            got = propose(Path(args.project))
+            for t in got["targets"]:
+                print("  " + (t.get("exe") or t.get("origin") or "tn3270://" + t.get("tn3270", "")))
+            if got["browser"]:
+                print(f"browser: {got['browser']}")
+            for note in got["notes"]:
+                print(f"note: {note}")
+            args_line = " ".join(("--exe " + t["exe"]) if t.get("exe") else ("--origin " + t["origin"])
+                                 if t.get("origin") else ("--tn3270 " + t["tn3270"]) for t in got["targets"])  # fmt: skip
+            print(f"record with: record {args_line}" + (f" --browser {got['browser']}" if got["browser"] else ""))
         elif args.command == "recover":
             _labctl()
             from labctl.workstation.session import recover_all
