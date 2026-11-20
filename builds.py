@@ -39,6 +39,7 @@ import sys
 import tempfile
 import uuid
 
+import artifacts
 import buildpack
 import devin
 import github
@@ -116,6 +117,7 @@ def connect(database):
     """A connection for the worker: rows by name, waiting on locks instead of failing."""
     db = sqlite3.connect(database, timeout=30)  # waits up to 30 s on a lock
     db.row_factory = sqlite3.Row
+    artifacts.configure(artifacts.from_env(database))  # packs outside a request: beside this catalog
     return db
 
 
@@ -175,9 +177,9 @@ def repos(db):
 # --- frozen packs ------------------------------------------------------------------------------------
 
 def stored_archive(db, app_id, revision):
-    row = db.execute("SELECT archive FROM brief_packages JOIN briefs USING (revision) "
+    row = db.execute("SELECT archive, artifact_id FROM brief_packages JOIN briefs USING (revision) "
                      "WHERE briefs.app_id = ? AND revision = ?", (app_id, revision)).fetchone()
-    return None if row is None else bytes(row["archive"])
+    return None if row is None else artifacts.content(db, row, "archive")
 
 
 def is_frozen(db, app_id, revision):
