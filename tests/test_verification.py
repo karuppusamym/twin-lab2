@@ -15,6 +15,7 @@ from agent import twinlab
 import independent
 import portal
 from portal import create_app
+from test_registry import eid
 import verification
 from support import connect, new_database
 
@@ -160,9 +161,9 @@ class VerificationTest(unittest.TestCase):
         recording = self.post("/recordings", name="Invoice", log=(
             io.BytesIO(b'{"seq":1,"action":"submit","url":"http://billing.local/"}\n'), "steps.jsonl")).location
         self.recording_id = recording.rsplit("/", 1)[1]
-        self.post(recording, app_id="1", event="1", notes="Invoice is saved")
+        self.post(recording, app_id="1", event=eid(self.recording_id, 1), notes="Invoice is saved")
         self.post("/apps/1/scenarios", name="Invoice is saved", expected="The invoice has its number.",
-                  event=self.recording_id + "#1")
+                  event=f"{self.recording_id}#{eid(self.recording_id, 1)}")
         self.assertEqual(self.client.get("/apps/1/build-pack").status_code, 200)
         self.settings()
 

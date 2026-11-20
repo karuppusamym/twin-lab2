@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 from portal import create_app
+import event_ids
 import recorder_contract
 import registry
 from support import connect, new_database
@@ -18,13 +19,34 @@ WEB = "web:http://127.0.0.1:8080"
 CV = recorder_contract.CONTRACT_VERSION
 
 
+def eid(recording_id, n):
+    """The id the portal derives for event `n` of a recording from an older recorder."""
+    return event_ids.derived(recording_id, n)
+
+
+def numbers(database, recording_id, ids):
+    """The display numbers (seq) of stored event ids, sorted: what the tests compare."""
+    with closing(connect(database)) as db:
+        row = db.execute("SELECT events FROM recordings WHERE id = ?", (recording_id,)).fetchone()
+    order = {e["event_id"]: e["seq"] for e in json.loads(row[0])}
+    return sorted(order[i] for i in ids)
+
+
+def by_number(database, recording_id, wanted):
+    """The stored event ids of the given display numbers."""
+    with closing(connect(database)) as db:
+        row = db.execute("SELECT events FROM recordings WHERE id = ?", (recording_id,)).fetchone()
+    found = {e["seq"]: e["event_id"] for e in json.loads(row[0])}
+    return [found[n] for n in wanted]
+
+
 def references(session_id="20261119T100000Z-0a1b2c3d", portal_session_id=None, apps=None):
     session = {"id": session_id, "name": "Order to invoice", "started": "2026-11-19T10:00:00.000Z",
                "ended": "2026-11-19T10:05:00.000Z", "state": "stopped", "twinlab_commit": "5bb142a"}
     if portal_session_id:
         session["portal_session_id"] = portal_session_id
     return {
-        "contract_version": recorder_contract.CONTRACT_VERSION,
+        "contract_version": "1.0.0",  # the 1.0 shape: steps without event ids (see references_1_1)
         "format": "twinlab-references/1", "session": session,
         "apps": apps or [
             {"key": DESK, "surface": "desktop", "level": "full", "display": "CaseDesk",
@@ -39,6 +61,38 @@ def references(session_id="20261119T100000Z-0a1b2c3d", portal_session_id=None, a
         },
         "timeline": [{"app": DESK, "steps": 2}, {"app": "presence", "steps": 1}, {"app": WEB, "steps": 1}],
     }
+
+
+# Event ids as a contract 1.1 recorder assigns them at capture time (UUIDv7).
+EVENT_1 = "019a9f1c-0000-7000-8000-000000000001"
+EVENT_2 = "019a9f1c-0000-7000-8000-000000000002"
+EVENT_5 = "019a9f1c-0000-7000-8000-000000000005"
+
+
+def completeness_report(overall="complete", **channels):
+    report = {"overall": overall, "channels": {"web": {"status": "complete", "gaps": [], "notes": []},
+                                               "desktop": {"status": "complete", "gaps": [], "notes": []},
+                                               "mainframe": {"status": "not_requested"}},
+              "network_evidence": "complete", "recovered": False, "loss_window_seconds": None}
+    report["channels"].update(channels)
+    return report
+
+
+def references_1_1(session_id="20261119T100000Z-0a1b2c3d", **completeness):
+    """The references() session as a contract 1.1 recorder sends it: every step with its event
+    id, channel, capture time and display order, and the recording's completeness."""
+    doc = references(session_id)
+    doc["contract_version"] = "1.1.0"
+    times = {1: "2026-11-19T10:01:00.000Z", 2: "2026-11-19T10:02:00.000Z", 5: "2026-11-19T10:04:00.000Z"}
+    ids = {1: EVENT_1, 2: EVENT_2, 5: EVENT_5}
+    for key, steps in doc["flows"].items():
+        for step in steps:
+            step.update(event_id=ids[step["n"]], channel=key.split(":", 1)[0], captured_at=times[step["n"]],
+                        seq=step["n"])
+    doc["completeness"] = completeness.get("report") or completeness_report()
+    doc["preflight"] = {"checks": [{"name": "UI Automation", "ok": True, "detail": "available"},
+                                   {"name": "Browser profile", "ok": True, "detail": ""}], "ready": True}
+    return doc
 
 
 class RegistryTest(unittest.TestCase):
@@ -121,7 +175,8 @@ class RegistryTest(unittest.TestCase):
         # the catalog's evidence links: each application's steps are selected
         with closing(connect(self.database)) as db, db:
             links = dict(db.execute("SELECT app_id, selection FROM evidence").fetchall())
-        self.assertEqual(json.loads(links[1]), [1, 2])
+        recording_id = "ws-20261119T100000Z-0a1b2c3d"
+        self.assertEqual(json.loads(links[1]), sorted([eid(recording_id, 1), eid(recording_id, 2)]))
 
     def test_offered_session_targets_known_apps_and_links_its_automation(self):
         _, token = self.pair()

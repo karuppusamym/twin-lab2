@@ -11,13 +11,17 @@ import json
 from pathlib import Path
 import re
 import secrets
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 import urllib.request
 
 from flask import Flask, abort, g, redirect, render_template, request, send_file, session, url_for
+from werkzeug.exceptions import HTTPException
+from werkzeug.routing import RequestRedirect
 
 import buildpack
 import db as database
+import completeness
+import event_ids
 import independent
 import journey
 import builds_web
@@ -258,7 +262,7 @@ window_open window_close menu_open focus check uncheck scroll setup download loa
 """.split())
 
 def ordered(events):
-    return sorted(events, key=lambda event: (event.get("time") or "", event["seq"]))
+    return sorted(events, key=lambda event: (event.get("time") or "", event["seq"], event.get("event_id") or ""))
 
 
 def recording_projection(log):
@@ -285,6 +289,9 @@ def recording_projection(log):
         ):
             raise ValueError(f"Line {number} has an invalid TwinLab2 session ID.")
         session_ids.add(session_id)
+        event_id = row.get("event_id")
+        if event_id is not None and event_ids.clean(event_id) is None:
+            raise ValueError(f"Line {number} has an invalid event_id.")
         events[seq] = {
             "seq": seq, "source": label or "Unknown source",
             "action": action if isinstance(action, str) and action in ACTIONS else "other",
@@ -296,13 +303,62 @@ def recording_projection(log):
                     events[seq]["time"] = at.astimezone(timezone.utc).isoformat()
             except (ValueError, OverflowError):
                 pass
+        if event_id is not None:
+            events[seq]["event_id"] = event_ids.clean(event_id)
     if not events:
         raise ValueError("The event log is empty.")
     if len(session_ids) != 1:
         raise ValueError("An upload must contain events from a single recording session.")
     session_id = session_ids.pop()
     digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
-    return session_id or digest, ordered(events.values())
+    recording_id = session_id or digest
+    found = event_ids.assign(list(events.values()), recording_id)  # an event without one: derived from its seq
+    if len({event["event_id"] for event in found}) != len(found):
+        raise ValueError("Each event must have its own event_id.")
+    return recording_id, ordered(found)
+
+
+def upload_view(data):
+    """What the recording page says about an upload, from the storage API's answer (None when
+    there is none). The answer's shape is read leniently: a state, bytes or parts, a percentage."""
+    if not isinstance(data, dict):
+        return None
+
+    def first(*names):
+        for name in names:
+            value = data.get(name)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return value
+        return None
+
+    state = str(data.get("state") or data.get("status") or "").strip()[:40]
+    done = first("received_bytes", "bytes_received", "uploaded_bytes", "uploaded", "received")
+    total = first("total_bytes", "bytes_total", "size", "total")
+    parts, of = first("parts_received", "received_parts", "parts_done"), first("parts_total", "total_parts")
+    percent = first("percent", "progress")
+    if percent is not None and percent <= 1 and "percent" not in data:
+        percent *= 100
+    if percent is None and done is not None and total:
+        percent = done / total * 100
+    if percent is None and parts is not None and of:
+        percent = parts / of * 100
+    percent = None if percent is None else max(0, min(100, round(percent)))
+    complete = state.lower() in ("complete", "completed", "done", "uploaded", "stored") or percent == 100
+    words = [state.replace("_", " ").capitalize() or ("Complete" if complete else "Uploading")]
+    if percent is not None:
+        words.append(f"{percent}%")
+    if done is not None and total:
+        words.append(f"({human(done)} of {human(total)})")
+    elif parts is not None and of:
+        words.append(f"({parts} of {of} parts)")
+    return {"text": " ".join(words), "percent": percent, "complete": complete}
+
+
+def human(size):
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "bytes" else f"{size:.1f} {unit}"
+        size /= 1024
 
 
 def add_release(target, app_id, version, revision, repository, ref, subdirectory=None):
@@ -376,6 +432,7 @@ def create_app(target):
         migrations.run(db())
         with db():  # requirements text written by older portals (or by hand) becomes a scenario
             scenarios.import_requirements(db())
+        event_ids.migrate(db())  # data: references by number become references by event_id
 
     app.jinja_env.filters["status_label"] = lambda status: journey.STATUS_LABELS.get(
         status, str(status).replace("_", " "))
@@ -517,8 +574,8 @@ def create_app(target):
         return redirect(url_for("demo", app_id=result))
 
     def selected_events(app_id):
-        """The events selected for the app, as `recording#seq` with their pack references."""
-        return {scenarios.event_ref(rec["recording_id"], event["seq"]): dict(event, recording=rec["recording"])
+        """The events selected for the app, as `recording#event_id` with their pack references."""
+        return {scenarios.event_ref(rec["recording_id"], event["event_id"]): dict(event, recording=rec["recording"])
                 for rec in buildpack.evidence(db(), app_id) for event in rec["events"]}
 
     @app.route("/apps/<int:app_id>", methods=["GET", "POST"])
@@ -620,9 +677,10 @@ def create_app(target):
                 (digest, name, json.dumps(events)),
             ).fetchone()
             if inserted is None:
-                old = {event["seq"]: event for event in json.loads(get_recording(digest)["events"])}
+                # a recovered upload of the same session: events are the same by event_id
+                old = {event["event_id"]: event for event in json.loads(get_recording(digest)["events"])}
                 for event in events:
-                    existing = old.setdefault(event["seq"], event)
+                    existing = old.setdefault(event["event_id"], event)
                     if any(existing[key] != event[key] for key in ("action", "source")) or (
                         existing.get("time") and event.get("time") and existing["time"] != event["time"]
                     ):
@@ -642,11 +700,11 @@ def create_app(target):
             if app_id is None:
                 abort(400, "Choose a demo app.")
             get_app(app_id)
-            try:
-                selected = {int(value) for value in request.form.getlist("event")}
-            except ValueError:
-                abort(400, "Invalid event number.")
-            if not selected or not selected <= {event["seq"] for event in events}:
+            # events are chosen by event_id: their seq is a display order and may change
+            selected = {event_ids.clean(value) for value in request.form.getlist("event")}
+            if None in selected:
+                abort(400, "Invalid event.")
+            if not selected or not selected <= {event["event_id"] for event in events}:
                 abort(400, "Choose one or more events from this recording.")
             with db():
                 # the owner's review: a resend never changes this selection (registry.link_evidence)
@@ -668,7 +726,26 @@ def create_app(target):
             selected=set(json.loads(saved["selection"])) if saved else set(),
             suggested=set(json.loads(saved["suggested"])) if saved else set(),
             apps=db().execute("SELECT * FROM apps ORDER BY name").fetchall(),
+            status=registry.recording_status(db(), recording_id), upload=upload_progress(recording_id),
+            preview=buildpack.preview(db(), recording_id), in_gap=completeness.in_gap,
         )
+
+    def upload_progress(recording_id):
+        """The upload's progress from GET /api/recordings/<id>/upload, when the portal has that
+        route (artifact storage) and it answers; else None, shown as "not available"."""
+        path = f"/api/recordings/{quote(recording_id, safe='')}/upload"
+        try:
+            endpoint, args = app.url_map.bind("localhost").match(path, method="GET")
+        except (HTTPException, RequestRedirect):
+            return None
+        try:
+            response = app.make_response(app.view_functions[endpoint](**args))
+        except HTTPException:
+            return None
+        if response.status_code != 200 or not response.is_json:
+            return None
+        found = upload_view(response.get_json(silent=True))
+        return found and dict(found, url=path)
 
     def store_pack(app_id):
         """Build the app's pack and store it under its revision: the bytes a preview shows and

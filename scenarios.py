@@ -23,7 +23,8 @@ FIELDS = {
     "notes": ("Notes", 20000),
 }
 MIGRATED_NAME = "Requirements (migrated)"
-EVENT_REF = re.compile(r"^(?P<recording>[^#\s]{1,200})#(?P<seq>\d{1,12})$")
+# a linked event is `recording#event_id`: never its position or seq, which may be recomputed
+EVENT_REF = re.compile(r"^(?P<recording>[^#\s]{1,200})#(?P<event_id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
 
 
 def import_requirements(db):
@@ -44,13 +45,13 @@ def lines(text):
     return [line.strip() for line in (text or "").splitlines() if line.strip()]
 
 
-def event_ref(recording_id, seq):
-    return f"{recording_id}#{seq}"
+def event_ref(recording_id, event_id):
+    return f"{recording_id}#{event_id}"
 
 
 def from_form(form, allowed_events):
     """The scenario fields of a submitted form, or ValueError. `allowed_events` is the set of
-    `recording#seq` references of events selected for the app."""
+    `recording#event_id` references of events selected for the app."""
     values = {}
     for field, (label, limit) in FIELDS.items():
         value = (form.get(field) or "").replace("\r\n", "\n").strip()

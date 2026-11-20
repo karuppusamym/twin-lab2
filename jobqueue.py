@@ -6,7 +6,7 @@ that died: the next claim takes it over and `attempts` counts it. A job that kee
 reclaimed (MAX_ATTEMPTS in a row) fails instead of looping. `reschedule` puts a job back in the
 queue for later (a poll), which resets the count.
 
-SQL is kept portable (no SKIP LOCKED, no INSERT OR ...): a claim is a guarded
+SQL is kept portable (no SKIP LOCKED, no INSERT OR, no PRAGMA): a claim is a guarded
 UPDATE whose WHERE repeats the claimable condition, so of two workers racing for one job only
 one update matches. Timestamps are fixed-width UTC text, compared as strings.
 """

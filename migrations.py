@@ -235,6 +235,16 @@ BUILD_JOBS = [
 ]
 
 
+# -- 4: recording completeness (recorder contract 1.1) ---------------------------------------------
+
+RECORDING_DETAILS = [
+    """CREATE TABLE IF NOT EXISTS recording_completeness (
+        recording_id TEXT PRIMARY KEY REFERENCES recordings(id), completeness TEXT, preflight TEXT,
+        accepted_by TEXT, accepted_at TEXT, updated_at TEXT NOT NULL
+    )""",
+]
+
+
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
@@ -242,6 +252,7 @@ MIGRATIONS = [
     (1, "baseline", [*BASELINE_TABLES, add_columns(BASELINE_COLUMNS)]),
     (2, "release verification", RELEASE_VERIFICATION),
     (3, "build jobs", BUILD_JOBS),
+    (4, "recording details", RECORDING_DETAILS),
 ]
 
 

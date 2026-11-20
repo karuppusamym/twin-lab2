@@ -14,8 +14,8 @@ import migrations
 import portal
 from portal import create_app
 import registry
-from test_registry import CV, DESK, WEB, references
 from support import connect, new_database
+from test_registry import CV, DESK, WEB, by_number, eid, numbers, references
 
 RECORDING = "ws-20261119T100000Z-0a1b2c3d"
 
@@ -53,12 +53,15 @@ class Base(unittest.TestCase):
         with closing(connect(self.database)) as db:
             row = db.execute("SELECT * FROM evidence WHERE app_id = ? AND recording_id = ?",
                              (app_id, recording_id)).fetchone()
-        return row and {"selection": json.loads(row["selection"]), "suggested": json.loads(row["suggested"]),
+        # stored as event ids; compared by the events' display numbers
+        return row and {"selection": numbers(self.database, recording_id, json.loads(row["selection"])),
+                        "suggested": numbers(self.database, recording_id, json.loads(row["suggested"])),
                         "notes": row["notes"], "reviewed": row["reviewed"]}
 
     def assign(self, app_id, events, notes="", recording_id=RECORDING):
         response = self.client.post(f"/recordings/{recording_id}", data={
-            "token": self.token, "app_id": str(app_id), "event": [str(e) for e in events], "notes": notes})
+            "token": self.token, "app_id": str(app_id), "notes": notes,
+            "event": by_number(self.database, recording_id, events)})
         self.assertEqual(response.status_code, 302, response.data)
 
     def merge(self, source, into):
@@ -297,7 +300,8 @@ class MigrationTest(unittest.TestCase):
             with closing(connect(database)) as db:
                 row = db.execute("SELECT selection, notes, reviewed, suggested FROM evidence").fetchone()
                 mode = db.execute("SELECT url_match FROM apps").fetchone()[0]
-            self.assertEqual(row, ("[5]", "kept", 1, "[]"))
+            # the old selection by number is now by the event's id
+            self.assertEqual(row, (json.dumps([eid(RECORDING, 5)]), "kept", 1, "[]"))
             self.assertEqual(mode, "path")
             # the old host-only identity still maps the recorder's references
             app.testing = True
@@ -316,7 +320,7 @@ class MigrationTest(unittest.TestCase):
             self.assertEqual(result["mapped"], [1])
             with closing(connect(database)) as db:
                 row = db.execute("SELECT selection, notes, reviewed FROM evidence").fetchone()
-            self.assertEqual(row, ("[5]", "kept", 1))  # treated as reviewed: unchanged
+            self.assertEqual(row, (json.dumps([eid(RECORDING, 5)]), "kept", 1))  # treated as reviewed: unchanged
 
 
 if __name__ == "__main__":

@@ -98,10 +98,12 @@ def stored_settings(db):
 def save_setting(db, key, value, user):
     if key not in SETTING_KEYS:
         raise KeyError(key)
-    db.execute("DELETE FROM settings WHERE key = ?", (key,))
     if value:
-        db.execute("INSERT INTO settings (key, value, updated_by, updated_at) VALUES (?, ?, ?, ?)",
-                   (key, value, user, now()))
+        db.execute("INSERT INTO settings (key, value, updated_by, updated_at) VALUES (?, ?, ?, ?) "
+                   "ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, "
+                   "updated_at = excluded.updated_at", (key, value, user, now()))
+    else:
+        db.execute("DELETE FROM settings WHERE key = ?", (key,))
     db.commit()
 
 
@@ -124,9 +126,10 @@ def connect_repo(db, repo, user, gh=None):
     """Check that the token can see `repo` and remember it with its default branch."""
     repo = github.normalize_repo(repo)
     info = (gh or github.GitHub(github_settings(db))).repository(repo)
-    db.execute("DELETE FROM github_repos WHERE repo = ?", (info["full_name"],))
     db.execute("INSERT INTO github_repos (repo, default_branch, private, connected_by, connected_at) "
-               "VALUES (?, ?, ?, ?, ?)", (info["full_name"], info["default_branch"], int(info["private"]), user, now()))
+               "VALUES (?, ?, ?, ?, ?) ON CONFLICT (repo) DO UPDATE SET default_branch = excluded.default_branch, "
+               "private = excluded.private, connected_by = excluded.connected_by, connected_at = excluded.connected_at",
+               (info["full_name"], info["default_branch"], int(info["private"]), user, now()))
     db.commit()
     return info
 
