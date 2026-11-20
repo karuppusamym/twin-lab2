@@ -1,0 +1,10 @@
+{"format": "twinlab-workstation-session/1", "id": "20261120T090000Z-5e55a0f1", "name": "Case lookup and account inquiry",
+ "state": "stopped", "started": "2026-11-20T09:00:00.000Z", "ended": "2026-11-20T09:04:00.000Z",
+ "recorder": "TwinLabRecorder 0.2.0", "twinlab_commit": "430dfe538965b46ccbe824f8f2b4f415c5576483",
+ "automation_id": 1, "portal_session_id": 2,
+ "targets": [{"exe": "casedesk.exe", "level": "full"},
+             {"origin": "http://127.0.0.1:8080", "level": "full", "app_id": 7},
+             {"key": "mainframe:127.0.0.1:3270", "level": "steps", "app_id": 8}],
+ "apps": {"mainframe:127.0.0.1:3270": {"key": "mainframe:127.0.0.1:3270", "surface": "mainframe", "level": "steps",
+                                       "display": "Demo mainframe", "app_id": 8}},
+ "notes": []}

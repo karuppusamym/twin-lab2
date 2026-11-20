@@ -96,3 +96,16 @@ Windows 11, Python 3.13. Locally tested with automated tests on temporary databa
 | Local render | The catalog, an application page, its Setup / Advanced page, Request a recording and Setup / Advanced rendered from `python portal.py --port 8791` with a sample catalog. |
 
 Not checked: onboarding with real users.
+
+## Recorder contract 1.0.0 and the pinned Twin Lab (2026-11-20)
+
+| Check | Result |
+|---|---|
+| Contract tests (`tests/test_contract.py`) | Pass. The schema is valid JSON Schema 2020-12. The small validator agrees with `jsonschema` 4.25 on every sample. Payloads at 1.0.0 and at a newer minor (1.7.3, with an unknown field) pass. A missing version, 0.9.0, 0.3.1 and 2.0.0 are refused on pairing and on upload (426) with what to update, the recorder or the portal. A refused pairing does not use up the code. A wrong shape at a supported version gets 400 with field paths. Each recording keeps its contract version, recorder, recorder version and Twin Lab commit, and its page shows them. |
+| Fixture built by the real collectors | Pass. `tests/fixtures/workstation-session/` (synthetic CaseDesk, a web application and the demo mainframe) was built with the pinned commit's `labctl.workstation.timeline`, and the result conforms. The test rebuilds it with the vendored pin and compares, and it skips that step when nothing is vendored. |
+| Real recordings on this PC | All four sessions recorded on 2026-11-20 (`%LOCALAPPDATA%\TwinLabRecorder\recordings`), including the web, Calculator and mainframe run above, conform after the recorder's stamping. They were checked in place and not copied into the repository. |
+| Pin | One tree digest from GitHub's archive of `430dfe5`, from `git archive` of a local clone and from the Windows checkout with autocrlf. `fetch` refuses a different digest, and `verify` refuses a copy edited after fetching. |
+| Built program from the pin | `python agent/build.py` with no `TWINLAB_PATH` (248 MB). `_build.json` has `"pinned": true`, the commit, the tree digest and contract 1.0.0, and the schema is bundled. Run from a copied folder with only `C:\Windows\System32` on `PATH`, against a live portal: `pair` and `send --yes` of the fixture's references worked. The portal recorded TwinLabRecorder 0.2.0, contract 1.0.0 and Twin Lab `430dfe538965`. |
+| The previous build (0.1.0, `dist/TwinLabRecorder-new`) against the new portal | `pair` is refused: "this recorder does not declare a contract_version … Update TwinLabRecorder to 0.2.0 or later". The same code then paired the 0.2.0 build. (The older `dist/TwinLabRecorder` 0.1.0 folder fails before it reaches the portal, with `LookupError: unknown encoding: idna`. That fault is in the old build itself.) |
+
+Not run: the click-driving end to end (`TWINLAB_AGENT_E2E=1`) and a new recording with the 0.2.0 build. `capture.py` was checked only up to starting the pinned `labctl.cli`.

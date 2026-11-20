@@ -1,0 +1,167 @@
+{
+ "format": "twinlab-references/1",
+ "session": {
+  "id": "20261120T090000Z-5e55a0f1",
+  "name": "Case lookup and account inquiry",
+  "started": "2026-11-20T09:00:00.000Z",
+  "ended": "2026-11-20T09:04:00.000Z",
+  "state": "stopped",
+  "recorder": "TwinLabRecorder 0.2.0",
+  "twinlab_commit": "430dfe538965b46ccbe824f8f2b4f415c5576483",
+  "automation_id": 1,
+  "portal_session_id": 2,
+  "location": {
+   "kind": "local",
+   "path": "recordings/20261120T090000Z-5e55a0f1"
+  },
+  "targets": [
+   {
+    "exe": "casedesk.exe",
+    "level": "full"
+   },
+   {
+    "origin": "http://127.0.0.1:8080",
+    "level": "full",
+    "app_id": 7
+   },
+   {
+    "key": "mainframe:127.0.0.1:3270",
+    "level": "steps",
+    "app_id": 8
+   }
+  ]
+ },
+ "apps": [
+  {
+   "key": "mainframe:127.0.0.1:3270",
+   "surface": "mainframe",
+   "level": "steps",
+   "display": "Demo mainframe",
+   "app_id": 8
+  },
+  {
+   "key": "desktop:Twin Lab reference/CaseDesk",
+   "surface": "desktop",
+   "level": "full",
+   "display": "CaseDesk",
+   "exe": "CaseDesk.exe",
+   "company": "Twin Lab reference",
+   "product": "CaseDesk",
+   "version": "1.0.0.0",
+   "toolkit": "winforms"
+  },
+  {
+   "key": "web:http://127.0.0.1:8080",
+   "surface": "web",
+   "level": "full",
+   "display": "127.0.0.1:8080",
+   "origin": "http://127.0.0.1:8080",
+   "app_id": 7
+  }
+ ],
+ "flows": {
+  "desktop:Twin Lab reference/CaseDesk": [
+   {
+    "n": 1,
+    "action": "type",
+    "control": "Edit",
+    "label": "txtSearch",
+    "screen": "MainForm"
+   },
+   {
+    "n": 2,
+    "action": "click",
+    "control": "Button",
+    "label": "btnOpen",
+    "screen": "MainForm"
+   },
+   {
+    "n": 3,
+    "action": "click",
+    "control": "ListItem",
+    "screen": "MainForm"
+   }
+  ],
+  "web:http://127.0.0.1:8080": [
+   {
+    "n": 7,
+    "action": "type",
+    "control": "input",
+    "label": "username",
+    "screen": "http://127.0.0.1:8080/login"
+   },
+   {
+    "n": 8,
+    "action": "click",
+    "control": "button",
+    "label": "btnSave",
+    "screen": "http://127.0.0.1:8080/cases/{id}"
+   }
+  ],
+  "mainframe:127.0.0.1:3270": [
+   {
+    "n": 12,
+    "action": "screen",
+    "screen": "DEMO SIGN ON",
+    "control": "screen"
+   },
+   {
+    "n": 13,
+    "action": "type",
+    "screen": "DEMO SIGN ON",
+    "control": "field",
+    "label": "USERID"
+   },
+   {
+    "n": 14,
+    "action": "aid",
+    "screen": "DEMO SIGN ON",
+    "control": "key",
+    "label": "Enter",
+    "key": "Enter"
+   },
+   {
+    "n": 15,
+    "action": "screen",
+    "screen": "ACCOUNT INQUIRY",
+    "control": "screen"
+   },
+   {
+    "n": 16,
+    "action": "type",
+    "screen": "ACCOUNT INQUIRY",
+    "control": "field",
+    "label": "ACCOUNT NO"
+   },
+   {
+    "n": 17,
+    "action": "aid",
+    "screen": "ACCOUNT INQUIRY",
+    "control": "key",
+    "label": "PF3"
+   }
+  ]
+ },
+ "timeline": [
+  {
+   "app": "desktop:Twin Lab reference/CaseDesk",
+   "steps": 3
+  },
+  {
+   "app": "presence",
+   "steps": 1
+  },
+  {
+   "app": "web:http://127.0.0.1:8080",
+   "steps": 2
+  },
+  {
+   "app": "presence",
+   "steps": 1
+  },
+  {
+   "app": "mainframe:127.0.0.1:3270",
+   "steps": 6
+  }
+ ]
+}

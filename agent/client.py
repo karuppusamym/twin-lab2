@@ -15,6 +15,7 @@ import urllib.request
 from urllib.parse import urlsplit
 
 from agent.settings import APP, VERSION
+from recorder_contract import CONTRACT_VERSION
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -45,6 +46,7 @@ class Portal:
         req = urllib.request.Request(self.url + path, data=data, method=method)
         req.add_header("Accept", "application/json")
         req.add_header("X-TwinLab-Recorder", f"{APP} {VERSION}")
+        req.add_header("X-TwinLab-Contract", CONTRACT_VERSION)
         if data is not None:
             req.add_header("Content-Type", "application/json")
         if self.token:
@@ -71,7 +73,8 @@ class Portal:
         return doc
 
     def pair(self, code: str, name: str) -> dict:
-        doc = self._call("POST", "/api/agent/pair", {"code": code, "name": name})
+        doc = self._call("POST", "/api/agent/pair", {"contract_version": CONTRACT_VERSION, "code": code,
+                                                     "name": name, "recorder": {"name": APP, "version": VERSION}})
         if not isinstance(doc.get("token"), str) or not isinstance(doc.get("machine_id"), int):
             raise PortalError("unexpected answer from the portal")
         return doc

@@ -14,7 +14,7 @@ from zipfile import ZipFile
 import portal
 from portal import create_app
 import registry
-from test_registry import DESK, WEB, references
+from test_registry import CV, DESK, WEB, references
 
 RECORDING = "ws-20261119T100000Z-0a1b2c3d"
 
@@ -41,7 +41,7 @@ class Base(unittest.TestCase):
         self.post("/machines/pair")
         code = re.search(r'id="pair-code">([A-Z0-9-]+)<', self.client.get("/machines").data.decode()).group(1)
         self.agent = {"Authorization": "Bearer " + self.client.post(
-            "/api/agent/pair", json={"code": code, "name": "PC"}).json["token"]}
+            "/api/agent/pair", json={"contract_version": CV, "code": code, "name": "PC"}).json["token"]}
 
     def send(self, refs=None):
         response = self.client.post("/api/agent/references", json=refs or references(), headers=self.agent)
@@ -308,7 +308,7 @@ class MigrationTest(unittest.TestCase):
             client.post("/machines/pair", data={"token": token})
             code = re.search(r'id="pair-code">([A-Z0-9-]+)<', client.get("/machines").data.decode()).group(1)
             agent = {"Authorization": "Bearer " + client.post(
-                "/api/agent/pair", json={"code": code, "name": "PC"}).json["token"]}
+                "/api/agent/pair", json={"contract_version": CV, "code": code, "name": "PC"}).json["token"]}
             refs = references(apps=[{"key": WEB, "level": "full"}])
             refs["flows"] = {WEB: references()["flows"][WEB]}
             refs["timeline"] = [{"app": WEB, "steps": 1}]

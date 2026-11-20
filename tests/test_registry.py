@@ -10,10 +10,12 @@ import unittest
 from unittest import mock
 
 from portal import create_app
+import recorder_contract
 import registry
 
 DESK = "desktop:Twin Lab reference/CaseDesk"
 WEB = "web:http://127.0.0.1:8080"
+CV = recorder_contract.CONTRACT_VERSION
 
 
 def references(session_id="20261119T100000Z-0a1b2c3d", portal_session_id=None, apps=None):
@@ -22,6 +24,7 @@ def references(session_id="20261119T100000Z-0a1b2c3d", portal_session_id=None, a
     if portal_session_id:
         session["portal_session_id"] = portal_session_id
     return {
+        "contract_version": recorder_contract.CONTRACT_VERSION,
         "format": "twinlab-references/1", "session": session,
         "apps": apps or [
             {"key": DESK, "surface": "desktop", "level": "full", "display": "CaseDesk",
@@ -58,7 +61,7 @@ class RegistryTest(unittest.TestCase):
         page = self.client.get("/machines").data.decode()
         code = re.search(r'id="pair-code">([A-Z0-9-]+)<', page).group(1)
         self.assertNotIn(code, self.client.get("/machines").data.decode())  # shown once
-        response = self.client.post("/api/agent/pair", json={"code": code.lower(), "name": name})
+        response = self.client.post("/api/agent/pair", json={"contract_version": CV, "code": code.lower(), "name": name})
         self.assertEqual(response.status_code, 200, response.data)
         return code, response.json["token"]
 
@@ -67,9 +70,9 @@ class RegistryTest(unittest.TestCase):
 
     def test_pairing_codes_are_single_use_and_tokens_are_stored_hashed(self):
         code, token = self.pair()
-        again = self.client.post("/api/agent/pair", json={"code": code, "name": "Other"})
+        again = self.client.post("/api/agent/pair", json={"contract_version": CV, "code": code, "name": "Other"})
         self.assertEqual(again.status_code, 403)
-        self.assertEqual(self.client.post("/api/agent/pair", json={"code": "AAAAAAAAAA", "name": "X"}).status_code, 403)
+        self.assertEqual(self.client.post("/api/agent/pair", json={"contract_version": CV, "code": "AAAAAAAAAA", "name": "X"}).status_code, 403)
         with closing(sqlite3.connect(self.database)) as db, db:
             stored = db.execute("SELECT token_sha FROM machines").fetchone()[0]
             codes = [r[0] for r in db.execute("SELECT code_sha FROM pairing_codes")]
@@ -87,10 +90,10 @@ class RegistryTest(unittest.TestCase):
         code = re.search(r'id="pair-code">([A-Z0-9-]+)<', self.client.get("/machines").data.decode()).group(1)
         with closing(sqlite3.connect(self.database)) as db, db:
             db.execute("UPDATE pairing_codes SET expires_at = '2000-01-01T00:00:00+00:00'")
-        self.assertEqual(self.client.post("/api/agent/pair", json={"code": code, "name": "X"}).status_code, 403)
+        self.assertEqual(self.client.post("/api/agent/pair", json={"contract_version": CV, "code": code, "name": "X"}).status_code, 403)
         for _ in range(registry.FAILURES_PER_10_MIN):
-            self.client.post("/api/agent/pair", json={"code": "BBBBBBBBBB", "name": "X"})
-        self.assertEqual(self.client.post("/api/agent/pair", json={"code": "BBBBBBBBBB", "name": "X"}).status_code, 429)
+            self.client.post("/api/agent/pair", json={"contract_version": CV, "code": "BBBBBBBBBB", "name": "X"})
+        self.assertEqual(self.client.post("/api/agent/pair", json={"contract_version": CV, "code": "BBBBBBBBBB", "name": "X"}).status_code, 429)
 
     def test_references_register_discovered_apps_and_map_the_recording(self):
         _, token = self.pair()
@@ -154,7 +157,8 @@ class RegistryTest(unittest.TestCase):
 
     def test_invalid_references_are_refused(self):
         _, token = self.pair()
-        for broken in ({"format": "x"}, dict(references(), session={"id": "../../etc"}),
+        for broken in ({"format": "x", "contract_version": recorder_contract.CONTRACT_VERSION},
+                       dict(references(), session={"id": "../../etc"}),
                        dict(references(), apps=[{"key": "desktop:\nX", "level": "full"}]),
                        dict(references(), timeline=[{"app": "web:http://elsewhere", "steps": 1}])):
             response = self.client.post("/api/agent/references", json=broken, headers=self.agent(token))

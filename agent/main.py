@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import threading
@@ -37,22 +38,32 @@ if __package__ in (None, ""):  # run as a script: python agent/main.py
 
 from agent import settings as st  # noqa: E402
 from agent.client import Portal, PortalError, check_portal  # noqa: E402
+import recorder_contract as contract  # noqa: E402
 
 
 def _labctl() -> None:
-    """Make Twin Lab's collectors importable: bundled in a frozen build; else the checkout
-    named by TWINLAB_PATH, or ../twin-lab beside this project."""
-    try:
-        import labctl  # noqa: F401
+    """Make Twin Lab's collectors importable: bundled in a frozen build; else the pinned copy
+    in vendor/ (twinlab.lock.json, `python -m agent.twinlab fetch`), checked against its digest.
+    TWINLAB_PATH names another checkout for development only: it is not the pinned release."""
+    if getattr(sys, "frozen", False) or "labctl" in sys.modules:
+        return  # bundled at build time (from the pin, see _build.json), or already chosen
+    from agent import twinlab  # never a labctl that pip put in site-packages: the pin comes first
+
+    override = os.environ.get("TWINLAB_PATH")
+    if override:
+        if not (Path(override) / "lab" / "labctl" / "labctl").is_dir():
+            raise SystemExit(f"TWINLAB_PATH={override} has no lab/labctl/labctl")
+        print(f"note: Twin Lab's collectors from TWINLAB_PATH={override}, not the pinned commit",
+              file=sys.stderr)  # fmt: skip
+        sys.path.insert(0, str(Path(override) / "lab" / "labctl"))
         return
-    except ImportError:
-        pass
-    here = Path(__file__).resolve().parents[1]
-    for root in (os.environ.get("TWINLAB_PATH"), here.parent / "twin-lab"):
-        if root and (Path(root) / "lab" / "labctl" / "labctl").is_dir():
-            sys.path.insert(0, str(Path(root) / "lab" / "labctl"))
-            return
-    raise SystemExit("Twin Lab's collectors were not found: set TWINLAB_PATH to a twin-lab checkout")
+    try:
+        twinlab.verify()
+    except twinlab.PinError as exc:
+        raise SystemExit(f"Twin Lab's collectors: {exc}") from exc
+    sys.path.insert(0, str(twinlab.labctl_parent()))
+    # The vendored folder is not a Git checkout: say which commit it is.
+    os.environ.setdefault("TWINLAB_COMMIT", twinlab.lock()["commit"])
 
 
 def _build_info() -> dict:
@@ -133,8 +144,33 @@ def outbox(cfg: st.Settings, session_id: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def contract_references(box: dict) -> dict:
+    """The outbox as recorder contract references: the contract version and this recorder
+    stamped on it, then checked against the schema here, before anything leaves the PC.
+
+    Twin Lab's outbox (labctl.workstation.timeline) does not carry a contract version yet; the
+    pinned commit's outbox is what contract 1.0.0 describes. When it does carry one, it must be
+    the major this recorder speaks."""
+    declared = box.get("contract_version")
+    if declared is not None and (contract.parse(declared) or (None,))[0] != contract.parse(contract.CONTRACT_VERSION)[0]:
+        raise PortalError(f"these references are for recorder contract {declared}; this recorder speaks "
+                          f"{contract.CONTRACT_VERSION}: update TwinLabRecorder")  # fmt: skip
+    doc = dict(box, contract_version=declared or contract.CONTRACT_VERSION)
+    recorder = {"name": st.APP, "version": st.VERSION}
+    commit = (box.get("session") or {}).get("twinlab_commit") or _build_info().get("twinlab_commit")
+    if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{7,40}", commit):
+        recorder["twinlab_commit"] = commit
+    doc["recorder"] = recorder
+    found = contract.errors(doc, "references")
+    if found:
+        raise PortalError(f"these references are outside recorder contract {contract.CONTRACT_VERSION} "
+                          f"({'; '.join(found[:3])}): the recorder's Twin Lab collectors do not match "
+                          "the contract; rebuild it from the pinned commit")  # fmt: skip
+    return doc
+
+
 def send(cfg: st.Settings, session_id: str, ca_bundle: str | None = None) -> dict:
-    box = outbox(cfg, session_id)
+    box = contract_references(outbox(cfg, session_id))
     result = _portal(cfg, ca_bundle).send(box)
     (cfg.recordings / session_id / "sent.json").write_text(json.dumps(
         {"sent_at": datetime.now(timezone.utc).isoformat(), "portal": cfg.values.get("portal"),
@@ -624,7 +660,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command in (None, "gui"):
             gui(cfg, args.ca_bundle)
         elif args.command == "version":
-            print(st.APP, st.VERSION, json.dumps(_build_info()))
+            print(st.APP, st.VERSION, "contract", contract.CONTRACT_VERSION, json.dumps(_build_info()))
         elif args.command == "pair":
             portal = check_portal(args.portal)
             doc = Portal(portal, ca_bundle=args.ca_bundle).pair(args.code, args.name)

@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/karuppusamym/twin-lab2/blob/main/contract/recorder-contract.schema.json",
+  "title": "TwinLab recorder contract",
+  "description": "What a workstation recorder sends to the TwinLab2 portal: the pairing request (#/$defs/pair) and the references of a recorded session (#/$defs/references). See RECORDER-CONTRACT.md. Unknown fields are allowed, so that a minor version can add optional ones, and are ignored: the portal stores only the fields named here.",
+  "x-contract-version": "1.0.0",
+  "oneOf": [{"$ref": "#/$defs/pair"}, {"$ref": "#/$defs/references"}],
+  "$defs": {
+    "contract_version": {
+      "description": "The version of this contract the sender implements (semantic versioning: MAJOR.MINOR.PATCH).",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,3})\\.(0|[1-9][0-9]{0,3})\\.(0|[1-9][0-9]{0,3})$"
+    },
+    "text": {"type": "string", "minLength": 1, "pattern": "^[^\\u0000-\\u001f]*$"},
+    "count": {"type": "integer", "minimum": 0},
+    "catalog_id": {"type": "integer", "minimum": 1},
+    "level": {"enum": ["full", "steps"]},
+    "app_key": {
+      "description": "An application's identity: desktop:<company>/<product>, web:<scheme>://<host>[:<port>], or mainframe:<host>:<port>. An executable name (exe:) is a target, never a recorded key.",
+      "type": "string",
+      "pattern": "^(desktop:[^\\u0000-\\u001f]{1,200}|web:https?://[^\\u0000-\\u001f/]{1,200}|mainframe:[^\\u0000-\\u001f]{1,200}:[0-9]{1,5})$"
+    },
+    "recorder": {
+      "description": "The program that sent the message.",
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"$ref": "#/$defs/text", "maxLength": 60},
+        "version": {"$ref": "#/$defs/text", "maxLength": 40},
+        "twinlab_commit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"}
+      }
+    },
+    "pair": {
+      "title": "Pairing request: POST /api/agent/pair",
+      "type": "object",
+      "required": ["contract_version", "code", "name"],
+      "properties": {
+        "contract_version": {"$ref": "#/$defs/contract_version"},
+        "code": {"type": "string", "minLength": 1, "maxLength": 40, "description": "The one-time code from the portal's Machines page (dashes and spaces are ignored)."},
+        "name": {"$ref": "#/$defs/text", "maxLength": 80},
+        "recorder": {"$ref": "#/$defs/recorder"}
+      }
+    },
+    "step": {
+      "description": "One labelled step. Never a typed value, a screen's content or a picture: what the step did, the control's type, its label (a control name, a field label or a key), and the screen (a window title, a route with ids replaced by {id}, or a mainframe screen title). Text over 160 characters is dropped by the portal.",
+      "type": "object",
+      "required": ["n"],
+      "properties": {
+        "n": {"type": "integer", "minimum": 0, "description": "The step's position in the whole session."},
+        "action": {"type": "string"},
+        "control": {"type": "string"},
+        "label": {"type": "string"},
+        "screen": {"type": "string"},
+        "key": {"type": "string"}
+      }
+    },
+    "app": {
+      "type": "object",
+      "required": ["key", "level"],
+      "properties": {
+        "key": {"$ref": "#/$defs/app_key"},
+        "surface": {"enum": ["web", "desktop", "mainframe"]},
+        "level": {"$ref": "#/$defs/level"},
+        "display": {"type": "string"},
+        "exe": {"type": "string"},
+        "company": {"type": "string"},
+        "product": {"type": "string"},
+        "version": {"type": "string"},
+        "origin": {"type": "string"},
+        "toolkit": {"type": "string"},
+        "app_id": {"$ref": "#/$defs/catalog_id"}
+      }
+    },
+    "references": {
+      "title": "References of a recorded session: POST /api/agent/references",
+      "type": "object",
+      "required": ["contract_version", "format", "session", "apps", "flows", "timeline"],
+      "properties": {
+        "contract_version": {"$ref": "#/$defs/contract_version"},
+        "format": {"const": "twinlab-references/1"},
+        "recorder": {"$ref": "#/$defs/recorder"},
+        "session": {
+          "type": "object",
+          "required": ["id"],
+          "properties": {
+            "id": {"type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$"},
+            "name": {"$ref": "#/$defs/text", "maxLength": 120},
+            "started": {"$ref": "#/$defs/text", "maxLength": 40},
+            "ended": {"$ref": "#/$defs/text", "maxLength": 40},
+            "state": {"enum": ["stopped", "recovered"]},
+            "recorder": {"type": "string"},
+            "twinlab_commit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+            "automation_id": {"$ref": "#/$defs/catalog_id"},
+            "portal_session_id": {"$ref": "#/$defs/catalog_id"},
+            "location": {"type": "object"},
+            "targets": {"type": "array", "items": {"type": "object"}}
+          }
+        },
+        "apps": {"type": "array", "maxItems": 50, "items": {"$ref": "#/$defs/app"}},
+        "flows": {
+          "description": "Per recorded application (by its key in apps), its labelled steps.",
+          "type": "object",
+          "additionalProperties": {"type": "array", "maxItems": 50000, "items": {"$ref": "#/$defs/step"}}
+        },
+        "timeline": {
+          "description": "Runs of consecutive steps per application; presence stands for applications that were not targets (never named).",
+          "type": "array",
+          "maxItems": 20000,
+          "items": {
+            "type": "object",
+            "required": ["app", "steps"],
+            "properties": {
+              "app": {"anyOf": [{"const": "presence"}, {"$ref": "#/$defs/app_key"}]},
+              "steps": {"$ref": "#/$defs/count"}
+            }
+          }
+        },
+        "robot": {
+          "description": "Counts from a UiPath robot's log read beside the session (no activity names).",
+          "type": "object",
+          "properties": {
+            "activities": {"$ref": "#/$defs/count"},
+            "ui_activities": {"$ref": "#/$defs/count"},
+            "covered": {"$ref": "#/$defs/count"},
+            "gaps": {"$ref": "#/$defs/count"}
+          }
+        }
+      }
+    }
+  }
+}

@@ -58,12 +58,15 @@ The first time a recording arrives, each application's link selects all of its s
 
 Command line: `sessions`, `record --session N` (or `--exe X.exe --origin https://…`), `show <id>`, `send <id>`, `recover`. Add `--portable-data` to keep everything in `data\` beside the program, `--ca-bundle` for a private certificate authority. Recordings are in `%LOCALAPPDATA%\TwinLabRecorder\recordings\`.
 
-Build the folder from a Twin Lab checkout that has `labctl.workstation`:
+Build the folder from the pinned Twin Lab commit (`twinlab.lock.json`). `fetch` downloads it and checks its digest, so no twin-lab checkout is needed:
 
 ```powershell
-$env:TWINLAB_PATH = "..\twin-lab"
+python -m pip install -r requirements-recorder.txt
+python -m agent.twinlab fetch
 python agent\build.py
 ```
+
+The recorder and the portal speak the versioned [recorder contract](RECORDER-CONTRACT.md), now 1.0.0. The portal refuses a recorder whose contract it does not support, and it says which side to update. Recorders built before 0.2.0 declare no version: rebuild and redeploy them. Each recording keeps the recorder version and the contract version it was sent with. [How the Twin Lab pin is kept and moved](UPSTREAM.md)
 
 The build is not signed. Sign it before it runs on any machine other than a developer's: an unsigned program with keyboard hooks is likely to be stopped by endpoint protection.
 
@@ -71,17 +74,18 @@ The build is not signed. Sign it before it runs on any machine other than a deve
 
 ## Capture with the workstation recorder
 
-Install the recorder dependencies from a clean Twin Lab checkout and provision its browser.
+`capture.py` runs Twin Lab's full command line (`labctl.cli`), which imports all of twin-lab's dependencies. Install them from the pinned commit. Then fetch the pinned collectors, which `capture.py` puts first on the path, and provision the browser.
 
 ```powershell
-python -m pip install -e "../twin-lab[desktop]"
+python -m pip install "twin-lab[desktop] @ git+https://github.com/karuppusamym/twin-lab@430dfe538965b46ccbe824f8f2b4f415c5576483"
+python -m agent.twinlab fetch
 python -m playwright install chromium
 python capture.py start .state/captures/order-demo --web http://127.0.0.1:8080
 ```
 
 For automation, start the browser with a local CDP endpoint and add `--cdp http://127.0.0.1:9222` in place of `--web`. Add `--desktop MyApp.exe` or `--desktop-pid 1234` to attach to a running Windows application in the same session. A desktop-only capture uses just a desktop option. Close the manual browser to finish, or stop with Ctrl+C. After the collectors have stopped, `python capture.py recover .state/captures/order-demo` rebuilds the import file from recoverable channel logs. Check `session.json` and the channel logs for capture status and failures.
 
-Import the session's top-level `steps.jsonl`. Recovered imports retain previously linked event IDs. Review scope and attach approved API contracts, synthetic database fixtures, utility examples, visual references, or acceptance cases directly to the app. The adapter records the collector commit for every capture. [Twin Lab baseline and update procedure](UPSTREAM.md)
+Import the session's top-level `steps.jsonl`. Recovered imports retain previously linked event IDs. Review scope and attach approved API contracts, synthetic database fixtures, utility examples, visual references, or acceptance cases directly to the app. The adapter records the collector commit for every capture: the pinned one, or a clean checkout's with `--twin-lab`. [Twin Lab baseline and update procedure](UPSTREAM.md)
 
 ## Build, package, and register a deployment
 

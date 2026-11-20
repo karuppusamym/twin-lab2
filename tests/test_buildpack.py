@@ -14,7 +14,7 @@ from zipfile import ZipFile
 
 from portal import create_app
 import scenarios
-from test_registry import DESK, WEB, references
+from test_registry import CV, DESK, WEB, references
 
 RECORDING = "ws-20261119T100000Z-0a1b2c3d"
 SECRET = "hunter2-SECRET-VALUE"
@@ -55,7 +55,7 @@ class BuildPackTest(unittest.TestCase):
     def record(self):
         self.post("/machines/pair")
         code = re.search(r'id="pair-code">([A-Z0-9-]+)<', self.client.get("/machines").data.decode()).group(1)
-        token = self.client.post("/api/agent/pair", json={"code": code, "name": "PC"}).json["token"]
+        token = self.client.post("/api/agent/pair", json={"contract_version": CV, "code": code, "name": "PC"}).json["token"]
         response = self.client.post("/api/agent/references", json=sensitive_references(),
                                     headers={"Authorization": f"Bearer {token}"})
         self.assertEqual(response.status_code, 200, response.data)

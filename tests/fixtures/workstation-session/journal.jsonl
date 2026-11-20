@@ -1,0 +1,3 @@
+{"ts": "2026-11-20T09:00:01.000Z", "kind": "app", "pid": 11, "key": "desktop:Twin Lab reference/CaseDesk", "surface": "desktop", "exe": "CaseDesk.exe", "company": "Twin Lab reference", "product": "CaseDesk", "version": "1.0.0.0", "toolkit": "winforms", "level": "full", "display": "CaseDesk"}
+{"ts": "2026-11-20T09:00:05.000Z", "kind": "presence", "exe": "notepad.exe"}
+{"ts": "2026-11-20T09:00:09.000Z", "kind": "outside", "denied": false}
