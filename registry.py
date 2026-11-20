@@ -561,7 +561,7 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         with db():
             db().execute("INSERT OR IGNORE INTO app_identities VALUES (?, ?, ?, '{}')", (key, app_id, surface))
             db().execute("UPDATE apps SET surface = ? WHERE id = ? AND surface = ''", (surface, app_id))
-        return redirect(url_for("demo", app_id=app_id))
+        return redirect(url_for("app_setup", app_id=app_id))
 
     @app.post("/apps/<int:app_id>/status")
     def set_status(app_id):

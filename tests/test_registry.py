@@ -105,8 +105,9 @@ class RegistryTest(unittest.TestCase):
         app_page = self.client.get("/apps/1").data.decode()
         self.assertIn("discovered", app_page)
         self.assertIn("txtSearch", app_page)
-        self.assertIn(DESK, app_page)
         self.assertIn("No automation yet", app_page)
+        self.assertNotIn(DESK, app_page)  # identities are on the Setup / Advanced page
+        self.assertIn(DESK, self.client.get("/apps/1/setup").data.decode())
         listing = self.client.get("/recordings").data.decode()
         self.assertIn("Workstation 7", listing)
         self.assertIn("CaseDesk (full)", listing)
@@ -171,8 +172,7 @@ class RegistryTest(unittest.TestCase):
         self.client.post("/api/agent/references", json=references(), headers=self.agent(token))
         self.post("/apps", name="Showcase")
         self.assertEqual(self.post("/apps/2/merge", into="3").status_code, 302)
-        page = self.client.get("/apps/3").data.decode()
-        self.assertIn(WEB, page)
+        self.assertIn(WEB, self.client.get("/apps/3/setup").data.decode())
         yaml_doc = b"id: case-update\nname: Case update\ntype: uipath\ntouches:\n- app: showcase\n- app: missing\n"
         response = self.client.post("/automations/import", data={"token": self.token,
                                     "file": (io.BytesIO(yaml_doc), "automation.yaml")})

@@ -1,5 +1,7 @@
 # Recording a UiPath process across web, desktop and mainframe
 
+Status (labels as in the README's *What works today*): the recorder is **Locally tested** on one developer PC with an unsigned build, real Edge, CaseDesk, Windows Calculator and a synthetic mainframe. It is not **Externally validated**: no live managed-PC trial, no real UiPath robot, no real mainframe or emulator. The UiPath steps below (targets from a project, the robot's log) are **Implemented**.
+
 One session records everything the process does on this PC. The session's target applications are recorded in full. Any other application is recorded only as having been used. The recording stays on the PC; the portal, when you use one, receives only references.
 
 ## Before the day: once per PC
@@ -21,7 +23,7 @@ One session records everything the process does on this PC. The session's target
 
 ## Record
 
-**With the portal:** in the portal give each application an identity on its page (`CaseDesk.exe`, `https://orders.example.test`, `tn3270://mainframe.example.test:23`), then **Sessions → Offer a session** to the PC, with the automation it is for. On the PC choose the session and **Start**.
+**With the portal:** in the portal give each application an identity on its **Setup / Advanced** page (`CaseDesk.exe`, `https://orders.example.test`, `tn3270://mainframe.example.test:23`), then **Request a recording** for the PC, with the automation it is for. On the PC choose the session and **Start**.
 
 **Without the portal:** in the window, **My own session**, one target per line:
 

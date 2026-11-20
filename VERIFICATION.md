@@ -1,12 +1,16 @@
 # Local verification
 
+Every result below is **Locally tested** (on the developer's Windows PC) unless it says otherwise; labels as in the README's *What works today*. **Nothing here is externally validated**: there has been no recorder trial on a live managed PC, no OpenShift deployment, no fresh coding-agent rebuild from a build pack and no clean-machine install. The Orders/Billing release replay used previously built fixture apps.
+
+Since 2026-11-20 the portal calls offering a session **Request a recording** (the stored session status is still `offered`) and a confirmed application **Confirmed application** (stored status `known`). The results below keep the wording of the day they were run.
+
 | Check | Result |
 |---|---|
 | Live Chromium recorder | Attached to a local Chromium session with CDP and recorded nine events across tabs, including interactions. The session retained the upstream commit and stable event IDs. |
 | Mixed-source recovery | Automated fixture combined web and Windows channel logs, recovered an incomplete final line, reimported without deleting later events, and kept the original event linked. |
 | Catalog and Git releases | Automated tests verified many-to-many recording assignments, reviewed attachments, immutable older build packs, packaging from the committed tree, running the extracted ZIP, earlier release downloads and deployment registration. |
 | Orders/Billing release replay | Imported the existing 108-event recording, exported separate briefs, packaged the previously built fixture apps from temporary Git commits, downloaded both ZIPs and launched both extracted apps. The existing judge replayed all 107 executable steps. All 16 acceptance cases passed within the declared scope. |
-| OpenShift | Manifest wiring was checked locally. Cluster rollout, image registry access, and route behavior need a target OpenShift project. |
+| OpenShift | Implemented only. Manifest wiring was checked locally. Cluster rollout, image registry access, and route behavior need a target OpenShift project. |
 
 The live capture used a browser. The mixed desktop test used recorded input fixtures. A fresh enterprise desktop capture, fresh agent rebuild, and clean-machine dependency installation were outside this test run. Interface evidence for direct API, database and utility calls is supplied through reviewed attachments.
 
@@ -55,3 +59,13 @@ The built recorder, paired with the portal on this PC, recorded an offered sessi
 example.com, visited in the session's browser, left no step and no HAR entry; the other applications in front appear as "Other applications". No typed text, result or account number reached the portal. The first run lost the web steps (the built recorder announced its browser before Playwright had attached its listeners); the session now announces the browser only once it listens, and the second run recorded them.
 
 Not checked: a real UiPath robot, a real mainframe or emulator, a second PC, a signed build.
+
+## The onboarding journey (2026-11-20)
+
+| Check | Result |
+|---|---|
+| Journey stage, missing information and one next action (`tests/test_journey.py`) | Pass. The first step not done is the stage; a discovered application asks for a scope decision; examples need an identity, then a paired machine; Verify waits for a release state that says tested; a not-replicated application is out of the journey. |
+| Pages (`tests/test_journey.py`) | Pass. Each catalog card shows owner, purpose, stage, missing information and exactly one action; identities and the Git repository are on the Setup / Advanced page; machines are reached from Setup / Advanced, not the main navigation; the application page's forms no longer overwrite each other's fields. |
+| Local render | The catalog, an application page, its Setup / Advanced page, Request a recording and Setup / Advanced rendered from `python portal.py --port 8791` with a sample catalog. |
+
+Not checked: onboarding with real users. Release states (Packaged, Tested, Published) are not stored by this portal yet, so no application gets past Verify.

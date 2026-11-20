@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{{ item.name }} setup · TwinLab2{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="{{ url_for('setup') }}">Setup / Advanced</a> · <a href="{{ url_for('demo', app_id=item.id) }}">{{ item.name }}</a></p>
+<h1>{{ item.name }}: Setup / Advanced</h1>
+<p>Technical details the main flow does not need: how the recorder recognises the application, where its demo source lives, and where its releases are deployed.</p>
+<div class="columns">
+  <section id="identity">
+    <h2>Identities</h2>
+    <p class="muted">A recording can target this application only once it has an identity.</p>
+    {% for ident in app_identities(item.id) %}
+      <p><code>{{ ident.key }}</code></p>
+    {% else %}
+      <p>No identity yet: a recording cannot target this application until it has one.</p>
+    {% endfor %}
+    <form method="post" action="{{ url_for('add_identity', app_id=item.id) }}">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <label>Executable name, web address or mainframe host <input name="key" required placeholder="CaseDesk.exe, https://billing.example.test or tn3270://mainframe.example.test:23"></label>
+      <button>Add identity</button>
+    </form>
+  </section>
+  <section id="git">
+    <h2>Git repository</h2>
+    <form method="post" action="{{ url_for('demo', app_id=item.id) }}">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <input type="hidden" name="next" value="setup">
+      <label>Demo repository <input name="git_url" value="{{ item.git_url }}"></label>
+      <button>Save repository</button>
+    </form>
+  </section>
+</div>
+<section id="deployments">
+  <h2>Deployment configuration</h2>
+  {% for release in releases %}
+    <p><a href="{{ url_for('release', release_id=release.id) }}#deployment-setup">{{ release.version }}</a> <code>{{ release.commit_sha[:12] }}</code></p>
+  {% else %}
+    <p>No release yet.</p>
+  {% endfor %}
+</section>
+{% endblock %}
