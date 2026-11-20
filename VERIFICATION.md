@@ -41,3 +41,17 @@ Not verified: a second PC or clean VM; a signed build; endpoint protection or Ap
 | Twin Lab suite | 1584 passed, 27 skipped, 1 failed: `test_pagerules.py::test_no_typed_value_and_no_script_is_in_the_package`, which types the date 2026-11-20 and finds it in the package's own timestamp on that date (not related to this work). The recorder tests were run again after the review fixes. |
 
 Not checked: a real UiPath robot, a real mainframe or emulator, Chrome with UiPath's extension.
+
+## A real recording through the portal (2026-11-20)
+
+The built recorder, paired with the portal on this PC, recorded an offered session for the automation "Demo: form, calculator and mainframe":
+
+| Surface | Application | Recorded | Sent to the portal |
+|---|---|---|---|
+| Web | the public Selenium test form, https://www.selenium.dev/selenium/web/web-form.html (synthetic text, a select, a check box, a radio button, submitted) | 11 steps, HAR of that origin only | `my-text-id`, `my-textarea`, `my-select`, submit; route `/selenium/{id}/{id}` |
+| Desktop | Windows Calculator (a UWP app behind ApplicationFrameHost), 128 × 4 = | 8 steps | `clearButton`, `One`, `Two`, `Eight`, `multiplyButton`, `Four`, `equalButton` |
+| Mainframe | the synthetic TN3270 host through the proxy | 16 steps | `USERID`, `PASSWORD`, `ACCOUNT NO`, `Enter`, `PF3`, screens by title |
+
+example.com, visited in the session's browser, left no step and no HAR entry; the other applications in front appear as "Other applications". No typed text, result or account number reached the portal. The first run lost the web steps (the built recorder announced its browser before Playwright had attached its listeners); the session now announces the browser only once it listens, and the second run recorded them.
+
+Not checked: a real UiPath robot, a real mainframe or emulator, a second PC, a signed build.
