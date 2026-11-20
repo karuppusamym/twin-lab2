@@ -1,0 +1,8 @@
+TwinLab2
+Copyright 2026 The TwinLab2 contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+TwinLab2 builds its recorder from Twin Lab (https://github.com/karuppusamym/twin-lab), also
+licensed under the Apache License, Version 2.0, at the commit pinned in twinlab.lock.json
+(see UPSTREAM.md).

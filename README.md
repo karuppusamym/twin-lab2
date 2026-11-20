@@ -293,3 +293,8 @@ Next, run one mixed Windows/web scenario and one headless API/database or file s
 - The recorded Orders/Billing trial rebuilt two web apps and replayed 107 steps across them within its declared scope. It provides an existing starting fixture. [Trial report](../rebuild-trial/judge/report-blind-rebuild-2.md)
 - The public storefront trial failed its official run. Diagnostic variations exposed timing, URL fragment and visual-state assumptions. That history supports recording settled states and checking business outcomes explicitly. [Storefront report](../colour-trial/blind2/judge/REPORT.md)
 - The existing audit lists interrupted sessions, production authentication and independently rebuilt real API/database combinations among its outstanding coverage limits. These remain separate validation tasks. [Replication audit](../twin-lab/docs/extensive-replication-audit-2026-11-18.md)
+
+## Contributing and licence
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), the [Code of Conduct](CODE_OF_CONDUCT.md) and
+[SECURITY.md](SECURITY.md). TwinLab2 is licensed under the [Apache License 2.0](LICENSE).
