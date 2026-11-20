@@ -38,24 +38,13 @@ MACHINE_PATHS = ("/api/agent/", "/api/uploads")
 STATES = ("receiving", "verifying", "confirmed", "rejected")
 CONTENT_TYPES = {"application/zip", "application/x-ndjson", "application/json", "application/octet-stream"}
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS uploads (
-    id TEXT PRIMARY KEY, machine_id INTEGER NOT NULL REFERENCES machines(id),
-    recording_id TEXT NOT NULL, session_id TEXT NOT NULL, contract_version TEXT NOT NULL,
-    total_bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, content_type TEXT NOT NULL,
-    mode TEXT NOT NULL, chunk_size INTEGER NOT NULL, backend TEXT NOT NULL, object_key TEXT NOT NULL,
-    multipart_id TEXT NOT NULL DEFAULT '', object_version TEXT NOT NULL DEFAULT '',
-    state TEXT NOT NULL, received_bytes INTEGER NOT NULL DEFAULT 0, last_error TEXT,
-    token_sha TEXT NOT NULL, token_expires TEXT NOT NULL, artifact_id INTEGER REFERENCES artifacts(id),
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS uploads_recording ON uploads(recording_id);
-"""
+# The table is created by migrations.py (5: artifacts and uploads).
 
 
 def migrate(db):
-    db.executescript(SCHEMA)
-    db.commit()
+    """The `uploads` table (migration 5), with every other pending migration."""
+    import migrations
+    migrations.run(db)
 
 
 def settings():

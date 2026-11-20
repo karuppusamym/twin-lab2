@@ -19,6 +19,7 @@ import threading
 import traceback
 
 import builds
+import db as database
 import jobqueue
 
 TYPES = ("build", "build.cancel", "build.message")
@@ -109,14 +110,14 @@ def run(database, once=False, lease=jobqueue.LEASE_SECONDS, idle=1.0, ctx=None, 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--database", type=Path,
-                        default=Path(os.environ.get("TWINLAB2_DATABASE", Path(__file__).parent / ".state/catalog.db")))
+    parser.add_argument("--database", default=database.from_env(),
+                        help="a DATABASE_URL (sqlite:///…, postgresql://…) or a SQLite file (default: DATABASE_URL)")
     parser.add_argument("--once", action="store_true", help="work what is due, then exit")
     parser.add_argument("--lease", type=float, default=jobqueue.LEASE_SECONDS, help="lease seconds per job")
     parser.add_argument("--idle", type=float, default=1.0, help="seconds between looks at an empty queue")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    log.info("worker on %s", args.database)
+    log.info("worker on %s", database.redacted(args.database))
     try:
         run(args.database, once=args.once, lease=args.lease, idle=args.idle)
     except KeyboardInterrupt:

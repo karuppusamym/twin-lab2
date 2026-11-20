@@ -3,22 +3,13 @@
 A scenario has a name, starting conditions, actions (owner-written lines plus links to events
 selected from recordings), the expected result, failure cases, synthetic example values,
 unresolved questions and free notes. Scenarios replace the single free-text requirements field:
-`migrate` moves any existing requirements text into the notes of a scenario so nothing is lost.
+`import_requirements` moves any existing requirements text into the notes of a scenario so nothing is lost.
 """
 
 import json
 import re
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS scenarios (
-    id INTEGER PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id),
-    position INTEGER NOT NULL DEFAULT 0, name TEXT NOT NULL,
-    starting TEXT NOT NULL DEFAULT '', actions TEXT NOT NULL DEFAULT '',
-    events TEXT NOT NULL DEFAULT '[]', expected TEXT NOT NULL DEFAULT '',
-    failures TEXT NOT NULL DEFAULT '', examples TEXT NOT NULL DEFAULT '',
-    questions TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT ''
-);
-"""
+# The table is created by migrations.py (baseline).
 
 # The text fields of a scenario, the form label of each, and its size limit.
 FIELDS = {
@@ -36,15 +27,13 @@ MIGRATED_NAME = "Requirements (migrated)"
 EVENT_REF = re.compile(r"^(?P<recording>[^#\s]{1,200})#(?P<event_id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
 
 
-def migrate(db):
-    """Create the table and move each app's free-text requirements into a scenario's notes."""
-    db.executescript(SCHEMA)
-    with db:
-        rows = db.execute("SELECT id, requirements FROM apps WHERE trim(requirements) != ''").fetchall()
-        for app_id, text in rows:
-            db.execute("INSERT INTO scenarios(app_id, position, name, notes) VALUES (?, ?, ?, ?)",
-                       (app_id, next_position(db, app_id), MIGRATED_NAME, text.strip()))
-            db.execute("UPDATE apps SET requirements = '' WHERE id = ?", (app_id,))
+def import_requirements(db):
+    """Move each app's free-text requirements into a scenario's notes. The caller commits."""
+    rows = db.execute("SELECT id, requirements FROM apps WHERE trim(requirements) != ''").fetchall()
+    for app_id, text in rows:
+        db.execute("INSERT INTO scenarios(app_id, position, name, notes) VALUES (?, ?, ?, ?)",
+                   (app_id, next_position(db, app_id), MIGRATED_NAME, text.strip()))
+        db.execute("UPDATE apps SET requirements = '' WHERE id = ?", (app_id,))
 
 
 def next_position(db, app_id):
@@ -90,9 +79,9 @@ def save(db, app_id, values, scenario_id=None):
     with db:
         if scenario_id is None:
             return db.execute(
-                f"INSERT INTO scenarios(app_id, position, {', '.join(values)}) VALUES (?, ?{', ?' * len(values)})",
+                f"INSERT INTO scenarios(app_id, position, {', '.join(values)}) VALUES (?, ?{', ?' * len(values)}) RETURNING id",
                 (app_id, next_position(db, app_id), *values.values()),
-            ).lastrowid
+            ).fetchone()[0]
         updated = db.execute(
             f"UPDATE scenarios SET {', '.join(f'{k} = ?' for k in values)} WHERE id = ? AND app_id = ?",
             (*values.values(), scenario_id, app_id),

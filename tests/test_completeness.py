@@ -7,7 +7,6 @@ import io
 import json
 from pathlib import Path
 import re
-import sqlite3
 import tempfile
 import unittest
 from zipfile import ZipFile
@@ -22,6 +21,7 @@ import registry
 import scenarios
 from test_registry import (DESK, EVENT_1, EVENT_2, EVENT_5, WEB, CV, completeness_report, eid, references,
                            references_1_1)
+from support import connect, new_database
 
 RECORDING = "ws-20261119T100000Z-0a1b2c3d"
 PARTIAL = completeness_report(
@@ -37,7 +37,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
-        self.database = Path(self.work.name) / "catalog.db"
+        self.database = new_database(self.work.name)
         self.start()
 
     def start(self):
@@ -63,7 +63,7 @@ class Base(unittest.TestCase):
         return response.json
 
     def query(self, sql, *args):
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             return db.execute(sql, args).fetchall()
 
     def selection(self, app_id):
@@ -158,7 +158,7 @@ class MigrationTest(unittest.TestCase):
             database = Path(work) / "catalog.db"
             create_app(database)  # the current tables, then rows as an older portal stored them
             flow = [{"n": 1, "action": "type", "label": "txtSearch"}, {"n": 2, "action": "click", "label": "btnOpen"}]
-            with closing(sqlite3.connect(database)) as db, db:
+            with closing(connect(database)) as db, db:
                 db.execute("INSERT INTO apps(id, name, git_url, requirements) VALUES (1, 'CaseDesk', '', '')")
                 db.execute("INSERT INTO recordings VALUES (?, 'Old', ?)", (RECORDING, json.dumps(
                     [{"seq": 1, "source": "CaseDesk", "action": "type"}, {"seq": 2, "source": "CaseDesk", "action": "click"}])))
@@ -169,8 +169,7 @@ class MigrationTest(unittest.TestCase):
                            (json.dumps([f"{RECORDING}#1", "not-a-ref"]),))
             for _ in range(2):  # migrating twice is harmless
                 app = create_app(database)
-            with closing(sqlite3.connect(database)) as db:
-                db.row_factory = sqlite3.Row
+            with closing(connect(database)) as db:
                 events = json.loads(db.execute("SELECT events FROM recordings").fetchone()[0])
                 steps = json.loads(db.execute("SELECT flow FROM recording_apps").fetchone()[0])
                 link = db.execute("SELECT selection, suggested, notes FROM evidence").fetchone()
@@ -272,13 +271,11 @@ class AttentionTest(Base):
         self.send(references_1_1(report=PARTIAL))
         self.post("/apps/1/scenarios", name="Find a case")
         self.post("/apps/1", owner="Pat", purpose="Case lookup demo")
-        with closing(sqlite3.connect(self.database)) as db:
-            db.row_factory = sqlite3.Row
+        with closing(connect(self.database)) as db:
             app = db.execute("SELECT * FROM apps WHERE id = 1").fetchone()
             j = journey.for_app(db, app)
         self.post("/apps/1/status", status="known")
-        with closing(sqlite3.connect(self.database)) as db:
-            db.row_factory = sqlite3.Row
+        with closing(connect(self.database)) as db:
             j = journey.for_app(db, db.execute("SELECT * FROM apps WHERE id = 1").fetchone())
         # the examples exist, but the recording stopped partial: it needs attention, not "done"
         self.assertEqual(j.stage, "Add examples")
@@ -292,8 +289,7 @@ class AttentionTest(Base):
         self.assertIn("A stopped recording is not complete by itself", page)
         # the owner accepts it as it is: the journey moves on
         self.assertEqual(self.post(f"/recordings/{RECORDING}/completeness/accept").status_code, 302)
-        with closing(sqlite3.connect(self.database)) as db:
-            db.row_factory = sqlite3.Row
+        with closing(connect(self.database)) as db:
             j = journey.for_app(db, db.execute("SELECT * FROM apps WHERE id = 1").fetchone())
         self.assertEqual(j.stage, "Build")
         self.assertIn("Partial: accepted as it is", self.client.get("/recordings").data.decode())
@@ -301,8 +297,7 @@ class AttentionTest(Base):
         failed = copy.deepcopy(PARTIAL)
         failed["overall"] = "failed"
         self.send(references_1_1(report=failed))
-        with closing(sqlite3.connect(self.database)) as db:
-            db.row_factory = sqlite3.Row
+        with closing(connect(self.database)) as db:
             j = journey.for_app(db, db.execute("SELECT * FROM apps WHERE id = 1").fetchone())
         self.assertEqual(j.next.action, "Review failed recording")
         # the same completeness again keeps the acceptance
@@ -315,8 +310,7 @@ class AttentionTest(Base):
         self.send(references())
         self.post("/apps/1/status", status="known")
         self.post("/apps/1", owner="Pat", purpose="Case lookup demo")
-        with closing(sqlite3.connect(self.database)) as db:
-            db.row_factory = sqlite3.Row
+        with closing(connect(self.database)) as db:
             j = journey.for_app(db, db.execute("SELECT * FROM apps WHERE id = 1").fetchone())
         self.assertEqual(j.stage, "Review required behaviour")
         self.assertEqual(self.post(f"/recordings/{RECORDING}/completeness/accept").status_code, 404)

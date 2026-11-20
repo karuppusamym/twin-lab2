@@ -27,33 +27,17 @@ import artifacts
 import audit
 import buildpack
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS builder_packages (
-    id INTEGER PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id), rev INTEGER NOT NULL,
-    revision TEXT NOT NULL REFERENCES briefs(revision), sha256 TEXT NOT NULL, size INTEGER NOT NULL,
-    storage_ref TEXT NOT NULL, approved_by TEXT NOT NULL, approved_at TEXT NOT NULL,
-    summary TEXT NOT NULL, diff TEXT NOT NULL, report TEXT NOT NULL,
-    UNIQUE (app_id, rev)
-);
-"""
-
-SQLITE_GUARDS = """
-CREATE TRIGGER IF NOT EXISTS builder_packages_no_update BEFORE UPDATE ON builder_packages
-BEGIN SELECT RAISE(ABORT, 'a frozen builder package is immutable'); END;
-CREATE TRIGGER IF NOT EXISTS builder_packages_no_delete BEFORE DELETE ON builder_packages
-BEGIN SELECT RAISE(ABORT, 'a frozen builder package is immutable'); END;
-"""
+# The table and its guards are created by migrations.py (6: roles and audit).
 
 DIFF_LIMIT = 200_000
 
 
 def migrate(db):
-    db.executescript(SCHEMA)
-    if audit.is_sqlite(db):
-        # brief_packages rows move their blob to the artifact store (artifacts.migrate_blobs), so
-        # only builder_packages is guarded; a package's bytes are checked against its sha256
-        db.executescript("DROP TRIGGER IF EXISTS brief_packages_no_update;")
-        db.executescript(SQLITE_GUARDS)
+    """builder_packages and its immutability guards (migration 6), with every other pending
+    migration. brief_packages rows move their blob to the artifact store, so only
+    builder_packages is guarded; a package's bytes are checked against its sha256."""
+    import migrations
+    migrations.run(db)
 
 
 # -- storage: the one place to switch to artifacts.put(kind="builder_package") -------------------

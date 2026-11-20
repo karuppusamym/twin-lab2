@@ -5,7 +5,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 from pathlib import Path
-import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -14,6 +13,7 @@ from zipfile import ZipFile
 
 from support import freeze
 from portal import VERSION_PATH, add_release, create_app
+from support import connect, new_database
 from test_registry import eid
 
 
@@ -49,7 +49,7 @@ class ReleaseStatesTest(unittest.TestCase):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
         self.root = Path(self.work.name)
-        self.database = self.root / "catalog.db"
+        self.database = new_database(self.root)
         self.app = create_app(self.database)
         self.app.testing = True
         self.client = self.app.test_client()
@@ -85,7 +85,7 @@ class ReleaseStatesTest(unittest.TestCase):
         return self.client.post(path, data={"token": self.token, **values})
 
     def state(self, release_id=1):
-        with closing(sqlite3.connect(self.database)) as connection:
+        with closing(connect(self.database)) as connection:
             return connection.execute("SELECT state FROM releases WHERE id = ?", (release_id,)).fetchone()[0]
 
     def evidence(self, **changes):
@@ -119,7 +119,7 @@ class ReleaseStatesTest(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(self.post("/releases/1/test", **values).status_code, 400)
                 self.assertEqual(self.state(), "packaged")
-        with closing(sqlite3.connect(self.database)) as connection:
+        with closing(connect(self.database)) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM release_tests").fetchone()[0], 0)
 
     def test_packaged_to_tested_to_published(self):
@@ -158,7 +158,7 @@ class ReleaseStatesTest(unittest.TestCase):
     def test_explicit_brief_scenarios(self):
         manifest = json.dumps({"format": 1, "evidence": [], "scenarios": [
             {"id": "create-invoice", "name": "Create an invoice"}, "Reject an invalid amount"]})
-        with closing(sqlite3.connect(self.database)) as connection, connection:
+        with closing(connect(self.database)) as connection, connection:
             connection.execute("INSERT INTO briefs VALUES ('explicit-scenarios', 1, ?)", (manifest,))
             # a release is registered against a frozen builder package revision
             connection.execute("""INSERT INTO builder_packages(app_id, rev, revision, sha256, size, storage_ref,
@@ -231,7 +231,7 @@ class MigrationTest(unittest.TestCase):
     def test_existing_releases_become_packaged_and_deployments_unverified(self):
         with tempfile.TemporaryDirectory() as work:
             database = Path(work) / "catalog.db"
-            with closing(sqlite3.connect(database)) as connection, connection:
+            with closing(connect(database)) as connection, connection:
                 connection.executescript("""
                     CREATE TABLE apps (id INTEGER PRIMARY KEY, name TEXT NOT NULL, git_url TEXT NOT NULL,
                         requirements TEXT NOT NULL);
@@ -251,7 +251,7 @@ class MigrationTest(unittest.TestCase):
                 """)
             for _ in range(2):  # the migration runs on every start
                 client = create_app(database).test_client()
-            with closing(sqlite3.connect(database)) as connection:
+            with closing(connect(database)) as connection:
                 self.assertEqual(connection.execute("SELECT state, published_at FROM releases").fetchone(),
                                  ("packaged", None))
                 self.assertEqual(connection.execute(

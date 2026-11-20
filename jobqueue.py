@@ -19,19 +19,7 @@ import os
 import socket
 import uuid
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY, type TEXT NOT NULL, state TEXT NOT NULL,
-    attempts INTEGER NOT NULL DEFAULT 0, lease_until TEXT, lease_owner TEXT,
-    payload TEXT NOT NULL, result TEXT, error TEXT, dedupe_key TEXT UNIQUE,
-    run_after TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT
-);
-CREATE INDEX IF NOT EXISTS jobs_claimable ON jobs (state, run_after);
-CREATE TABLE IF NOT EXISTS workers (
-    id TEXT PRIMARY KEY, host TEXT NOT NULL, pid INTEGER NOT NULL,
-    started_at TEXT NOT NULL, seen_at TEXT NOT NULL, current_job TEXT, stopped_at TEXT
-);
-"""
+# The tables (jobs, workers) are created by migrations.py (3: build jobs).
 STATES = ("queued", "running", "done", "failed")
 MAX_ATTEMPTS = 5
 LEASE_SECONDS = 60.0
@@ -47,10 +35,9 @@ def later(seconds):
 
 
 def migrate(db):
-    for statement in SCHEMA.split(";"):
-        if statement.strip():
-            db.execute(statement)
-    db.commit()
+    """The queue's tables (migration 3) and every other pending migration."""
+    import migrations
+    migrations.run(db)
 
 
 def worker_id():

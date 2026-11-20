@@ -14,6 +14,7 @@ from agent.client import Portal, PortalError, check_portal, clean_targets
 from agent import main as agent_main
 from portal import create_app
 from test_registry import references
+from support import new_database
 
 
 class AgentUnitTest(unittest.TestCase):
@@ -47,7 +48,7 @@ class AgentPortalTest(unittest.TestCase):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
         self.root = Path(self.work.name)
-        self.app = create_app(self.root / "catalog.db")
+        self.app = create_app(new_database(self.root))
         self.server = make_server("127.0.0.1", 0, self.app, threaded=True)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.shutdown)

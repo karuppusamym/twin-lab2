@@ -2,8 +2,7 @@
 
 `record(db, actor, action, object_type, object_id, app_id=..., **details)` adds one row in the
 caller's transaction. Rows are never updated or deleted: the code only inserts, and on SQLite
-triggers refuse UPDATE and DELETE (on PostgreSQL grant the portal's role INSERT and SELECT only,
-or add the equivalent rule). `app_id` is a plain column, not a foreign key, so the history of an
+triggers refuse UPDATE and DELETE on both engines (migration 6). `app_id` is a plain column, not a foreign key, so the history of an
 application outlives a merge that removes it.
 
 Actions written today (dotted, `area.verb`):
@@ -20,30 +19,17 @@ Actions written today (dotted, `area.verb`):
 
 import json
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS audit_log (
-    id INTEGER PRIMARY KEY, at TEXT NOT NULL, actor TEXT NOT NULL, app_id INTEGER,
-    action TEXT NOT NULL, object_type TEXT NOT NULL, object_id TEXT NOT NULL, details TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS audit_log_app ON audit_log(app_id, id);
-"""
-
-SQLITE_GUARDS = """
-CREATE TRIGGER IF NOT EXISTS audit_log_no_update BEFORE UPDATE ON audit_log
-BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS audit_log_no_delete BEFORE DELETE ON audit_log
-BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
-"""
+# The table and its append-only guards are created by migrations.py (6: roles and audit).
 
 
 def migrate(db):
-    db.executescript(SCHEMA)
-    if is_sqlite(db):
-        db.executescript(SQLITE_GUARDS)
+    """The audit table and its guards (migration 6), with every other pending migration."""
+    import migrations
+    migrations.run(db)
 
 
 def is_sqlite(db):
-    return type(db).__module__.startswith("sqlite3")
+    return getattr(db, "engine", None) == "sqlite" or type(db).__module__.startswith("sqlite3")
 
 
 def now():

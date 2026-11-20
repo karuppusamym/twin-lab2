@@ -36,60 +36,7 @@ import completeness as compl
 import event_ids
 import recorder_contract as contract
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS app_identities (
-    key TEXT PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id), surface TEXT NOT NULL,
-    facts TEXT NOT NULL DEFAULT '{}'
-);
-CREATE TABLE IF NOT EXISTS machines (
-    id INTEGER PRIMARY KEY, name TEXT NOT NULL, token_sha TEXT NOT NULL UNIQUE,
-    paired_by TEXT NOT NULL, paired_at TEXT NOT NULL, last_seen TEXT, revoked_at TEXT,
-    recorder TEXT NOT NULL DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS pairing_codes (
-    code_sha TEXT PRIMARY KEY, created_by TEXT NOT NULL, created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL, used_at TEXT, machine_id INTEGER
-);
-CREATE TABLE IF NOT EXISTS pairing_failures (at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS automations (
-    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL DEFAULT '',
-    notes TEXT NOT NULL DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS automation_apps (
-    automation_id INTEGER NOT NULL REFERENCES automations(id),
-    app_id INTEGER NOT NULL REFERENCES apps(id), PRIMARY KEY (automation_id, app_id)
-);
-CREATE TABLE IF NOT EXISTS capture_sessions (
-    id INTEGER PRIMARY KEY, name TEXT NOT NULL, machine_id INTEGER NOT NULL REFERENCES machines(id),
-    targets TEXT NOT NULL, automation_id INTEGER REFERENCES automations(id),
-    created_by TEXT NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL,
-    recording_id TEXT
-);
-CREATE TABLE IF NOT EXISTS session_refs (
-    recording_id TEXT PRIMARY KEY REFERENCES recordings(id), session_key TEXT NOT NULL UNIQUE,
-    machine_id INTEGER REFERENCES machines(id), capture_session_id INTEGER,
-    automation_id INTEGER REFERENCES automations(id), payload TEXT NOT NULL,
-    received_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS recording_apps (
-    recording_id TEXT NOT NULL REFERENCES recordings(id), app_id INTEGER NOT NULL REFERENCES apps(id),
-    key TEXT NOT NULL, level TEXT NOT NULL, flow TEXT NOT NULL,
-    PRIMARY KEY (recording_id, app_id, key)
-);
-CREATE TABLE IF NOT EXISTS recording_contracts (
-    recording_id TEXT PRIMARY KEY REFERENCES recordings(id), contract_version TEXT NOT NULL,
-    recorder TEXT NOT NULL, recorder_version TEXT NOT NULL, twinlab_commit TEXT,
-    received_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS recording_completeness (
-    recording_id TEXT PRIMARY KEY REFERENCES recordings(id), completeness TEXT, preflight TEXT,
-    accepted_by TEXT, accepted_at TEXT, updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS machine_contracts (
-    machine_id INTEGER PRIMARY KEY REFERENCES machines(id), contract_version TEXT NOT NULL,
-    recorder TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-"""
+# The tables are created and changed only by migrations.py.
 
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # 32 symbols, no 0/O or 1/I
 CODE_LENGTH = 10
@@ -112,28 +59,6 @@ def now():
 
 def sha(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def migrate(db):
-    db.executescript(SCHEMA)
-    columns = {row[1] for row in db.execute("PRAGMA table_info(apps)")}
-    if "status" not in columns:
-        db.execute("ALTER TABLE apps ADD COLUMN status TEXT NOT NULL DEFAULT 'known'")
-    if "surface" not in columns:
-        db.execute("ALTER TABLE apps ADD COLUMN surface TEXT NOT NULL DEFAULT ''")
-    if "url_match" not in columns:
-        # how the application's web addresses match: `path` (longest path prefix wins) or
-        # `host` (the owner's override: the addresses stand for their whole host). Identities
-        # stored before paths were kept are host-only, so they match exactly as they did.
-        db.execute("ALTER TABLE apps ADD COLUMN url_match TEXT NOT NULL DEFAULT 'path'")
-    columns = {row[1] for row in db.execute("PRAGMA table_info(evidence)")}
-    if "reviewed" not in columns:
-        # links stored before this column existed are treated as reviewed: a resend then only
-        # suggests events, it never changes their selection.
-        db.execute("ALTER TABLE evidence ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 1")
-    if "suggested" not in columns:
-        db.execute("ALTER TABLE evidence ADD COLUMN suggested TEXT NOT NULL DEFAULT '[]'")
-    db.commit()
 
 
 def web_parts(key):
@@ -339,7 +264,7 @@ def recorder_of(doc):
 
 
 def register(app, db):  # noqa: C901 - one place for the routes of this module
-    """Add the routes to the Flask app; `db()` returns the request's SQLite connection."""
+    """Add the routes to the Flask app; `db()` returns the request's database connection (db.py)."""
 
     # -- sign-in and the agent's bearer token -----------------------------------------------
 
@@ -396,7 +321,7 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
         created = datetime.now(timezone.utc)
         with db():
-            db().execute("INSERT INTO pairing_codes VALUES (?, ?, ?, ?, NULL, NULL)",
+            db().execute("INSERT INTO pairing_codes(code_sha, created_by, created_at, expires_at) VALUES (?, ?, ?, ?)",
                          (sha(code), current_user(), created.isoformat(),
                           (created + timedelta(minutes=CODE_MINUTES)).isoformat()))  # fmt: skip
         session["pair_code"] = code
@@ -439,7 +364,7 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                                (sha(code),)).fetchone()  # fmt: skip
         if row is None or row["expires_at"] < datetime.now(timezone.utc).isoformat():
             with db():
-                db().execute("INSERT INTO pairing_failures VALUES (?)", (now(),))
+                db().execute("INSERT INTO pairing_failures(at) VALUES (?)", (now(),))
             return jsonify(error="the code is wrong, used or expired"), 403
         token = secrets.token_urlsafe(32)
         with db():
@@ -448,13 +373,15 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
             if used != 1:
                 abort(403)
             machine = db().execute(
-                "INSERT INTO machines(name, token_sha, paired_by, paired_at, recorder) VALUES (?,?,?,?,?)",
+                "INSERT INTO machines(name, token_sha, paired_by, paired_at, recorder) VALUES (?,?,?,?,?) RETURNING id",
                 (name, sha(token), row["created_by"], now(),
                  request.headers.get("X-TwinLab-Recorder", "")[:60]),
-            ).lastrowid  # fmt: skip
+            ).fetchone()[0]  # fmt: skip
             db().execute("UPDATE pairing_codes SET machine_id = ? WHERE code_sha = ?", (machine, row["code_sha"]))
             rec_name, rec_version = recorder_of(body)
-            db().execute("INSERT OR REPLACE INTO machine_contracts VALUES (?, ?, ?, ?)",
+            db().execute("""INSERT INTO machine_contracts(machine_id, contract_version, recorder, updated_at) VALUES (?, ?, ?, ?)
+                            ON CONFLICT(machine_id) DO UPDATE SET contract_version = excluded.contract_version,
+                            recorder = excluded.recorder, updated_at = excluded.updated_at""",
                          (machine, body["contract_version"], f"{rec_name} {rec_version}", now()))  # fmt: skip
         return jsonify(token=token, machine_id=machine, name=name, contract_version=contract.CONTRACT_VERSION,
                        contract_supported=contract.supported())  # fmt: skip
@@ -622,12 +549,12 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         if app_id is None:
             name = item.get("display") or item.get("product") or item["key"].split(":", 1)[-1]
             app_id = db().execute(
-                "INSERT INTO apps(name, git_url, requirements, status, surface) VALUES (?, '', '', 'discovered', ?)",
+                "INSERT INTO apps(name, git_url, requirements, status, surface) VALUES (?, '', '', 'discovered', ?) RETURNING id",
                 (name[:120], item["surface"]),
-            ).lastrowid
+            ).fetchone()[0]
             created = True
         facts = {k: item[k] for k in ("exe", "company", "product", "version", "toolkit") if k in item}
-        db().execute("INSERT OR IGNORE INTO app_identities VALUES (?, ?, ?, ?)",
+        db().execute("INSERT INTO app_identities(key, app_id, surface, facts) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                      (item["key"], app_id, item["surface"], json.dumps(facts)))  # fmt: skip
         return app_id, created
 
@@ -730,10 +657,11 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         events.sort(key=lambda e: (e["seq"], e.get("time") or "", e["event_id"]))
         mapped, discovered = [], []
         with db():
-            db().execute("""INSERT INTO recordings VALUES (?, ?, ?)
+            db().execute("""INSERT INTO recordings(id, name, events) VALUES (?, ?, ?)
                             ON CONFLICT(id) DO UPDATE SET name = excluded.name, events = excluded.events""",
                          (recording_id, s["name"], json.dumps(events)))  # fmt: skip
-            db().execute("""INSERT INTO session_refs VALUES (?, ?, ?, ?, ?, ?, ?)
+            db().execute("""INSERT INTO session_refs(recording_id, session_key, machine_id, capture_session_id,
+                            automation_id, payload, received_at) VALUES (?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(recording_id) DO UPDATE SET payload = excluded.payload,
                             received_at = excluded.received_at, automation_id = excluded.automation_id""",
                          (recording_id, s["id"], machine["id"], capture["id"] if capture else None,
@@ -749,17 +677,20 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                                        (recording_id, app_id, key)).fetchone()  # fmt: skip
                     if old is not None:  # two references resolved to one identity
                         steps = json.loads(old["flow"]) + steps
-                    db().execute("INSERT OR REPLACE INTO recording_apps VALUES (?, ?, ?, ?, ?)",
+                    db().execute("""INSERT INTO recording_apps(recording_id, app_id, key, level, flow) VALUES (?, ?, ?, ?, ?)
+                                    ON CONFLICT(recording_id, app_id, key) DO UPDATE SET level = excluded.level,
+                                    flow = excluded.flow""",
                                  (recording_id, app_id, key, item["level"], json.dumps(steps)))  # fmt: skip
                     received.setdefault(app_id, set()).update(st["event_id"] for st in steps)
                     if automation_id is not None:
-                        db().execute("INSERT OR IGNORE INTO automation_apps VALUES (?, ?)", (automation_id, app_id))
+                        db().execute("INSERT INTO automation_apps(automation_id, app_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                                     (automation_id, app_id))
                     if app_id not in mapped and app_id not in discovered:
                         (discovered if created else mapped).append(app_id)
             for app_id, numbers in received.items():
                 link_evidence(app_id, recording_id, numbers, seen.get(app_id, set()))
-            db().execute("INSERT OR IGNORE INTO recording_uploads VALUES (?, ?, ?)",
-                         (recording_id, machine["paired_by"], now()))
+            db().execute("INSERT INTO recording_uploads(recording_id, added_by, added_at) VALUES (?, ?, ?) "
+                         "ON CONFLICT DO NOTHING", (recording_id, machine["paired_by"], now()))
             for app_id in discovered:
                 if auth.valid_name(machine["paired_by"]) and not auth.owners(db(), app_id):
                     auth.assign(db(), app_id, machine["paired_by"], "owner", f"machine:{machine['id']}", now())
@@ -771,7 +702,8 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
             text = json.dumps(report, sort_keys=True) if report else None
             # an owner's acceptance of a partial recording holds only for what they accepted
             accepted = (old["accepted_by"], old["accepted_at"]) if old is not None and old["completeness"] == text else (None, None)
-            db().execute("""INSERT INTO recording_completeness VALUES (?, ?, ?, ?, ?, ?)
+            db().execute("""INSERT INTO recording_completeness(recording_id, completeness, preflight, accepted_by,
+                            accepted_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
                             ON CONFLICT(recording_id) DO UPDATE SET completeness = excluded.completeness,
                             preflight = excluded.preflight, accepted_by = excluded.accepted_by,
                             accepted_at = excluded.accepted_at, updated_at = excluded.updated_at""",
@@ -780,10 +712,16 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
             if capture is not None:
                 db().execute("UPDATE capture_sessions SET status = 'recorded', recording_id = ? WHERE id = ?",
                              (recording_id, capture["id"]))  # fmt: skip
-            db().execute("INSERT OR REPLACE INTO recording_contracts VALUES (?, ?, ?, ?, ?, ?)",
+            db().execute("""INSERT INTO recording_contracts(recording_id, contract_version, recorder, recorder_version,
+                            twinlab_commit, received_at) VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(recording_id) DO UPDATE SET contract_version = excluded.contract_version,
+                            recorder = excluded.recorder, recorder_version = excluded.recorder_version,
+                            twinlab_commit = excluded.twinlab_commit, received_at = excluded.received_at""",
                          (recording_id, sender["contract_version"], sender["recorder"],
                           sender["recorder_version"], sender["twinlab_commit"], now()))  # fmt: skip
-            db().execute("INSERT OR REPLACE INTO machine_contracts VALUES (?, ?, ?, ?)",
+            db().execute("""INSERT INTO machine_contracts(machine_id, contract_version, recorder, updated_at) VALUES (?, ?, ?, ?)
+                            ON CONFLICT(machine_id) DO UPDATE SET contract_version = excluded.contract_version,
+                            recorder = excluded.recorder, updated_at = excluded.updated_at""",
                          (machine["id"], sender["contract_version"],
                           f"{sender['recorder']} {sender['recorder_version']}", now()))  # fmt: skip
         return jsonify(recording_id=recording_id, mapped=mapped, discovered=discovered,
@@ -828,7 +766,7 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
             FROM recording_apps JOIN recordings ON recordings.id = recording_apps.recording_id
             LEFT JOIN session_refs ON session_refs.recording_id = recording_apps.recording_id
             LEFT JOIN machines ON machines.id = session_refs.machine_id
-            WHERE recording_apps.app_id = ? ORDER BY session_refs.received_at DESC
+            WHERE recording_apps.app_id = ? ORDER BY session_refs.received_at DESC NULLS LAST
         """, (app_id,)).fetchall()
         return [dict(r, steps=json.loads(r["flow"])) for r in rows]
 
@@ -848,13 +786,13 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         rows = db().execute("""
             SELECT recordings.id, recordings.name, session_refs.received_at, machines.name AS machine,
                    automations.name AS automation,
-                   (SELECT group_concat(apps.name || ' (' || recording_apps.level || ')', ', ')
+                   (SELECT string_agg(apps.name || ' (' || recording_apps.level || ')', ', ')
                     FROM recording_apps JOIN apps ON apps.id = recording_apps.app_id
                     WHERE recording_apps.recording_id = recordings.id) AS apps
             FROM recordings LEFT JOIN session_refs ON session_refs.recording_id = recordings.id
             LEFT JOIN machines ON machines.id = session_refs.machine_id
             LEFT JOIN automations ON automations.id = session_refs.automation_id
-            ORDER BY session_refs.received_at DESC, recordings.name
+            ORDER BY session_refs.received_at DESC NULLS LAST, recordings.name
         """).fetchall()
         return render_template("recordings.html", recordings=[dict(r, status=recording_status(db(), r["id"]))
                                                               for r in rows if reviewer_of_recording(r["id"])])
@@ -900,7 +838,8 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                            "or merge them if they are the same application.")
         surface = key.split(":", 1)[0] if key.startswith(("web:", "mainframe:")) else "desktop"
         with db():
-            db().execute("INSERT OR IGNORE INTO app_identities VALUES (?, ?, ?, '{}')", (key, app_id, surface))
+            db().execute("INSERT INTO app_identities(key, app_id, surface, facts) VALUES (?, ?, ?, '{}') ON CONFLICT DO NOTHING",
+                         (key, app_id, surface))
             db().execute("UPDATE apps SET surface = ? WHERE id = ? AND surface = ''", (surface, app_id))
         return redirect(url_for("app_setup", app_id=app_id))
 
@@ -973,10 +912,10 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         if target is None or into == app_id:
             abort(400, "Choose the application to merge into.")
         blockers = []
-        for (table,) in db().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+        for table in sorted(db().tables()):
             if table in MOVED:
                 continue
-            for fk in db().execute(f'PRAGMA foreign_key_list("{table}")').fetchall():
+            for fk in db().foreign_keys(table):
                 if fk["table"] == "apps":
                     count = db().execute(f'SELECT COUNT(*) FROM "{table}" WHERE "{fk["from"]}" = ?',
                                          (app_id,)).fetchone()[0]  # fmt: skip
@@ -1066,8 +1005,8 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                               link["reviewed"], into, link["recording_id"]))  # fmt: skip
                 db().execute("DELETE FROM evidence WHERE app_id = ? AND recording_id = ?", (app_id, link["recording_id"]))
             db().execute("UPDATE evidence SET app_id = ? WHERE app_id = ?", (into, app_id))
-            db().execute("INSERT OR IGNORE INTO automation_apps SELECT automation_id, ? FROM automation_apps "
-                         "WHERE app_id = ?", (into, app_id))  # fmt: skip
+            db().execute("INSERT INTO automation_apps(automation_id, app_id) SELECT automation_id, ? FROM automation_apps "
+                         "WHERE app_id = ? ON CONFLICT DO NOTHING", (into, app_id))  # fmt: skip
             db().execute("DELETE FROM automation_apps WHERE app_id = ?", (app_id,))
             db().execute("UPDATE briefs SET app_id = ? WHERE app_id = ?", (into, app_id))
             # scenarios follow the target's own, in their order
@@ -1088,7 +1027,7 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
     @auth.signed_in
     def automations():
         rows = db().execute("""
-            SELECT automations.*, (SELECT group_concat(apps.name, ', ') FROM automation_apps
+            SELECT automations.*, (SELECT string_agg(apps.name, ', ') FROM automation_apps
                 JOIN apps ON apps.id = automation_apps.app_id WHERE automation_id = automations.id) AS apps
             FROM automations ORDER BY name
         """).fetchall()
@@ -1100,13 +1039,14 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         with db():
             row = db().execute("SELECT id FROM automations WHERE name = ?", (name,)).fetchone()
             if row is None:
-                automation_id = db().execute("INSERT INTO automations(name, kind, notes) VALUES (?, ?, ?)",
-                                             (name, kind, notes)).lastrowid  # fmt: skip
+                automation_id = db().execute("INSERT INTO automations(name, kind, notes) VALUES (?, ?, ?) RETURNING id",
+                                             (name, kind, notes)).fetchone()[0]  # fmt: skip
             else:
                 automation_id = row["id"]
                 db().execute("UPDATE automations SET kind = ?, notes = ? WHERE id = ?", (kind, notes, automation_id))
             for app_id in app_ids:
-                db().execute("INSERT OR IGNORE INTO automation_apps VALUES (?, ?)", (automation_id, app_id))
+                db().execute("INSERT INTO automation_apps(automation_id, app_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                             (automation_id, app_id))
         return automation_id
 
     @app.post("/automations")
@@ -1164,7 +1104,7 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                                WHERE automation_id = ? ORDER BY name""", (automation_id,)).fetchall()  # fmt: skip
         recs = db().execute("""SELECT recordings.id, recordings.name, session_refs.received_at FROM session_refs
                                JOIN recordings ON recordings.id = session_refs.recording_id
-                               WHERE session_refs.automation_id = ? ORDER BY received_at DESC""",
+                               WHERE session_refs.automation_id = ? ORDER BY received_at DESC NULLS LAST""",
                             (automation_id,)).fetchall()  # fmt: skip
         apps = [a for a in apps if auth.can("viewer", app_id=a["id"])]
         recs = [r for r in recs if reviewer_of_recording(r["id"])]

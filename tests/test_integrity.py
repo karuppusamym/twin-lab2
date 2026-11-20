@@ -6,16 +6,19 @@ import io
 import json
 from pathlib import Path
 import re
-import sqlite3
 import tempfile
 import unittest
 from zipfile import ZipFile
 
+import migrations
+import migrations
 import portal
 from support import freeze
 from portal import create_app
 import registry
+from support import connect, new_database
 from test_registry import CV, DESK, WEB, by_number, eid, numbers, references
+from support import connect, new_database
 
 RECORDING = "ws-20261119T100000Z-0a1b2c3d"
 
@@ -24,7 +27,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
-        self.database = Path(self.work.name) / "catalog.db"
+        self.database = new_database(self.work.name)
         self.start()
 
     def start(self):
@@ -50,8 +53,7 @@ class Base(unittest.TestCase):
         return response.json
 
     def link(self, app_id, recording_id=RECORDING):
-        with closing(sqlite3.connect(self.database)) as db:
-            db.row_factory = sqlite3.Row
+        with closing(connect(self.database)) as db:
             row = db.execute("SELECT * FROM evidence WHERE app_id = ? AND recording_id = ?",
                              (app_id, recording_id)).fetchone()
         # stored as event ids; compared by the events' display numbers
@@ -127,7 +129,7 @@ class MergeTest(Base):
         # a brief stored before builder packages were frozen (the portal stored one per export)
         package = b"PK legacy brief"
         revision = "ab" * 32
-        with closing(sqlite3.connect(self.database)) as db, db:
+        with closing(connect(self.database)) as db, db:
             db.execute("INSERT INTO briefs VALUES (?, 2, '{}')", (revision,))
             db.execute("INSERT INTO brief_packages(revision, archive) VALUES (?, ?)", (revision, package))
         # the repro: the merge deleted the brief while its package still referred to it
@@ -186,7 +188,7 @@ class MergeTest(Base):
         self.assertIn("cannot be merged while it has 1 attachments", page)
         self.assertIsNone(done)  # no confirm button
         self.assertEqual(self.post("/apps/1/merge", into="3", confirm="0" * 16).location, "/apps/1/merge?into=3")
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM apps").fetchone()[0], 3)
 
 
@@ -217,14 +219,14 @@ class UrlIdentityTest(Base):
 
     def make(self, name, *keys):
         self.post("/apps", name=name)
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             app_id = db.execute("SELECT MAX(id) FROM apps").fetchone()[0]
         for key in keys:
             self.assertEqual(self.post(f"/apps/{app_id}/identity", key=key).status_code, 302, key)
         return app_id
 
     def flows(self):
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             return {(app_id, key): [s["label"] for s in json.loads(flow)] for app_id, key, flow in
                     db.execute("SELECT app_id, key, flow FROM recording_apps")}
 
@@ -294,11 +296,11 @@ class MigrationTest(unittest.TestCase):
     def test_a_catalog_from_before_these_columns_is_migrated(self):
         with tempfile.TemporaryDirectory() as work:
             database = Path(work) / "catalog.db"
-            with closing(sqlite3.connect(database)) as db, db:
-                db.executescript(portal.SCHEMA)  # apps and evidence as they were
+            with closing(connect(database)) as db, db:
+                for sql in migrations.BASELINE_TABLES:  # apps and evidence as they were
+                    db.ddl(sql)
                 db.execute("ALTER TABLE apps ADD COLUMN status TEXT NOT NULL DEFAULT 'known'")
                 db.execute("ALTER TABLE apps ADD COLUMN surface TEXT NOT NULL DEFAULT ''")
-                db.executescript(registry.SCHEMA)
                 db.execute("INSERT INTO apps(id, name, git_url, requirements) VALUES (1, 'Shop', '', '')")
                 db.execute("INSERT INTO recordings VALUES (?, 'Old', ?)",
                            (RECORDING, json.dumps([{"seq": 5, "source": "shop", "action": "click"}])))
@@ -306,7 +308,7 @@ class MigrationTest(unittest.TestCase):
                 db.execute("INSERT INTO app_identities VALUES ('web:http://127.0.0.1:8080', 1, 'web', '{}')")
             for _ in range(2):  # migrating twice is harmless
                 app = create_app(database)
-            with closing(sqlite3.connect(database)) as db:
+            with closing(connect(database)) as db:
                 row = db.execute("SELECT selection, notes, reviewed, suggested FROM evidence").fetchone()
                 mode = db.execute("SELECT url_match FROM apps").fetchone()[0]
             # the old selection by number is now by the event's id
@@ -327,7 +329,7 @@ class MigrationTest(unittest.TestCase):
             refs["timeline"] = [{"app": WEB, "steps": 1}]
             result = client.post("/api/agent/references", json=refs, headers=agent).json
             self.assertEqual(result["mapped"], [1])
-            with closing(sqlite3.connect(database)) as db:
+            with closing(connect(database)) as db:
                 row = db.execute("SELECT selection, notes, reviewed FROM evidence").fetchone()
             self.assertEqual(row, (json.dumps([eid(RECORDING, 5)]), "kept", 1))  # treated as reviewed: unchanged
 

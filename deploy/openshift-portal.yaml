@@ -1,12 +1,19 @@
 # The TwinLab2 portal on OpenShift. Not applied to a real cluster yet: review before use.
 #
 #   oc create secret generic twinlab2 --from-literal=secret-key=$(openssl rand -hex 32) \
-#     --from-literal=cookie-secret=$(openssl rand -base64 32 | head -c 32)
+#     --from-literal=cookie-secret=$(openssl rand -base64 32 | head -c 32) \
+#     --from-literal=database-url='postgresql://twinlab2:PASSWORD@POSTGRES-HOST:5432/twinlab2?sslmode=require'
 #   oc apply -f deploy/openshift-portal.yaml        (after setting the image and host below)
 #
 # People sign in through the OpenShift OAuth proxy; the recorders reach /api/agent/ with their
-# machine token (the proxy lets those paths through without a sign-in). One replica: the
-# catalog is SQLite on the volume.
+# machine token (the proxy lets those paths through without a sign-in).
+#
+# The portal database is PostgreSQL (DATABASE_URL from the secret): a managed instance or an
+# operator-run cluster, with a database and an owner role made for TwinLab2. The portal applies
+# its pending migrations at start (under an advisory lock, so replicas starting together are
+# safe) and keeps no state in the pod: artifacts (evidence, packs, releases, recordings) go to the
+# S3 bucket below, with credentials from the pod's role or AWS_* variables. To move an existing SQLite catalog in, see
+# "Shared deployment" in the README (python migrations.py copy).
 apiVersion: v1
 kind: List
 items:
@@ -17,15 +24,6 @@ items:
       annotations:
         serviceaccounts.openshift.io/oauth-redirectreference.primary: >-
           {"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"twinlab2"}}
-  - apiVersion: v1
-    kind: PersistentVolumeClaim
-    metadata:
-      name: twinlab2-data
-    spec:
-      accessModes: [ReadWriteOnce]
-      resources:
-        requests:
-          storage: 1Gi
   - apiVersion: apps/v1
     kind: Deployment
     metadata:
@@ -33,7 +31,7 @@ items:
       labels: {app.kubernetes.io/name: twinlab2}
     spec:
       replicas: 1
-      strategy: {type: Recreate}
+      strategy: {type: RollingUpdate}
       selector:
         matchLabels: {app.kubernetes.io/name: twinlab2}
       template:
@@ -47,13 +45,31 @@ items:
               env:
                 - name: TWINLAB2_SECRET_KEY
                   valueFrom: {secretKeyRef: {name: twinlab2, key: secret-key}}
+                - name: DATABASE_URL
+                  valueFrom: {secretKeyRef: {name: twinlab2, key: database-url}}
+                - name: TWINLAB2_ARTIFACT_BACKEND  # files go to S3; the database keeps refs
+                  value: s3
+                - name: TWINLAB2_S3_BUCKET
+                  value: twinlab2-artifacts
                 - name: TWINLAB2_HOSTS
                   value: twinlab2.apps.example.test
-              volumeMounts:
-                - {name: data, mountPath: /data}
               resources:
                 requests: {cpu: 50m, memory: 128Mi}
                 limits: {memory: 512Mi}
+            # the build worker (worker.py): works the job queue in the same database
+            - name: worker
+              image: REGISTRY/twinlab2-portal:TAG
+              command: ["python", "worker.py"]
+              env:
+                - name: DATABASE_URL
+                  valueFrom: {secretKeyRef: {name: twinlab2, key: database-url}}
+                - name: TWINLAB2_ARTIFACT_BACKEND  # files go to S3; the database keeps refs
+                  value: s3
+                - name: TWINLAB2_S3_BUCKET
+                  value: twinlab2-artifacts
+              resources:
+                requests: {cpu: 20m, memory: 96Mi}
+                limits: {memory: 256Mi}
             - name: oauth-proxy
               image: registry.redhat.io/openshift4/ose-oauth-proxy:latest
               args:
@@ -75,8 +91,6 @@ items:
                 - {name: tls, mountPath: /etc/tls/private}
                 - {name: proxy-secret, mountPath: /etc/proxy/secret}
           volumes:
-            - name: data
-              persistentVolumeClaim: {claimName: twinlab2-data}
             - name: tls
               secret: {secretName: twinlab2-tls}
             - name: proxy-secret

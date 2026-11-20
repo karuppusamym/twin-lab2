@@ -7,7 +7,6 @@ import io
 import json
 from pathlib import Path
 import re
-import sqlite3
 import tempfile
 import unittest
 from zipfile import ZipFile
@@ -15,6 +14,7 @@ from zipfile import ZipFile
 from support import freeze
 from portal import create_app
 import scenarios
+from support import connect, new_database
 from test_registry import CV, DESK, WEB, eid, references
 
 RECORDING = "ws-20261119T100000Z-0a1b2c3d"
@@ -43,7 +43,7 @@ class BuildPackTest(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
-        self.database = Path(self.work.name) / "catalog.db"
+        self.database = new_database(self.work.name)
         self.client = self.client_for(self.database)
 
     def client_for(self, database):
@@ -121,7 +121,7 @@ class BuildPackTest(unittest.TestCase):
                 self.assertNotIn(b"Cookie", blob)
             self.assertNotIn('"key": "x"', files["evidence.json"].decode())
         # the reference the recorder sent is kept, separately, in the catalog database
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             payload = db.execute("SELECT payload FROM session_refs").fetchone()[0]
         self.assertIn(SSN, payload)
 
@@ -148,8 +148,7 @@ class BuildPackTest(unittest.TestCase):
     def test_scenario_fields_round_trip_and_events_must_be_selected(self):
         desk, _ = self.record()
         self.scenario(desk)
-        with closing(sqlite3.connect(self.database)) as db:
-            db.row_factory = sqlite3.Row
+        with closing(connect(self.database)) as db:
             [saved] = scenarios.load(db, desk)
         self.assertEqual(
             {k: saved[k] for k in ("name", "starting", "actions", "expected", "failures", "examples", "questions",
@@ -176,7 +175,7 @@ class BuildPackTest(unittest.TestCase):
         self.assertEqual(self.client.get(f"/apps/{desk}/build-pack/preview").status_code, 400)
 
     def test_existing_requirements_move_into_a_scenario(self):
-        with closing(sqlite3.connect(self.database)) as db, db:
+        with closing(connect(self.database)) as db, db:
             db.execute("INSERT INTO apps(name, git_url, requirements) VALUES ('Old', '', ?)",
                        ("Invoices total the order lines.\nVAT is 20%.",))
         self.client = self.client_for(self.database)
@@ -187,7 +186,7 @@ class BuildPackTest(unittest.TestCase):
         self.assertEqual(manifest["scenarios"][0]["notes"], "Invoices total the order lines.\nVAT is 20%.")
         self.assertIn("The expected result of this scenario is not stated.", manifest["scenarios"][0]["unresolved_questions"])
         self.client_for(self.database)  # migrating again adds nothing
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM scenarios").fetchone()[0], 1)
 
 

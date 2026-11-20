@@ -56,17 +56,7 @@ ADMIN = "admin"
 LOCAL_USER = "local"
 LOCAL = {"127.0.0.1", "::1"}
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    name TEXT PRIMARY KEY, password_hash TEXT NOT NULL DEFAULT '', is_admin INTEGER NOT NULL DEFAULT 0,
-    created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS app_roles (
-    app_id INTEGER NOT NULL REFERENCES apps(id), user_name TEXT NOT NULL, role TEXT NOT NULL,
-    granted_by TEXT NOT NULL, granted_at TEXT NOT NULL,
-    PRIMARY KEY (app_id, user_name)
-);
-"""
+# The tables are created by migrations.py (6: roles and audit).
 
 ITERATIONS = 240_000
 
@@ -150,7 +140,8 @@ def assign(db, app_id, user, role, by, now):
     if old == "owner" and len(owners(db, app_id)) == 1:
         raise ValueError("An application keeps at least one owner: assign another owner first.")
     db.execute("DELETE FROM app_roles WHERE app_id = ? AND user_name = ?", (app_id, user))
-    db.execute("INSERT INTO app_roles VALUES (?, ?, ?, ?, ?)", (app_id, user, role, by, now))
+    db.execute("INSERT INTO app_roles(app_id, user_name, role, granted_by, granted_at) VALUES (?, ?, ?, ?, ?)",
+               (app_id, user, role, by, now))
     sync_owner_column(db, app_id)
     return old
 

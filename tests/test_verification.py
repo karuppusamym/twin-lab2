@@ -6,7 +6,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 from pathlib import Path
-import sqlite3
 import tempfile
 import threading
 import unittest
@@ -19,6 +18,7 @@ from support import freeze
 from portal import create_app
 from test_registry import eid
 import verification
+from support import connect, new_database
 
 REPO = "acme/billing"
 SHA = "a" * 40
@@ -149,7 +149,7 @@ class VerificationTest(unittest.TestCase):
         self.deployment = Deployment(SHA)
         self.addCleanup(self.deployment.close)
         self.twin = FakeTwinLab()
-        self.database = Path(self.work.name) / "catalog.db"
+        self.database = new_database(self.work.name)
         self.app = create_app(self.database)
         self.app.testing = True
         self.app.config.update(GITHUB=verification.GitHub(token="test-token", api=self.github.url),
@@ -188,8 +188,7 @@ class VerificationTest(unittest.TestCase):
         return release_id
 
     def row(self, sql, *args):
-        with closing(sqlite3.connect(self.database)) as db:
-            db.row_factory = sqlite3.Row
+        with closing(connect(self.database)) as db:
             return db.execute(sql, args).fetchall()
 
     def state(self, release_id):
@@ -315,8 +314,7 @@ class VerificationTest(unittest.TestCase):
         other = Deployment(OTHER)
         self.addCleanup(other.close)
         self.post(f"/releases/{release_id}", environment="Demo", url=other.url)
-        with closing(sqlite3.connect(self.database)) as db, db:
-            db.row_factory = sqlite3.Row
+        with closing(connect(self.database)) as db, db:
             outcome = portal.verify_release(db, release_id, self.app.config["GITHUB"], self.twin,
                                             base_url=other.url)
         self.assertFalse(outcome["tested"])

@@ -47,45 +47,7 @@ WINDOWS_PATTERN = "*windows*"
 ALL = "*"
 GREEN = "success"
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS commit_checks (
-    repository TEXT NOT NULL, commit_sha TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
-    conclusion TEXT NOT NULL, url TEXT NOT NULL, completed_at TEXT, fetched_at TEXT NOT NULL,
-    PRIMARY KEY (repository, commit_sha, kind, name)
-);
-CREATE TABLE IF NOT EXISTS release_verifications (
-    release_id INTEGER PRIMARY KEY REFERENCES releases(id), commit_sha TEXT NOT NULL,
-    repository TEXT NOT NULL, observed_head TEXT NOT NULL, status TEXT NOT NULL,
-    reasons TEXT NOT NULL, checked_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS release_artifacts (
-    id INTEGER PRIMARY KEY, release_id INTEGER NOT NULL REFERENCES releases(id),
-    kind TEXT NOT NULL, sha256 TEXT NOT NULL, content BLOB NOT NULL, created_at TEXT NOT NULL
-);
-"""
-
-APP_COLUMNS = {
-    "required_checks": "TEXT NOT NULL DEFAULT ''",
-    "target_platform": "TEXT NOT NULL DEFAULT ''",
-    "windows_check_pattern": "TEXT NOT NULL DEFAULT ''",
-    "lab_url": "TEXT NOT NULL DEFAULT ''",
-    "launch": "TEXT NOT NULL DEFAULT ''",
-}
-RELEASE_COLUMNS = {
-    "repository": "TEXT NOT NULL DEFAULT ''",
-    "pr_number": "INTEGER",
-    "source_ref": "TEXT NOT NULL DEFAULT ''",
-}
-
-
-def migrate(connection):
-    connection.executescript(SCHEMA)
-    for table, wanted in (("apps", APP_COLUMNS), ("releases", RELEASE_COLUMNS)):
-        columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
-        for name, definition in wanted.items():
-            if name not in columns:
-                connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
-    connection.commit()
+# The tables and columns are created by migrations.py (2: release verification).
 
 
 class GitHubError(Exception):
@@ -207,7 +169,8 @@ def store_checks(connection, repo, sha, checks):
     stamp = registry.now()
     for check in checks:
         connection.execute(
-            "INSERT INTO commit_checks VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO commit_checks(repository, commit_sha, kind, name, conclusion, url, completed_at, fetched_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             (repo, sha, check["kind"], check["name"], check["conclusion"], check["url"],
              check["completed_at"], stamp))
 
@@ -339,7 +302,8 @@ def moved(release, observed):
 
 def _save_gate(connection, release, repo, observed, gate):
     connection.execute("""
-        INSERT INTO release_verifications VALUES (?,?,?,?,?,?,?)
+        INSERT INTO release_verifications(release_id, commit_sha, repository, observed_head, status, reasons,
+                                          checked_at) VALUES (?,?,?,?,?,?,?)
         ON CONFLICT(release_id) DO UPDATE SET commit_sha = excluded.commit_sha,
         repository = excluded.repository, observed_head = excluded.observed_head,
         status = excluded.status, reasons = excluded.reasons, checked_at = excluded.checked_at
@@ -418,10 +382,10 @@ def package_commit(connection, app_id, repo, sha, github, revision, pr_number=No
         raise ValueError("GitHub did not return a ZIP archive of the commit.") from error
     cursor = connection.execute(
         """INSERT INTO releases(app_id, version, revision, commit_sha, archive, archive_sha,
-           repository, pr_number, source_ref) VALUES (?,?,?,?,?,?,?,?,?)""",
+           repository, pr_number, source_ref) VALUES (?,?,?,?,?,?,?,?,?) RETURNING id""",
         (app_id, sha[:12], revision, sha, archive, hashlib.sha256(archive).hexdigest(),
          repo, pr_number, ref or ""))
-    return cursor.lastrowid
+    return cursor.fetchone()[0]
 
 
 def check_commit_args(repo, sha):

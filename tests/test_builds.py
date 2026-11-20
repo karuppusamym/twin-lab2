@@ -10,7 +10,6 @@ import io
 import os
 from pathlib import Path
 import re
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -26,6 +25,8 @@ import jobqueue
 from portal import create_app
 import worker
 from fakes import FakeDevin, FakeGitHub
+from db import IntegrityError
+from support import new_database
 
 PROJECT = Path(__file__).resolve().parents[1]
 REPO = "acme/orders-demo"
@@ -46,7 +47,7 @@ class BuildTest(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
-        self.database = Path(self.work.name) / "catalog.db"
+        self.database = new_database(self.work.name)
         self.devin = FakeDevin().start()
         self.github = FakeGitHub().start()
         self.addCleanup(self.devin.stop)
@@ -199,7 +200,7 @@ class BuildTest(unittest.TestCase):
         # the database refuses a second active build even when the check is skipped
         row = dict(builds.get(db, 1))
         row.update(id=None, idempotency_tag="another")
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(IntegrityError):
             db.execute(f"INSERT INTO builds ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})", list(row.values()))
         db.rollback()
         self.run_worker(jobs=3)
@@ -395,7 +396,8 @@ class JobQueueTest(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
-        self.db = builds.connect(Path(self.work.name) / "q.db")
+        self.database = new_database(self.work.name)
+        self.db = builds.connect(self.database)
         self.addCleanup(self.db.close)
         jobqueue.migrate(self.db)
 
@@ -419,7 +421,7 @@ class JobQueueTest(unittest.TestCase):
             time.sleep(0.01)
         self.db.execute("UPDATE jobs SET lease_until = ? WHERE id = ?", (jobqueue.later(-1), job_id))
         self.db.commit()
-        worker.run(Path(self.work.name) / "q.db", once=True, ctx=builds.Context(), max_jobs=1)
+        worker.run(self.database, once=True, ctx=builds.Context(), max_jobs=1)
         self.assertEqual(jobqueue.get(self.db, job_id)["state"], "failed")
 
 

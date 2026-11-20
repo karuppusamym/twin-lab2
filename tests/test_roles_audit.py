@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import sqlite3
 import struct
 import tempfile
 import unittest
@@ -20,6 +19,8 @@ import auth
 from portal import create_app
 import redact
 from test_registry import eid
+from db import Error as database_errors
+from support import connect, new_database
 
 RECORDING_LOG = b'{"seq":1,"action":"submit","url":"http://billing.local/?customer=jane@corp.com"}\n' \
                 b'{"seq":2,"action":"click","url":"http://billing.local/"}\n'
@@ -61,7 +62,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
-        self.database = Path(self.work.name) / "catalog.db"
+        self.database = new_database(self.work.name)
         with mock.patch.dict(os.environ, {"TWINLAB2_TRUST_PROXY_USER": "1", "TWINLAB2_ADMINS": "root"}):
             self.app = create_app(self.database)
         self.app.testing = True
@@ -77,7 +78,7 @@ class Base(unittest.TestCase):
         return self.client.post(path, data={"token": self.token, **values}, headers={"X-Forwarded-User": who})
 
     def rows(self, sql, *args):
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             return db.execute(sql, args).fetchall()
 
     def actions(self, app_id):
@@ -135,7 +136,7 @@ class RoleRefusalTest(Base):
         self.assertEqual(self.as_owner_freeze(self.app_id).status_code, 302)
         revision = self.rows("SELECT revision FROM builder_packages WHERE app_id = ?", self.app_id)[0][0]
         self.revision = revision
-        with closing(sqlite3.connect(self.database)) as db, db:
+        with closing(connect(self.database)) as db, db:
             db.execute("""INSERT INTO releases(id, app_id, version, revision, commit_sha, archive, archive_sha, state)
                           VALUES (1, ?, '1.0', ?, ?, ?, ?, 'tested')""",
                        (self.app_id, revision, "a" * 40, b"zip", hashlib.sha256(b"zip").hexdigest()))
@@ -260,7 +261,7 @@ class RoleRefusalTest(Base):
         self.assertIn("pair-code", self.get("/machines", "dave").data.decode())
         code = re.search(r'id="pair-code">([A-Z0-9-]+)<', self.get("/machines", "dave").data.decode())
         self.assertIsNone(code)  # shown once
-        with closing(sqlite3.connect(self.database)) as db, db:
+        with closing(connect(self.database)) as db, db:
             db.execute("INSERT INTO machines(id, name, token_sha, paired_by, paired_at) VALUES (9, 'PC', 'x', 'dave', '')")
             db.execute("INSERT INTO app_identities VALUES ('exe:billing.exe', ?, 'desktop', '{}')", (self.app_id,))
         self.assertEqual(self.post("/machines/9/revoke", "carol").status_code, 403)
@@ -286,9 +287,9 @@ class AuditTest(Base):
         self.assertEqual(self.as_owner_freeze(app_id).status_code, 302)
         self.get(f"/apps/{app_id}/build-pack", "bob")
         revision = self.rows("SELECT revision FROM builder_packages")[0][0]
-        with closing(sqlite3.connect(self.database)) as db, db:
+        with closing(connect(self.database)) as db, db:
             db.execute("""INSERT INTO releases(id, app_id, version, revision, commit_sha, archive, archive_sha, state)
-                          VALUES (1, ?, '1.0', ?, ?, x'00', '', 'tested')""", (app_id, revision, "b" * 40))
+                          VALUES (1, ?, '1.0', ?, ?, ?, '', 'tested')""", (app_id, revision, "b" * 40, b"\x00"))
         self.assertEqual(self.post("/releases/1/publish", "alice").status_code, 302)
         # a merge is written to both applications' history
         merge = self.get(f"/apps/{other}/merge?into={app_id}", "alice").data.decode()
@@ -307,10 +308,11 @@ class AuditTest(Base):
         self.assertIn("package.freeze", page)
         self.assertIn("evidence.review", page)
         self.assertEqual(self.get(f"/apps/{app_id}/history", "bob").status_code, 403)
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             for sql in ("UPDATE audit_log SET actor = 'mallory'", "DELETE FROM audit_log"):
-                with self.assertRaises(sqlite3.DatabaseError):
+                with self.assertRaises(database_errors):
                     db.execute(sql)
+                db.rollback()
 
 
 class PackageTest(Base):
@@ -350,13 +352,14 @@ class PackageTest(Base):
         self.assertNotEqual(self.get(f"/apps/{self.app_id}/build-pack", "alice").data, first)
         page = self.get(f"/apps/{self.app_id}/packages/2", "alice").data.decode()
         self.assertIn("Diff against revision 1", page)
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             for sql in ("UPDATE builder_packages SET approved_by = 'mallory'", "DELETE FROM builder_packages"):
-                with self.assertRaises(sqlite3.DatabaseError):
+                with self.assertRaises(database_errors):
                     db.execute(sql)
+                db.rollback()
         # bytes swapped under a frozen revision are refused, not served
         first_rev, second_rev = (r[0] for r in self.rows("SELECT revision FROM builder_packages ORDER BY rev"))
-        with closing(sqlite3.connect(self.database)) as db, db:
+        with closing(connect(self.database)) as db, db:
             other = db.execute("SELECT artifact_id FROM brief_packages WHERE revision = ?", (second_rev,)).fetchone()[0]
             db.execute("UPDATE brief_packages SET artifact_id = ? WHERE revision = ?", (other, first_rev))
         self.assertEqual(self.get(f"/apps/{self.app_id}/packages/1/download", "alice").status_code, 500)
@@ -464,10 +467,10 @@ class SignInTest(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
-        self.database = Path(self.work.name) / "catalog.db"
+        self.database = new_database(self.work.name)
 
     def query(self, sql):
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             return Rows(db.execute(sql).fetchall())
 
     def client(self, env=None):
@@ -499,7 +502,7 @@ class SignInTest(unittest.TestCase):
         self.assertTrue(stored.startswith("pbkdf2_sha256$"))
 
     def test_the_owner_text_of_an_old_catalog_becomes_an_assignment(self):
-        with closing(sqlite3.connect(self.database)) as db, db:
+        with closing(connect(self.database)) as db, db:
             db.executescript("""
                 CREATE TABLE apps (id INTEGER PRIMARY KEY, name TEXT NOT NULL, git_url TEXT NOT NULL,
                                    requirements TEXT NOT NULL, owner TEXT NOT NULL DEFAULT '');

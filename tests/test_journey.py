@@ -8,6 +8,7 @@ import unittest
 
 from journey import JOURNEY, STATUS_LABELS, app_journey
 from portal import create_app
+from support import new_database
 
 
 def facts(**changes):
@@ -62,7 +63,7 @@ class JourneyPagesTest(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
-        self.app = create_app(Path(self.work.name) / "catalog.db")
+        self.app = create_app(new_database(self.work.name))
         self.app.testing = True
         self.client = self.app.test_client()
         self.client.get("/")

@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import sqlite3
 from contextlib import closing
 import tempfile
 import threading
@@ -34,6 +33,8 @@ from agent.upload_queue import UploadQueue  # noqa: E402
 from portal import create_app  # noqa: E402
 from support import freeze  # noqa: E402
 from test_registry import CV, references  # noqa: E402
+from db import state_dir
+from support import connect, new_database
 
 SESSION = "20261119T100000Z-0a1b2c3d"
 CHUNK = 1024
@@ -80,8 +81,7 @@ class LocalStoreTest(unittest.TestCase):
             artifacts.read(ref, target=self.store)
 
     def test_refs_round_trip_through_the_database(self):
-        with closing(sqlite3.connect(":memory:")) as db:
-            db.row_factory = sqlite3.Row
+        with closing(connect(":memory:")) as db:
             db.executescript("CREATE TABLE attachments (id INTEGER PRIMARY KEY, content BLOB);"
                              "CREATE TABLE brief_packages (revision TEXT PRIMARY KEY, archive BLOB);"
                              "CREATE TABLE releases (id INTEGER PRIMARY KEY, archive BLOB);")
@@ -92,7 +92,7 @@ class LocalStoreTest(unittest.TestCase):
             self.assertEqual(artifacts.load(db, ref.id), ref)
 
     def test_presigned_local_url_expires(self):
-        app = create_app(self.root / "catalog.db")
+        app = create_app(new_database(self.root))
         with app.test_request_context():
             ref = artifacts.put(b"pack", kind="builder_package", app_id=1, content_type="application/zip")
             url = artifacts.presign_get(ref, 60, filename="pack.zip")
@@ -138,7 +138,7 @@ class S3StoreTest(unittest.TestCase):
     def test_portal_on_s3_redirects_downloads_to_presigned_urls(self):
         with tempfile.TemporaryDirectory() as work, mock.patch.dict(
                 os.environ, {"TWINLAB2_ARTIFACT_BACKEND": "s3", "TWINLAB2_S3_BUCKET": "evidence"}):
-            app = create_app(Path(work) / "catalog.db")
+            app = create_app(new_database(work))
             app.extensions["artifacts"] = self.store
             client = app.test_client()
             client.get("/")
@@ -160,10 +160,10 @@ class MigrationTest(unittest.TestCase):
     def setUp(self):
         work = tempfile.TemporaryDirectory()
         self.addCleanup(work.cleanup)
-        self.database = Path(work.name) / "catalog.db"
+        self.database = new_database(work.name)
         self.pack, self.release = b"PK-pack", b"PK-release"
         create_app(self.database)  # today's schema, then rows as an older portal stored them
-        with closing(sqlite3.connect(self.database)) as db, db:
+        with closing(connect(self.database)) as db, db:
             db.execute("INSERT INTO apps(id, name, git_url, requirements) VALUES (1, 'Orders', '', '')")
             db.execute("INSERT INTO attachments(app_id, title, kind, extension, content) VALUES (1, 'API', 'API', '.json', ?)",
                        (b'{"a": 1}',))
@@ -175,7 +175,7 @@ class MigrationTest(unittest.TestCase):
                        "VALUES (1, '1.1', 'r1', ?, ?, 'not-its-digest')", ("b" * 40, b"PK-bad"))
 
     def rows(self):
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             return {"attachments": db.execute("SELECT artifact_id, length(content) FROM attachments").fetchall(),
                     "packs": db.execute("SELECT artifact_id, length(archive) FROM brief_packages").fetchall(),
                     "releases": db.execute("SELECT version, artifact_id, length(archive) FROM releases ORDER BY id").fetchall()}
@@ -194,8 +194,7 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual(client.get("/apps/1/briefs/r1").data, self.pack)
         self.assertEqual(client.get("/releases/1/download").data, self.release)
         self.assertEqual(client.get("/releases/2/download").data, b"PK-bad")  # not copied: still its blob
-        with closing(sqlite3.connect(self.database)) as db:
-            db.row_factory = sqlite3.Row
+        with closing(connect(self.database)) as db:
             store = artifacts.from_env(self.database)
             self.assertEqual(artifacts.migrate_blobs(db, store)["copied"], 0)  # runs again, copies nothing twice
             self.assertEqual(artifacts.purge_blobs(db, store)["purged"], 3)
@@ -234,7 +233,7 @@ class UploadApiTest(unittest.TestCase):
     def setUp(self):
         work = tempfile.TemporaryDirectory()
         self.addCleanup(work.cleanup)
-        self.database = Path(work.name) / "catalog.db"
+        self.database = new_database(work.name)
         env = mock.patch.dict(os.environ, {"TWINLAB2_UPLOAD_CHUNK": str(CHUNK)})
         env.start()
         self.addCleanup(env.stop)
@@ -292,12 +291,11 @@ class UploadApiTest(unittest.TestCase):
         self.assertEqual((done.status_code, done.json["state"]), (200, "confirmed"))
         self.assertEqual(done.json["artifact"]["sha256"], digest(self.data))
         self.assertEqual(self.progress()["state"], "confirmed")
-        with self.app.app_context(), closing(sqlite3.connect(self.database)) as db:
-            db.row_factory = sqlite3.Row
+        with self.app.app_context(), closing(connect(self.database)) as db:
             row = db.execute("SELECT artifact_id FROM uploads").fetchone()
             ref = artifacts.load(db, row["artifact_id"])
             self.assertEqual((ref.kind, artifacts.read(ref)), ("restricted_evidence", self.data))
-        self.assertEqual(list((self.database.parent / "artifacts" / "uploads").iterdir()), [])  # staging gone
+        self.assertEqual(list((state_dir(self.database) / "artifacts" / "uploads").iterdir()), [])  # staging gone
         self.assertEqual(self.init().json["state"], "confirmed")  # sending it again changes nothing
 
     def test_a_checksum_mismatch_is_rejected(self):
@@ -309,7 +307,7 @@ class UploadApiTest(unittest.TestCase):
         self.assertIn("checksum mismatch", done.json["error"])
         self.assertEqual(self.progress()["state"], "rejected")
         self.assertIn("checksum mismatch", self.progress()["last_error"])
-        with closing(sqlite3.connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM artifacts").fetchone()[0], 0)
         retry = self.init(sha="1" * 64).json  # a new upload, from the beginning
         self.assertNotEqual(retry["upload_id"], up["upload_id"])
@@ -374,7 +372,7 @@ class QueueTest(unittest.TestCase):
         work = tempfile.TemporaryDirectory()
         self.addCleanup(work.cleanup)
         self.root = Path(work.name)
-        self.database = self.root / "portal" / "catalog.db"
+        self.database = new_database(self.root / "portal")
         env = mock.patch.dict(os.environ, {"TWINLAB2_UPLOAD_CHUNK": str(CHUNK), **self.backend_env})
         env.start()
         self.addCleanup(env.stop)
@@ -400,8 +398,7 @@ class QueueTest(unittest.TestCase):
         self.server = Server(create_app(self.database))
 
     def stored(self):
-        with closing(sqlite3.connect(self.database)) as db:
-            db.row_factory = sqlite3.Row
+        with closing(connect(self.database)) as db:
             row = db.execute("SELECT artifact_id FROM uploads WHERE state = 'confirmed'").fetchone()
             return artifacts.read(artifacts.load(db, row["artifact_id"]), target=self.server.server.app.extensions["artifacts"])
 
@@ -459,7 +456,7 @@ class QueueTest(unittest.TestCase):
         def corrupt_once(portal, upload_id, token):
             if not calls:  # storage got different bytes the first time
                 calls.append(upload_id)
-                with closing(sqlite3.connect(self.database)) as db:
+                with closing(connect(self.database)) as db:
                     db.execute("UPDATE uploads SET sha256 = ? WHERE id = ?", ("2" * 64, upload_id))
                     db.commit()
             return real_complete(portal, upload_id, token)

@@ -11,7 +11,6 @@ import json
 from pathlib import Path
 import re
 import secrets
-import sqlite3
 from urllib.parse import quote, urlsplit, urlunsplit
 import urllib.request
 
@@ -24,12 +23,13 @@ import auth
 from auth import require_role
 import artifacts
 import buildpack
+import db as database
 import completeness
 import event_ids
 import independent
 import journey
-import builds
 import builds_web
+import migrations
 import packages
 import redact
 import registry
@@ -40,51 +40,7 @@ import verification as commit_checks
 LOCAL = auth.LOCAL
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS apps (
-    id INTEGER PRIMARY KEY, name TEXT NOT NULL, git_url TEXT NOT NULL,
-    requirements TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS recordings (
-    id TEXT PRIMARY KEY, name TEXT NOT NULL, events TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS evidence (
-    app_id INTEGER NOT NULL REFERENCES apps(id),
-    recording_id TEXT NOT NULL REFERENCES recordings(id),
-    selection TEXT NOT NULL, notes TEXT NOT NULL,
-    PRIMARY KEY (app_id, recording_id)
-);
-CREATE TABLE IF NOT EXISTS attachments (
-    id INTEGER PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id),
-    title TEXT NOT NULL, kind TEXT NOT NULL, extension TEXT NOT NULL, content BLOB NOT NULL
-);
-CREATE TABLE IF NOT EXISTS briefs (
-    revision TEXT PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id),
-    manifest TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS brief_packages (
-    revision TEXT PRIMARY KEY REFERENCES briefs(revision), archive BLOB NOT NULL
-);
-CREATE TABLE IF NOT EXISTS releases (
-    id INTEGER PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id),
-    version TEXT NOT NULL, revision TEXT NOT NULL REFERENCES briefs(revision),
-    commit_sha TEXT NOT NULL, archive BLOB NOT NULL, archive_sha TEXT NOT NULL,
-    UNIQUE (app_id, version)
-);
-CREATE TABLE IF NOT EXISTS deployments (
-    release_id INTEGER NOT NULL REFERENCES releases(id), environment TEXT NOT NULL,
-    url TEXT NOT NULL, username TEXT NOT NULL, secret_ref TEXT NOT NULL,
-    PRIMARY KEY (release_id, environment)
-);
-CREATE TABLE IF NOT EXISTS recording_uploads (
-    recording_id TEXT PRIMARY KEY REFERENCES recordings(id), added_by TEXT NOT NULL, added_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS release_tests (
-    release_id INTEGER PRIMARY KEY REFERENCES releases(id), commit_sha TEXT NOT NULL,
-    platform TEXT NOT NULL, launch TEXT NOT NULL, reset_result TEXT NOT NULL,
-    reset_notes TEXT NOT NULL, results TEXT NOT NULL, tested_by TEXT NOT NULL, tested_at TEXT NOT NULL
-);
-"""
+# The tables are created and changed only by migrations.py.
 
 # A release is Packaged when its committed tree is archived, Tested once its acceptance evidence
 # is stored (release_tests), and Published only after it was Tested.
@@ -94,22 +50,6 @@ RESULTS = ("pass", "fail", "not-run")
 # {"commit": "<40-hex Git commit>"} equal to the release's commit. Anything else leaves it a
 # registered URL that is not verified.
 VERSION_PATH = ".twinlab/version"
-
-
-def migrate_releases(connection):
-    """Release states and deployment verification for catalogs made before them: an existing
-    release becomes Packaged and an existing deployment an unverified registered URL."""
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(releases)")}
-    if "state" not in columns:
-        connection.execute("ALTER TABLE releases ADD COLUMN state TEXT NOT NULL DEFAULT 'packaged'")
-    if "published_at" not in columns:
-        connection.execute("ALTER TABLE releases ADD COLUMN published_at TEXT")
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(deployments)")}
-    for name, definition in (("verification", "TEXT NOT NULL DEFAULT 'unverified'"),
-                             ("observed_commit", "TEXT NOT NULL DEFAULT ''"), ("checked_at", "TEXT")):
-        if name not in columns:
-            connection.execute(f"ALTER TABLE deployments ADD COLUMN {name} {definition}")
-    connection.commit()
 
 
 def brief_scenarios(manifest):
@@ -175,7 +115,8 @@ def record_test(connection, release_id, commit, platform, launch, reset_result, 
     if not gate["ok"]:
         raise ValueError("Not Tested: " + " ".join(gate["reasons"]))
     connection.execute("""
-        INSERT INTO release_tests VALUES (?,?,?,?,?,?,?,?,?)
+        INSERT INTO release_tests(release_id, commit_sha, platform, launch, reset_result, reset_notes,
+                                  results, tested_by, tested_at) VALUES (?,?,?,?,?,?,?,?,?)
         ON CONFLICT(release_id) DO UPDATE SET commit_sha = excluded.commit_sha,
         platform = excluded.platform, launch = excluded.launch, reset_result = excluded.reset_result,
         reset_notes = excluded.reset_notes, results = excluded.results, tested_by = excluded.tested_by,
@@ -188,7 +129,7 @@ def record_test(connection, release_id, commit, platform, launch, reset_result, 
 def store_brief(connection, app_id, revision, contents, package):
     """Keep a frozen build brief and its pack (as a `builder_package` artifact) under its
     revision, once: the same revision is the same bytes. No commit."""
-    connection.execute("INSERT INTO briefs VALUES (?, ?, ?) ON CONFLICT (revision) DO NOTHING",
+    connection.execute("INSERT INTO briefs(revision, app_id, manifest) VALUES (?, ?, ?) ON CONFLICT (revision) DO NOTHING",
                        (revision, app_id, contents))
     if connection.execute("SELECT 1 FROM brief_packages WHERE revision = ?", (revision,)).fetchone() is None:
         ref = artifacts.save(connection, artifacts.put(package, kind="builder_package", app_id=app_id,
@@ -443,13 +384,12 @@ def human(size):
         size /= 1024
 
 
-def add_release(database, app_id, version, revision, repository, ref, subdirectory=None, store=None):
+def add_release(target, app_id, version, revision, repository, ref, subdirectory=None, store=None):
     import subprocess
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", version):
         raise ValueError("Use a version such as 1.0.0.")
-    with closing(sqlite3.connect(database)) as connection, connection:
-        connection.execute("PRAGMA foreign_keys = ON")
+    with closing(database.connect(target)) as connection, connection:
         brief = connection.execute(
             "SELECT 1 FROM briefs WHERE revision = ? AND app_id = ?", (revision, app_id),
         ).fetchone()
@@ -478,11 +418,10 @@ def add_release(database, app_id, version, revision, repository, ref, subdirecto
         if not archive or not any(entries):
             raise ValueError("The selected Git tree is empty.")
         if connection.execute("SELECT 1 FROM releases WHERE app_id = ? AND version = ?", (app_id, version)).fetchone():
-            raise sqlite3.IntegrityError("UNIQUE constraint failed: releases.app_id, releases.version")
-        artifacts.migrate(connection)
+            raise ValueError(f"Version {version} is already registered for this app.")
         ref = artifacts.save(connection, artifacts.put(
             archive, kind="release_download", app_id=app_id, content_type="application/zip",
-            target=store or artifacts.from_env(database)))
+            target=store or artifacts.from_env(target)))
         connection.execute(
             """INSERT INTO releases(app_id,version,revision,commit_sha,archive,archive_sha,artifact_id)
                VALUES (?,?,?,?,?,?,?)""",
@@ -505,7 +444,9 @@ def migrate_owners(db, fallback=None):
                          user=owner, role="owner", previous=None, reason="owner text field before roles")
 
 
-def create_app(database):
+def create_app(target):
+    """The portal on the database at `target`: a DATABASE_URL (sqlite:///…, postgresql://…) or a
+    SQLite file path. Pending migrations are applied first."""
     app = Flask(__name__)
     hosts = [h.strip() for h in os.environ.get("TWINLAB2_HOSTS", "").split(",") if h.strip()]
     app.config.update(
@@ -516,15 +457,14 @@ def create_app(database):
         SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=os.environ.get("TWINLAB2_SECURE_COOKIES") == "1",
     )
-    database = Path(database)
-    database.parent.mkdir(parents=True, exist_ok=True)
-    artifacts.init_app(app, database)
+    target = str(target)
+    if database.engine_of(target) == "sqlite":
+        database.sqlite_path(target).parent.mkdir(parents=True, exist_ok=True)
+    artifacts.init_app(app, target)
 
     def db():
         if "db" not in g:
-            g.db = sqlite3.connect(database)
-            g.db.row_factory = sqlite3.Row
-            g.db.execute("PRAGMA foreign_keys = ON")
+            g.db = database.connect(target)
         return g.db
 
     @app.teardown_appcontext
@@ -534,36 +474,17 @@ def create_app(database):
             connection.close()
 
     with app.app_context():
-        db().executescript(SCHEMA)
-        migrate_releases(db())
-        commit_checks.migrate(db())
-        registry.migrate(db())
-        scenarios.migrate(db())
-        builds.migrate(db())
-        event_ids.migrate(db())  # references by number become references by event_id
-        artifacts.migrate(db())
-        uploads.migrate(db())
+        migrations.run(db())
+        with db():  # requirements text written by older portals (or by hand) becomes a scenario
+            scenarios.import_requirements(db())
+        event_ids.migrate(db())  # data: references by number become references by event_id
         if os.environ.get("TWINLAB2_ARTIFACT_MIGRATE", "1") != "0":
             moved = artifacts.migrate_blobs(db())
             for table, key, reason in moved["failed"]:
                 app.logger.warning("blob of %s %s not moved to artifact storage: %s", table, key, reason)
-        columns = {row[1] for row in db().execute("PRAGMA table_info(apps)")}
-        for column in ("owner", "purpose"):
-            if column not in columns:
-                db().execute(f"ALTER TABLE apps ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
-        columns = {row[1] for row in db().execute("PRAGMA table_info(attachments)")}
-        # uploaded evidence is restricted until the owner marks it reviewed or synthetic; files
-        # attached before this column existed are restricted too: uploading never meant sharing
-        for column, definition in (("share", "TEXT NOT NULL DEFAULT 'restricted'"),
-                                   ("added_by", "TEXT NOT NULL DEFAULT ''")):
-            if column not in columns:
-                db().execute(f"ALTER TABLE attachments ADD COLUMN {column} {definition}")
-        db().executescript(auth.SCHEMA)
-        audit.migrate(db())
-        packages.migrate(db())
         settings = auth.Settings.from_env()
-        migrate_owners(db(), None if settings.trust_proxy or settings.password else auth.LOCAL_USER)
-        db().commit()
+        with db():  # data: the owner text of catalogs from before roles becomes an owner role
+            migrate_owners(db(), None if settings.trust_proxy or settings.password else auth.LOCAL_USER)
 
     app.jinja_env.filters["status_label"] = lambda status: journey.STATUS_LABELS.get(
         status, str(status).replace("_", " "))
@@ -711,10 +632,10 @@ def create_app(database):
             abort(400, "Enter a demo app name.")
         with db():
             result = db().execute(
-                "INSERT INTO apps(name, git_url, requirements, owner, purpose) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO apps(name, git_url, requirements, owner, purpose) VALUES (?, ?, ?, ?, ?) RETURNING id",
                 (name, git_url, requirements, "", purpose),
             )
-            app_id = result.lastrowid
+            app_id = result.fetchone()[0]
             record("app.create", "app", app_id, app_id=app_id, name=name)
             # whoever creates an application owns it; a named owner is assigned too
             for person in dict.fromkeys([g.user, owner]):
@@ -722,8 +643,8 @@ def create_app(database):
                     auth.assign(db(), app_id, person, "owner", g.user, registry.now())
                     record("role.assign", "role", f"{app_id}/{person}", app_id=app_id, user=person,
                            role="owner", previous=None)
-        scenarios.migrate(db())
-        return redirect(url_for("demo", app_id=result.lastrowid))
+            scenarios.import_requirements(db())
+        return redirect(url_for("demo", app_id=app_id))
 
     def selected_events(app_id):
         """The events selected for the app, as `recording#event_id` with their pack references."""
@@ -889,9 +810,9 @@ def create_app(database):
             ref = artifacts.save(db(), ref)
             attachment_id = db().execute(
                 "INSERT INTO attachments(app_id,title,kind,extension,content,artifact_id,share,added_by) "
-                "VALUES (?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?) RETURNING id",
                 (app_id, title, kind, extension, b"", ref.id, share, g.user),
-            ).lastrowid
+            ).fetchone()[0]
             record("evidence.upload", "attachment", attachment_id, app_id=app_id, title=title, kind=kind,
                    sha256=hashlib.sha256(content).hexdigest(), share=share)
         return redirect(url_for("demo", app_id=app_id))
@@ -939,7 +860,7 @@ def create_app(database):
             abort(400, str(error))
         with db():
             inserted = db().execute(
-                "INSERT OR IGNORE INTO recordings VALUES (?, ?, ?) RETURNING id",
+                "INSERT INTO recordings(id, name, events) VALUES (?, ?, ?) ON CONFLICT DO NOTHING RETURNING id",
                 (digest, name, json.dumps(events)),
             ).fetchone()
             if inserted is None:
@@ -955,7 +876,8 @@ def create_app(database):
                 db().execute("UPDATE recordings SET events = ? WHERE id = ?", (
                     json.dumps(ordered(old.values())), digest,
                 ))
-            db().execute("INSERT OR IGNORE INTO recording_uploads VALUES (?, ?, ?)", (digest, g.user, registry.now()))
+            db().execute("INSERT INTO recording_uploads(recording_id, added_by, added_at) VALUES (?, ?, ?) "
+                         "ON CONFLICT DO NOTHING", (digest, g.user, registry.now()))
             record("recording.import", "recording", digest, name=name, events=len(events))
         return redirect(url_for("recording", recording_id=digest))
 
@@ -1337,21 +1259,23 @@ def create_app(database):
     registry.register(app, db)
     uploads.register(app, db)
     auth.public(app.view_functions["artifact_download"])  # a signed, short-lived link is the credential
-    builds_web.register(app, db, get_app, pack_view, database,
+    builds_web.register(app, db, get_app, pack_view, target,
                         dev_worker=not auth.Settings.from_env().trust_proxy and os.environ.get("TWINLAB2_DEV_WORKER", "1") != "0")
     return app
 
 
 def wsgi():
-    """The portal for a WSGI server (gunicorn "portal:wsgi()"), its catalog at TWINLAB2_DATABASE."""
-    return create_app(Path(os.environ.get("TWINLAB2_DATABASE", Path(__file__).parent / ".state/catalog.db")))
+    """The portal for a WSGI server (gunicorn "portal:wsgi()"): its database at DATABASE_URL
+    (else the SQLite file TWINLAB2_DATABASE, else .state/catalog.db)."""
+    return create_app(database.from_env())
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--database", type=Path, default=Path(__file__).parent / ".state/catalog.db")
+    parser.add_argument("--database", default=database.from_env(),
+                        help="a DATABASE_URL (sqlite:///…, postgresql://…) or a SQLite file")
     commands = parser.add_subparsers(dest="command")
     publish = commands.add_parser("release", help="Register a ZIP from a committed Git tree.")
     publish.add_argument("app_id", type=int)
@@ -1373,21 +1297,20 @@ if __name__ == "__main__":
         try:
             commit = add_release(args.database, args.app_id, args.version, args.revision,
                                  args.repository, args.ref, args.subdirectory)
-        except (ValueError, sqlite3.IntegrityError, CalledProcessError, OSError) as error:
+        except (ValueError, *database.IntegrityError, CalledProcessError, OSError) as error:
             parser.exit(1, f"Release registration failed: {error}\n")
         print(f"Registered {args.version} from {commit}.")
     elif args.command == "user":
         import getpass
         secret = getpass.getpass(f"Password for {args.name}: ") if args.password else None
-        with closing(sqlite3.connect(args.database)) as connection, connection:
+        with closing(database.connect(args.database)) as connection, connection:
             auth.save_user(connection, args.name, password=secret, is_admin=True if args.admin else None,
                            by="cli", now=registry.now())
             audit.record(connection, "cli", "user.save", "user", args.name, user=args.name,
                          is_admin=args.admin, password_changed=bool(secret))
         print(f"Saved user {args.name}.")
     elif args.command == "artifacts":
-        with app.app_context(), closing(sqlite3.connect(args.database)) as connection:
-            connection.row_factory = sqlite3.Row
+        with app.app_context(), closing(database.connect(args.database)) as connection:
             result = artifacts.migrate_blobs(connection)
             print(f"Copied {result['copied']} blobs to {artifacts.store().backend} artifact storage.")
             for table, key, reason in result["failed"]:

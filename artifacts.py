@@ -45,18 +45,13 @@ import secrets
 import tempfile
 import time
 
+from db import state_dir  # where local files go for a database
+
 KINDS = ("restricted_evidence", "builder_package", "verification_report", "release_download")
 CHUNK = 1024 * 1024
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS artifacts (
-    id INTEGER PRIMARY KEY, backend TEXT NOT NULL, bucket TEXT NOT NULL, object_key TEXT NOT NULL,
-    version_id TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL,
-    content_type TEXT NOT NULL, kind TEXT NOT NULL, app_id INTEGER, created_at TEXT NOT NULL,
-    UNIQUE (backend, bucket, object_key, version_id)
-);
-"""
+# The table is created by migrations.py (5: artifacts and uploads).
 
 # The tables whose blobs move here: (table, primary key, blob column, kind, content type,
 # the query of rows not yet copied with their app id, a stored SHA-256 column to check or None)
@@ -294,7 +289,7 @@ def from_env(database=None, environ=None):
     prefix = prefix + "/" if prefix else ""
     if backend == "local":
         root = env.get("TWINLAB2_ARTIFACT_DIR") or (
-            Path(database).parent / "artifacts" if database else Path(__file__).parent / ".state" / "artifacts")
+            state_dir(database) / "artifacts" if database else Path(__file__).parent / ".state" / "artifacts")
         return LocalStore(root)
     if backend == "s3":
         return S3Store(env.get("TWINLAB2_S3_BUCKET", "").strip(), prefix=prefix,
@@ -455,11 +450,10 @@ _COLUMNS = "id, backend, bucket, object_key, version_id, sha256, size, content_t
 
 
 def migrate(db) -> None:
-    db.executescript(SCHEMA) if hasattr(db, "executescript") else db.execute(SCHEMA)
-    for table, *_ in BLOB_TABLES:
-        if "artifact_id" not in columns(db, table):
-            db.execute(f"ALTER TABLE {table} ADD COLUMN artifact_id INTEGER REFERENCES artifacts(id)")
-    db.commit()
+    """The `artifacts` table and the blob tables' `artifact_id` (migration 5), with every other
+    pending migration."""
+    import migrations
+    migrations.run(db)
 
 
 def columns(db, table) -> set[str]:

@@ -33,7 +33,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -41,41 +40,13 @@ import uuid
 
 import artifacts
 import buildpack
+import db as database
 import devin
 import github
 import jobqueue
 
 PROJECT = Path(__file__).resolve().parent
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS github_repos (
-    repo TEXT PRIMARY KEY, default_branch TEXT NOT NULL, private INTEGER NOT NULL DEFAULT 0,
-    connected_by TEXT NOT NULL, connected_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS frozen_packs (
-    revision TEXT PRIMARY KEY REFERENCES briefs(revision), app_id INTEGER NOT NULL REFERENCES apps(id),
-    sha256 TEXT NOT NULL, frozen_by TEXT NOT NULL, frozen_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS builds (
-    id INTEGER PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES apps(id),
-    revision TEXT NOT NULL REFERENCES frozen_packs(revision), pack_sha256 TEXT NOT NULL,
-    repo TEXT NOT NULL, base_branch TEXT NOT NULL, base_sha TEXT NOT NULL, attempt INTEGER NOT NULL,
-    previous_build INTEGER REFERENCES builds(id), previous_revision TEXT, change_summary TEXT NOT NULL,
-    acu_budget INTEGER NOT NULL, state TEXT NOT NULL, active_app INTEGER UNIQUE,
-    idempotency_tag TEXT NOT NULL UNIQUE, create_token TEXT, create_calls INTEGER NOT NULL DEFAULT 0,
-    reconcile_checks INTEGER NOT NULL DEFAULT 0, attachment_url TEXT,
-    devin_session_id TEXT, devin_url TEXT, devin_status TEXT, devin_status_detail TEXT, acus_consumed REAL,
-    pr_number INTEGER, pr_url TEXT, head_sha TEXT, questions TEXT NOT NULL DEFAULT '[]',
-    error TEXT, note TEXT, requested_by TEXT NOT NULL,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT
-);
-CREATE TABLE IF NOT EXISTS build_messages (
-    id INTEGER PRIMARY KEY, build_id INTEGER NOT NULL REFERENCES builds(id), author TEXT NOT NULL,
-    body TEXT NOT NULL, state TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-)
-"""
+# The tables are created by migrations.py (3: build jobs).
 STATES = ("queued", "starting", "checking_started", "running", "waiting_for_answer",
           "ready_for_verification", "failed", "cancelled")
 FINAL = ("ready_for_verification", "failed", "cancelled")
@@ -106,23 +77,18 @@ def now():
 
 
 def migrate(db):
+    """The build tables (migration 3) and every other pending migration."""
     jobqueue.migrate(db)
-    for statement in SCHEMA.split(";"):
-        if statement.strip():
-            db.execute(statement)
-    db.commit()
 
 
-def connect(database):
-    """A connection for the worker: rows by name, waiting on locks instead of failing."""
-    db = sqlite3.connect(database, timeout=30)  # waits up to 30 s on a lock
-    db.row_factory = sqlite3.Row
-    artifacts.configure(artifacts.from_env(database))  # packs outside a request: beside this catalog
-    return db
+def connect(target):
+    """A connection for the worker (db.py: SQLite waits on locks instead of failing)."""
+    artifacts.configure(artifacts.from_env(target))  # packs outside a request: beside this catalog
+    return database.connect(target)
 
 
 def is_integrity_error(exc):
-    return isinstance(exc, sqlite3.IntegrityError) or type(exc).__name__ in ("IntegrityError", "UniqueViolation")
+    return isinstance(exc, database.IntegrityError)
 
 
 # --- settings and connections ----------------------------------------------------------------------
@@ -262,8 +228,9 @@ def _insert(db, values):
         return current, False
     columns = list(values)
     try:
-        build_id = db.execute(f"INSERT INTO builds ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
-                              "RETURNING id", [values[c] for c in columns]).fetchone()[0]
+        cursor = db.execute(f"INSERT INTO builds ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)}) "
+                            "RETURNING id", [values[c] for c in columns])
+        build_id = cursor.fetchone()[0]
         jobqueue.enqueue(db, "build", {"build_id": build_id}, dedupe_key=f"build:{build_id}", commit=False)
         db.commit()
     except Exception as exc:
@@ -665,15 +632,17 @@ def give_up(db, job, error):
 _dev_worker = None
 
 
-def start_dev_worker(database):
+def start_dev_worker(target):
     """Start `python worker.py` for this catalog, unless the one started here still runs."""
     global _dev_worker
     if _dev_worker is not None and _dev_worker.poll() is None:
         return _dev_worker.pid, False
-    log = Path(database).parent / "worker.log"
+    folder = database.state_dir(target)
+    folder.mkdir(parents=True, exist_ok=True)
+    log = folder / "worker.log"
     flags = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}
     with open(log, "ab") as out:
-        _dev_worker = subprocess.Popen([sys.executable, str(PROJECT / "worker.py"), "--database", str(database)],
+        _dev_worker = subprocess.Popen([sys.executable, str(PROJECT / "worker.py"), "--database", str(target)],
                                        cwd=PROJECT, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **flags)
     return _dev_worker.pid, True
 
