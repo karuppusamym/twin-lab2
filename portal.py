@@ -5,13 +5,15 @@ from contextlib import closing
 import os
 from datetime import datetime, timezone
 import hashlib
+import http.client
 import io
 import json
 from pathlib import Path
 import re
 import secrets
 import sqlite3
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
+import urllib.request
 from zipfile import ZipFile
 
 from flask import Flask, abort, g, redirect, render_template, request, send_file, session, url_for
@@ -57,7 +59,160 @@ CREATE TABLE IF NOT EXISTS deployments (
     url TEXT NOT NULL, username TEXT NOT NULL, secret_ref TEXT NOT NULL,
     PRIMARY KEY (release_id, environment)
 );
+CREATE TABLE IF NOT EXISTS release_tests (
+    release_id INTEGER PRIMARY KEY REFERENCES releases(id), commit_sha TEXT NOT NULL,
+    platform TEXT NOT NULL, launch TEXT NOT NULL, reset_result TEXT NOT NULL,
+    reset_notes TEXT NOT NULL, results TEXT NOT NULL, tested_by TEXT NOT NULL, tested_at TEXT NOT NULL
+);
 """
+
+# A release is Packaged when its committed tree is archived, Tested once its acceptance evidence
+# is stored (release_tests), and Published only after it was Tested.
+STATES = ("packaged", "tested", "published")
+RESULTS = ("pass", "fail", "not-run")
+# A deployment is Verified when GET <deployment URL>/.twinlab/version answers 200 with JSON
+# {"commit": "<40-hex Git commit>"} equal to the release's commit. Anything else leaves it a
+# registered URL that is not verified.
+VERSION_PATH = ".twinlab/version"
+
+
+def migrate_releases(connection):
+    """Release states and deployment verification for catalogs made before them: an existing
+    release becomes Packaged and an existing deployment an unverified registered URL."""
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(releases)")}
+    if "state" not in columns:
+        connection.execute("ALTER TABLE releases ADD COLUMN state TEXT NOT NULL DEFAULT 'packaged'")
+    if "published_at" not in columns:
+        connection.execute("ALTER TABLE releases ADD COLUMN published_at TEXT")
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(deployments)")}
+    for name, definition in (("verification", "TEXT NOT NULL DEFAULT 'unverified'"),
+                             ("observed_commit", "TEXT NOT NULL DEFAULT ''"), ("checked_at", "TEXT")):
+        if name not in columns:
+            connection.execute(f"ALTER TABLE deployments ADD COLUMN {name} {definition}")
+    connection.commit()
+
+
+def brief_scenarios(manifest):
+    """The agreed business scenarios of a build brief, each {"id", "name"}: the brief's own
+    `scenarios` list when it has one (strings, or objects with an id and a name or title),
+    else one per linked recording, named by its reviewed notes."""
+    found, seen = [], set()
+    for number, item in enumerate(manifest.get("scenarios") or [], 1):
+        if isinstance(item, str):
+            key, name = f"scenario-{number}", item
+        elif isinstance(item, dict):
+            key = item.get("id") or item.get("key") or f"scenario-{number}"
+            name = item.get("name") or item.get("title") or item.get("outcome") or key
+        else:
+            continue
+        found.append({"id": str(key)[:120], "name": str(name).strip()[:300] or str(key)})
+    if not found:
+        for item in manifest.get("evidence") or []:
+            notes = (item.get("notes") or "").strip().splitlines()
+            found.append({"id": f"recording:{item['recording_id']}",
+                          "name": notes[0][:300] if notes else f"Recording {item['recording_id'][:12]}"})
+    unique = []
+    for item in found:
+        if item["id"] not in seen:
+            seen.add(item["id"])
+            unique.append(item)
+    return unique
+
+
+def record_test(connection, release_id, commit, platform, launch, reset_result, reset_notes, results, user):
+    """Store a release's acceptance evidence and make it Tested. ValueError when the evidence is
+    incomplete, is for another commit, or the release is already Published."""
+    release = connection.execute(
+        "SELECT releases.*, briefs.manifest FROM releases JOIN briefs USING (revision) WHERE releases.id = ?",
+        (release_id,),
+    ).fetchone()
+    if release is None:
+        raise LookupError("No such release.")
+    if release["state"] == "published":
+        raise ValueError("A published release is final: package a new version to test again.")
+    if (commit or "").strip().lower() != release["commit_sha"]:
+        raise ValueError("The tested commit must be the packaged commit " + release["commit_sha"] + ".")
+    platform, launch = (platform or "").strip(), (launch or "").strip()
+    if not platform or not launch:
+        raise ValueError("Give the supported platform and the launch instructions.")
+    if reset_result not in ("pass", "fail"):
+        raise ValueError("Record whether the reset check passed or failed.")
+    scenarios = brief_scenarios(json.loads(release["manifest"]))
+    if not scenarios:
+        raise ValueError("The build brief names no scenarios to test: link a recording or add scenarios.")
+    if set(results) - {item["id"] for item in scenarios}:
+        raise ValueError("A result names a scenario that is not in the build brief.")
+    rows = []
+    for item in scenarios:
+        result = results.get(item["id"])
+        if result not in RESULTS:
+            raise ValueError(f"Record pass, fail or not-run for “{item['name']}”.")
+        rows.append({"id": item["id"], "name": item["name"], "result": result})
+    connection.execute("""
+        INSERT INTO release_tests VALUES (?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(release_id) DO UPDATE SET commit_sha = excluded.commit_sha,
+        platform = excluded.platform, launch = excluded.launch, reset_result = excluded.reset_result,
+        reset_notes = excluded.reset_notes, results = excluded.results, tested_by = excluded.tested_by,
+        tested_at = excluded.tested_at
+    """, (release_id, release["commit_sha"], platform[:500], launch[:8000], reset_result,
+          (reset_notes or "").strip()[:2000], json.dumps(rows), user, registry.now()))
+    connection.execute("UPDATE releases SET state = 'tested' WHERE id = ?", (release_id,))
+
+
+def publish(connection, release_id):
+    """Make a Tested release Published; ValueError for any other state."""
+    row = connection.execute("SELECT state FROM releases WHERE id = ?", (release_id,)).fetchone()
+    if row is None:
+        raise LookupError("No such release.")
+    if row["state"] != "tested":
+        raise ValueError("Only a tested release can be published: record its test results first."
+                         if row["state"] == "packaged" else "This release is already published.")
+    connection.execute("UPDATE releases SET state = 'published', published_at = ? WHERE id = ?",
+                       (registry.now(), release_id))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def deployed_commit(url, timeout=5):
+    """The commit a deployment reports at <url>/.twinlab/version, or None."""
+    parts = urlsplit(url)
+    target = urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/") + "/" + VERSION_PATH, "", ""))
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(urllib.request.Request(target, headers={"Accept": "application/json"}),
+                         timeout=timeout) as response:
+            if response.status != 200:
+                return None
+            commit = json.loads(response.read(4096)).get("commit")
+    except (OSError, ValueError, AttributeError, http.client.HTTPException):
+        return None
+    return commit.lower() if isinstance(commit, str) and re.fullmatch(r"[0-9a-fA-F]{40}", commit) else None
+
+
+def verification(url, commit):
+    """(verification, observed commit) for a deployment of a release at `commit`."""
+    observed = deployed_commit(url)
+    if observed is None:
+        return "unverified", ""
+    return ("verified" if observed == commit else "mismatch"), observed
+
+
+def deployment_label(deployment):
+    """How every page names a deployment: Verified, or a registered URL that is not verified."""
+    if deployment["verification"] == "verified":
+        return "Verified"
+    return "Registered URL (not verified)"
+
+
+def deployment_reason(deployment):
+    if deployment["verification"] == "verified":
+        return f"{VERSION_PATH} reports this release's commit."
+    if deployment["verification"] == "mismatch":
+        return f"{VERSION_PATH} reports commit {deployment['observed_commit'][:12]}, not this release's."
+    return f"No commit at {VERSION_PATH}."
 
 ATTACHMENT_TYPES = {
     "Screen": {".png", ".jpg", ".jpeg"},
@@ -190,7 +345,10 @@ def create_app(database):
 
     with app.app_context():
         db().executescript(SCHEMA)
+        migrate_releases(db())
         registry.migrate(db())
+    app.jinja_env.globals.update(deployment_label=deployment_label, deployment_reason=deployment_reason,
+                                 version_path=VERSION_PATH)
 
     @app.before_request
     def sign_in():
@@ -274,15 +432,37 @@ def create_app(database):
 
     def releases(app_id):
         return db().execute(
-            "SELECT id, version, revision, commit_sha, archive_sha FROM releases WHERE app_id = ? ORDER BY id DESC",
+            "SELECT id, version, revision, commit_sha, archive_sha, state FROM releases WHERE app_id = ? ORDER BY id DESC",
             (app_id,),
         ).fetchall()
+
+    def tested_releases():
+        """Per app, its latest Tested or Published release, the results of its test, and the
+        deployment to open (a verified one first)."""
+        rows = db().execute("""
+            SELECT releases.id, releases.app_id, releases.version, releases.state, releases.commit_sha,
+                   release_tests.results, release_tests.platform
+            FROM releases JOIN release_tests ON release_tests.release_id = releases.id
+            WHERE releases.id = (SELECT MAX(id) FROM releases AS later
+                                 WHERE later.app_id = releases.app_id AND later.state IN ('tested', 'published'))
+        """).fetchall()
+        found = {}
+        for row in rows:
+            results = [item["result"] for item in json.loads(row["results"])]
+            deployment = db().execute(
+                "SELECT * FROM deployments WHERE release_id = ? ORDER BY verification = 'verified' DESC, environment",
+                (row["id"],),
+            ).fetchone()
+            found[row["app_id"]] = dict(row, deployment=deployment,
+                                        counts={result: results.count(result) for result in RESULTS})
+        return found
 
     @app.get("/")
     def home():
         return render_template(
             "catalog.html", apps=db().execute("SELECT * FROM apps ORDER BY status = 'not_replicated', name").fetchall(),
             recordings=db().execute("SELECT id, name FROM recordings ORDER BY name").fetchall(),
+            tested=tested_releases(),
         )
 
     @app.post("/apps")
@@ -441,7 +621,11 @@ def create_app(database):
             "Use evidence.json for the reviewed recording notes, event references and attachments. "
             "Record assumptions and unresolved behavior in BUILD-NOTES.md. "
             "Provide a local launcher, synthetic seed/reset steps, and smoke checks for the "
-            "requested business outcomes. Commit the source and run instructions to the demo repo.\n"
+            "requested business outcomes. Commit the source and run instructions to the demo repo.\n\n"
+            "## Version endpoint\n\n"
+            f"A server demo answers `GET /{VERSION_PATH}` (relative to its deployed URL) with HTTP 200 "
+            "and JSON `{\"commit\": \"<full 40-character Git commit it was built from>\"}`, so the "
+            "catalog can verify which release a deployment runs.\n"
         )
         package = io.BytesIO()
         with ZipFile(package, "w") as archive:
@@ -467,14 +651,25 @@ def create_app(database):
         return send_file(io.BytesIO(row["archive"]), mimetype="application/zip", as_attachment=True,
                          download_name=f"{slug}-{revision[:12]}.zip")
 
-    @app.route("/releases/<int:release_id>", methods=["GET", "POST"])
-    def release(release_id):
+    def get_release(release_id):
         item = db().execute(
-            "SELECT id, app_id, version, revision, commit_sha, archive_sha FROM releases WHERE id = ?",
+            "SELECT id, app_id, version, revision, commit_sha, archive_sha, state, published_at FROM releases WHERE id = ?",
             (release_id,),
         ).fetchone()
         if item is None:
             abort(404)
+        return item
+
+    def save_check(release, environment, url):
+        status, observed = verification(url, release["commit_sha"])
+        db().execute(
+            "UPDATE deployments SET verification = ?, observed_commit = ?, checked_at = ? WHERE release_id = ? AND environment = ?",
+            (status, observed, registry.now(), release["id"], environment),
+        )
+
+    @app.route("/releases/<int:release_id>", methods=["GET", "POST"])
+    def release(release_id):
+        item = get_release(release_id)
         if request.method == "POST":
             environment = request.form.get("environment", "").strip()
             url = request.form.get("url", "").strip()
@@ -489,16 +684,55 @@ def create_app(database):
                 abort(400, "Enter a secret reference such as vault:demo/billing.")
             with db():
                 db().execute("""
-                    INSERT INTO deployments VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO deployments(release_id, environment, url, username, secret_ref) VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(release_id, environment) DO UPDATE SET
                     url = excluded.url, username = excluded.username, secret_ref = excluded.secret_ref
                 """, (release_id, environment, url, request.form.get("username", "").strip(), secret_ref))
+                save_check(item, environment, url)
             return redirect(url_for("release", release_id=release_id))
         deployments = db().execute(
             "SELECT * FROM deployments WHERE release_id = ? ORDER BY environment", (release_id,),
         ).fetchall()
+        test = db().execute("SELECT * FROM release_tests WHERE release_id = ?", (release_id,)).fetchone()
+        brief = db().execute("SELECT manifest FROM briefs WHERE revision = ?", (item["revision"],)).fetchone()
         return render_template("release.html", release=item, item=get_app(item["app_id"]),
-                               deployments=deployments)
+                               deployments=deployments, test=test, loads=json.loads, results=RESULTS,
+                               scenarios=brief_scenarios(json.loads(brief["manifest"])))
+
+    @app.post("/releases/<int:release_id>/deployments/check")
+    def check_deployment(release_id):
+        item = get_release(release_id)
+        environment = request.form.get("environment", "")
+        row = db().execute("SELECT url FROM deployments WHERE release_id = ? AND environment = ?",
+                           (release_id, environment)).fetchone()
+        if row is None:
+            abort(404)
+        with db():
+            save_check(item, environment, row["url"])
+        return redirect(url_for("release", release_id=release_id))
+
+    @app.post("/releases/<int:release_id>/test")
+    def test_release(release_id):
+        get_release(release_id)
+        results = {key[len("result:"):]: value for key, value in request.form.items() if key.startswith("result:")}
+        try:
+            with db():
+                record_test(db(), release_id, request.form.get("commit"), request.form.get("platform"),
+                            request.form.get("launch"), request.form.get("reset_result"),
+                            request.form.get("reset_notes"), results, g.user)
+        except ValueError as error:
+            abort(400, str(error))
+        return redirect(url_for("release", release_id=release_id))
+
+    @app.post("/releases/<int:release_id>/publish")
+    def publish_release(release_id):
+        get_release(release_id)
+        try:
+            with db():
+                publish(db(), release_id)
+        except ValueError as error:
+            abort(400, str(error))
+        return redirect(url_for("release", release_id=release_id))
 
     @app.get("/releases/<int:release_id>/download")
     def download_release(release_id):

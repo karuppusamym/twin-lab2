@@ -73,7 +73,11 @@ Import the session's top-level `steps.jsonl`. Recovered imports retain previousl
    oc get route billing
    ```
 
-4. Add the environment and route URL on the release page. You can include a demo username and the reference to its password in your secret manager.
+4. Add the environment and route URL on the release page. You can include a demo username and the reference to its password in your secret manager. The portal then asks the deployment for `GET <URL>/.twinlab/version`; when it answers HTTP 200 with JSON `{"commit": "<full 40-character Git commit>"}` equal to the release's commit, the deployment is **Verified**. Otherwise (no endpoint, another commit, unreachable) every page shows it as **Registered URL (not verified)**. **Check version again** on the release page repeats the check. The build pack asks the builder for this endpoint.
+
+### Release states: Packaged → Tested → Published
+
+A registered release is **Packaged**: its committed tree is archived, nothing more is known. On the release page, **Record test results** makes it **Tested** and stores the evidence: the tested commit (it must be the packaged commit), a pass, fail or not-run result for every scenario of the release's build brief (the brief's `scenarios`, else one per linked recording, named by its notes), the supported platform, launch instructions and the reset check (pass or fail). It can be tested again until it is published. **Publish** is refused unless the release is Tested, and a Published release is final. The catalog shows each app's latest Tested or Published release with its results, **Open demo** (a verified deployment first, else a registered URL labelled as not verified) and **Download tested release**. Releases registered before these states existed are Packaged.
 
 TwinLab2 helps a demo owner turn examples of an application into a runnable, versioned demo. The owner opens an app in the catalog, adds recordings and requirements, reviews what the demo should do, and gives the resulting build brief to a coding agent. A customer of the catalog can download a release or open a deployed demo.
 

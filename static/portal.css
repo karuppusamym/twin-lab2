@@ -52,3 +52,10 @@ table.flow th { color: #5b6d80; font-weight: 600; }
 .timeline li.presence { background: #f1f3f5; color: #5b6d80; }
 .timeline li + li::before { content: "→ "; color: #8194a9; }
 code { overflow-wrap: anywhere; }
+.badge.tested, .badge.published, .badge.verified, .badge.pass { background: #dff3e6; color: #1d5c34; }
+.badge.packaged, .badge.not-run { background: #eceff2; color: #4c5966; }
+.badge.unverified, .badge.mismatch, .badge.fail { background: #fff1d6; color: #7a4b00; }
+.tested-release { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .6rem; margin: .35rem 0 .6rem; }
+.tested-release .actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+a.button { border-radius: .35rem; background: #175990; color: white; padding: .3rem .7rem; text-decoration: none; font-size: .92rem; }
+a.button.secondary { background: #e6eef6; color: #14548e; }
