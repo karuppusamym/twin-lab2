@@ -147,7 +147,7 @@ Follow these rules in every new query and table so they work on SQLite and Postg
 `capture.py` runs Twin Lab's full command line (`labctl.cli`), which imports all of twin-lab's dependencies. Install them from the pinned commit. Then fetch the pinned collectors, which `capture.py` puts first on the path, and provision the browser.
 
 ```powershell
-python -m pip install "twin-lab[desktop] @ git+https://github.com/karuppusamym/twin-lab@430dfe538965b46ccbe824f8f2b4f415c5576483"
+python -m pip install "twin-lab[desktop] @ git+https://github.com/karuppusamym/twin-lab@4385949ffd0c6878e8402083e596fb8f7a1dd00b"
 python -m agent.twinlab fetch
 python -m playwright install chromium
 python capture.py start .state/captures/order-demo --web http://127.0.0.1:8080

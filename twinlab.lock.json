@@ -1,10 +1,10 @@
 {
  "repository": "https://github.com/karuppusamym/twin-lab",
- "commit": "430dfe538965b46ccbe824f8f2b4f415c5576483",
- "commit_subject": "Merge pull request #59 from karuppusamym/develop (twin-lab main, 2026-11-19)",
- "archive": "https://codeload.github.com/karuppusamym/twin-lab/tar.gz/430dfe538965b46ccbe824f8f2b4f415c5576483",
+ "commit": "4385949ffd0c6878e8402083e596fb8f7a1dd00b",
+ "commit_subject": "Merge pull request #63 (isolated collectors, capture preflight; after #62 event ids, journal, recovery) (twin-lab main, 2026-11-20)",
+ "archive": "https://codeload.github.com/karuppusamym/twin-lab/tar.gz/4385949ffd0c6878e8402083e596fb8f7a1dd00b",
  "path": "lab/labctl/labctl",
- "tree_sha256": "e763f0eeb11f8f1295d5c4383602dcc3dcee622e26250b4e1640402a23dbdde5",
+ "tree_sha256": "f6cae98133738a57e764c3dfaa7b1ce8cfb1ce72b3c38eb2efa69cdbe1390194",
  "license": "Apache-2.0",
- "contract_version": "1.0.0"
+ "contract_version": "1.1.0"
 }
