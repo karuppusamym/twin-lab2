@@ -36,6 +36,28 @@
   </form>
 </section>
 
+<section id="providers">
+  <h2>Providers</h2>
+  <table class="flow">
+    <thead><tr><th>Provider</th><th>Status</th><th>Capabilities</th><th>Here</th></tr></thead>
+    <tbody>{% for p in providers %}<tr><td>{{ p.label }}</td><td>{{ p.status_label }}</td><td>{{ p.capability_text }}</td>
+      <td>{% if p.ready %}<span class="error">{{ p.ready }}</span>{% else %}ready{% endif %}</td></tr>{% endfor %}</tbody>
+  </table>
+  <form method="post" action="{{ url_for('save_build_settings') }}" autocomplete="off">
+    <input type="hidden" name="token" value="{{ session.form_token }}">
+    <label>Anthropic API key (Claude sessions) <input type="password" name="ANTHROPIC_API_KEY" placeholder="{{ 'saved: leave empty to keep it' if stored.ANTHROPIC_API_KEY else 'sk-ant-…' }}"></label>
+    <label class="check"><input type="checkbox" name="clear_ANTHROPIC_API_KEY" value="1"> Remove the saved Anthropic key</label>
+    <label>Claude model <input name="CLAUDE_MODEL" value="{{ stored.CLAUDE_MODEL or '' }}" placeholder="claude-opus-5-5"></label>
+    <label>Default Claude budget per session (USD) <input name="DEFAULT_CLAUDE_BUDGET_USD" type="number" min="0.5" max="500" step="any" value="{{ claude_budget | amount }}"></label>
+    <label>Copilot GitHub token (not validated) <input type="password" name="COPILOT_GITHUB_TOKEN" placeholder="{{ 'saved: leave empty to keep it' if stored.COPILOT_GITHUB_TOKEN else 'a Copilot-entitled token' }}"></label>
+    <label class="check"><input type="checkbox" name="clear_COPILOT_GITHUB_TOKEN" value="1"> Remove the saved Copilot token</label>
+    <label>Copilot model <input name="COPILOT_MODEL" value="{{ stored.COPILOT_MODEL or '' }}" placeholder="the Copilot default"></label>
+    <button>Save</button>
+  </form>
+  <p class="muted">Claude and Copilot sessions run in an isolated process per session on the worker machine, which needs
+    <code>pip install -r requirements-providers.txt</code> and git. Copilot is off unless <code>TWINLAB2_ENABLE_COPILOT=1</code>.</p>
+</section>
+
 <section id="repos">
   <h2>GitHub repositories</h2>
   <p class="muted">Builds can target only a connected repository. Connecting checks that the token can see it.

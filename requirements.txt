@@ -4,3 +4,5 @@ boto3>=1.34
 httpx>=0.27,<1
 # PostgreSQL for a shared deployment (DATABASE_URL=postgresql://...); SQLite needs nothing extra
 psycopg[binary]>=3.2,<4
+# Claude build sessions: the clarification conversation (Messages API)
+anthropic>=0.75,<1

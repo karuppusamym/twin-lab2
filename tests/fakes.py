@@ -214,11 +214,21 @@ class FakeGitHub(_Server):
 
     def dispatch(self, h, method):
         url = urlsplit(h.path)
-        h._body()
+        body = h._body()
         with self.lock:
             self.requests.append((method, url.path))
         if h.headers.get("Authorization") != f"Bearer {self.token}":
             return h._send(401, {"message": "Bad credentials"})
+        opened = re.fullmatch(r"/repos/([^/]+/[^/]+)/pulls", url.path)
+        if method == "POST" and opened and opened.group(1) in self.repos:
+            doc = json.loads(body)
+            repo = self.repos[opened.group(1)]
+            with self.lock:
+                number = max(repo["pulls"] or [0]) + 1
+                repo["pulls"][number] = None
+                repo.setdefault("opened", {})[number] = doc
+            return h._send(201, {"number": number, "html_url": f"https://github.com/{opened.group(1)}/pull/{number}",
+                                 "head": {"ref": doc.get("head")}})
         match = re.fullmatch(r"/repos/([^/]+/[^/]+)(?:/(branches|pulls|commits)/(.+))?", url.path)
         repo = self.repos.get(match.group(1)) if match else None
         if method != "GET" or repo is None:
@@ -245,3 +255,38 @@ class FakeGitHub(_Server):
         return h._send(200, {"number": number, "html_url": f"https://github.com/{full}/pull/{number}", "state": "open",
                              "merged": False, "head": {"sha": repo["pulls"][number], "ref": "devin/build"},
                              "base": {"ref": repo["default_branch"]}})
+
+
+class FakeAnthropic(_Server):
+    """A stand-in for the Messages API (POST /v1/messages). `plan` holds what each call returns:
+    a text, or "drop" (the connection closes with no answer: the caller cannot know whether it
+    was received). Every request body is kept in `bodies`."""
+
+    def __init__(self, key="sk-ant-test-key"):
+        super().__init__()
+        self.key = key
+        self.plan = []
+        self.bodies = []
+        self.headers = []
+
+    def dispatch(self, h, method):
+        url = urlsplit(h.path)
+        body = h._body()
+        with self.lock:
+            self.requests.append((method, url.path))
+        if method != "POST" or url.path != "/v1/messages":
+            return h._send(404, {"type": "error", "error": {"type": "not_found_error", "message": "Not found"}})
+        if h.headers.get("x-api-key") != self.key:
+            return h._send(401, {"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}})
+        doc = json.loads(body)
+        with self.lock:
+            self.bodies.append(doc)
+            self.headers.append(dict(h.headers))
+            step = self.plan.pop(0) if self.plan else "Nothing is open.\nREADY TO BUILD"
+        if step == "drop":
+            h.close_connection = True
+            return None
+        return h._send(200, {"id": f"msg_{len(self.bodies)}", "type": "message", "role": "assistant",
+                             "model": doc.get("model"), "content": [{"type": "text", "text": step}],
+                             "stop_reason": "end_turn", "stop_sequence": None,
+                             "usage": {"input_tokens": 100, "output_tokens": 20}})
