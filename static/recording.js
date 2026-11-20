@@ -26,8 +26,10 @@ if (upload && upload.dataset.complete !== "1") {
       const total = data.total_bytes ?? data.bytes_total ?? data.size;
       let percent = data.percent ?? (done != null && total ? Math.round(done / total * 100) : null);
       upload.textContent = state.charAt(0).toUpperCase() + state.slice(1).replace(/_/g, " ")
-        + (percent != null ? ` ${Math.max(0, Math.min(100, Math.round(percent)))}%` : "");
-      if (/^(complete|completed|done|uploaded|stored)$/i.test(state) || percent >= 100) return;
+        + (percent != null ? ` ${Math.max(0, Math.min(100, Math.round(percent)))}%` : "")
+        + (data.last_error ? ` · ${String(data.last_error).slice(0, 300)}` : "");
+      // confirmed: stored and checked; rejected: the recorder starts a new upload
+      if (/^(complete|completed|done|uploaded|stored|confirmed|rejected)$/i.test(state) || percent >= 100) return;
     } catch (error) {
       return;
     }

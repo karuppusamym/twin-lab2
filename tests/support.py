@@ -45,6 +45,13 @@ def new_database(directory):
 def _drop():
     if not _created:
         return
+    import shutil
+    from db import state_dir
+
+    parts = urlsplit(URL)
     with _admin() as admin:
         for name in _created:
             admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+            # the database's local artifact files (db.state_dir)
+            url = urlunsplit((parts.scheme, parts.netloc, "/" + name, parts.query, ""))
+            shutil.rmtree(state_dir(url), ignore_errors=True)

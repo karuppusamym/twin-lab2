@@ -38,6 +38,7 @@ import sys
 import tempfile
 import uuid
 
+import artifacts
 import buildpack
 import db as database
 import devin
@@ -82,6 +83,7 @@ def migrate(db):
 
 def connect(target):
     """A connection for the worker (db.py: SQLite waits on locks instead of failing)."""
+    artifacts.configure(artifacts.from_env(target))  # packs outside a request: beside this catalog
     return database.connect(target)
 
 
@@ -141,9 +143,9 @@ def repos(db):
 # --- frozen packs ------------------------------------------------------------------------------------
 
 def stored_archive(db, app_id, revision):
-    row = db.execute("SELECT archive FROM brief_packages JOIN briefs USING (revision) "
+    row = db.execute("SELECT archive, artifact_id FROM brief_packages JOIN briefs USING (revision) "
                      "WHERE briefs.app_id = ? AND revision = ?", (app_id, revision)).fetchone()
-    return None if row is None else bytes(row["archive"])
+    return None if row is None else artifacts.content(db, row, "archive")
 
 
 def is_frozen(db, app_id, revision):
@@ -633,7 +635,7 @@ def start_dev_worker(target):
     global _dev_worker
     if _dev_worker is not None and _dev_worker.poll() is None:
         return _dev_worker.pid, False
-    folder = database.sqlite_path(target).parent if database.engine_of(target) == "sqlite" else PROJECT / ".state"
+    folder = database.state_dir(target)
     folder.mkdir(parents=True, exist_ok=True)
     log = folder / "worker.log"
     flags = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}

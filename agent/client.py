@@ -12,7 +12,7 @@ import json
 import ssl
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from agent.settings import APP, VERSION
 from recorder_contract import CONTRACT_VERSION
@@ -21,7 +21,17 @@ LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 class PortalError(Exception):
-    pass
+    """`status` is the HTTP status when the portal (or storage) answered, None when it could not
+    be reached; `body` the JSON answer, when there was one."""
+
+    def __init__(self, message: str, status: int | None = None, body: dict | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.body = body or {}
+
+    @property
+    def unreachable(self) -> bool:
+        return self.status is None
 
 
 def check_portal(url: str) -> str:
@@ -41,27 +51,30 @@ class Portal:
         self.timeout = timeout
         self.context = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else ssl.create_default_context()
 
-    def _call(self, method: str, path: str, body: dict | None = None) -> dict:
-        data = json.dumps(body).encode("utf-8") if body is not None else None
+    def _call(self, method: str, path: str, body: dict | None = None, *, raw: bytes | None = None,
+              token: str | None = None) -> dict:  # fmt: skip
+        data = json.dumps(body).encode("utf-8") if body is not None else raw
         req = urllib.request.Request(self.url + path, data=data, method=method)
         req.add_header("Accept", "application/json")
         req.add_header("X-TwinLab-Recorder", f"{APP} {VERSION}")
         req.add_header("X-TwinLab-Contract", CONTRACT_VERSION)
         if data is not None:
-            req.add_header("Content-Type", "application/json")
-        if self.token:
-            req.add_header("Authorization", f"Bearer {self.token}")
+            req.add_header("Content-Type", "application/json" if body is not None else "application/octet-stream")
+        if token or self.token:
+            req.add_header("Authorization", f"Bearer {token or self.token}")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout, context=self.context) as r:
                 raw = r.read(4 * 1024 * 1024)
         except urllib.error.HTTPError as exc:
             try:
-                message = json.loads(exc.read(64 * 1024).decode("utf-8")).get("error")
+                answer = json.loads(exc.read(64 * 1024).decode("utf-8"))
+                answer = answer if isinstance(answer, dict) else {}
             except (ValueError, AttributeError, UnicodeDecodeError):
-                message = None
-            if exc.code == 401:
+                answer = {}
+            message = answer.get("error") if isinstance(answer.get("error"), str) else None
+            if exc.code == 401 and token is None:
                 message = message or "this machine is not paired, or was revoked: pair it again"
-            raise PortalError(message or f"the portal answered {exc.code}") from exc
+            raise PortalError(message or f"the portal answered {exc.code}", exc.code, answer) from exc
         except (urllib.error.URLError, OSError) as exc:
             raise PortalError(f"the portal cannot be reached: {getattr(exc, 'reason', exc)}") from exc
         try:
@@ -103,6 +116,41 @@ class Portal:
 
     def send(self, references: dict) -> dict:
         return self._call("POST", "/api/agent/references", references)
+
+    # -- resumable uploads (RECORDER-CONTRACT.md, Uploads) --------------------------------------
+
+    def upload_init(self, session_id: str, size: int, sha256: str, content_type: str = "application/zip") -> dict:
+        return self._call("POST", "/api/uploads", {"contract_version": CONTRACT_VERSION, "session_id": session_id,
+                                                   "size": size, "sha256": sha256, "content_type": content_type})
+
+    def upload_status(self, upload_id: str, token: str) -> dict:
+        return self._call("GET", f"/api/uploads/{quote(upload_id)}", token=token)
+
+    def upload_chunk(self, upload_id: str, token: str, offset: int, data: bytes) -> dict:
+        return self._call("PUT", f"/api/uploads/{quote(upload_id)}?offset={int(offset)}", raw=data, token=token)
+
+    def upload_part_urls(self, upload_id: str, token: str, numbers: list[int]) -> dict:
+        return self._call("POST", f"/api/uploads/{quote(upload_id)}/parts", {"parts": numbers}, token=token)
+
+    def upload_complete(self, upload_id: str, token: str) -> dict:
+        return self._call("POST", f"/api/uploads/{quote(upload_id)}/complete", {}, token=token)
+
+    def put_part(self, url: str, data: bytes) -> str:
+        """PUT one part to a presigned storage URL (HTTPS, or HTTP on this machine); its ETag."""
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname or parts.username:
+            raise PortalError("the portal gave an invalid upload URL", 0)
+        if parts.scheme == "http" and parts.hostname not in LOCAL_HOSTS:
+            raise PortalError("upload URLs must be HTTPS (HTTP only on this machine)", 0)
+        req = urllib.request.Request(url, data=data, method="PUT",
+                                     headers={"Content-Type": "application/octet-stream"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=self.context) as r:
+                return r.headers.get("ETag", "")
+        except urllib.error.HTTPError as exc:
+            raise PortalError(f"storage answered {exc.code} to an upload part", exc.code) from exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise PortalError(f"storage cannot be reached: {getattr(exc, 'reason', exc)}") from exc
 
 
 def clean_targets(items) -> list[dict]:

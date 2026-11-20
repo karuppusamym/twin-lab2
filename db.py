@@ -20,6 +20,7 @@ The SQL itself must stay portable: see "Portable SQL rules" in the README.
 from __future__ import annotations
 
 from functools import lru_cache
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -56,6 +57,20 @@ def sqlite_path(target):
     if text.startswith("sqlite://"):
         raise ValueError("Use sqlite:///relative/path or sqlite:////absolute/path.")
     return Path(text)
+
+
+def state_dir(target):
+    """Where files that belong with a database live (local artifacts, the dev worker's log): the
+    SQLite file's folder, or for PostgreSQL .state/pg-<12 hex of host, port and database> next
+    to the portal (one folder per database, so test databases stay apart; short, for Windows
+    paths)."""
+    text = str(target)
+    if engine_of(text) == "sqlite":
+        return sqlite_path(text).parent
+    from urllib.parse import urlsplit
+    parts = urlsplit(text)
+    name = f"{parts.hostname or 'local'}:{parts.port or 5432}/{parts.path.strip('/') or 'postgres'}"
+    return DEFAULT_PATH.parent / ("pg-" + hashlib.sha256(name.encode()).hexdigest()[:12])
 
 
 def redacted(target):

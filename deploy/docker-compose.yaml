@@ -8,6 +8,7 @@
 #
 #   docker compose -f deploy/docker-compose.yaml up -d postgres
 #   python migrations.py copy .state/catalog.db postgresql://twinlab2:twinlab2@127.0.0.1:55433/twinlab2
+#   (and copy .state/artifacts into the `artifacts` volume, as the copy reminds you)
 #   docker compose -f deploy/docker-compose.yaml up --build portal
 name: twinlab2
 services:
@@ -31,6 +32,7 @@ services:
       postgres: {condition: service_healthy}
     environment:
       DATABASE_URL: postgresql://twinlab2:twinlab2@postgres:5432/twinlab2
+      TWINLAB2_ARTIFACT_DIR: /artifacts
       TWINLAB2_SECRET_KEY: change-me-to-a-long-random-value
       TWINLAB2_PASSWORD: change-me
       TWINLAB2_TRUST_PROXY_USER: "0"
@@ -39,12 +41,17 @@ services:
     # no OAuth proxy here: listen on the container's interface and sign in with the password
     command: ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "portal:wsgi()"]
     ports: ["127.0.0.1:8766:8080"]
+    volumes: [artifacts:/artifacts]
   worker:
     build: {context: .., dockerfile: Dockerfile}
     depends_on:
       postgres: {condition: service_healthy}
     environment:
       DATABASE_URL: postgresql://twinlab2:twinlab2@postgres:5432/twinlab2
+      TWINLAB2_ARTIFACT_DIR: /artifacts
     command: ["python", "worker.py"]
+    volumes: [artifacts:/artifacts]
 volumes:
   postgres:
+  # artifact files (evidence, packs, releases), shared by the portal and the worker
+  artifacts:

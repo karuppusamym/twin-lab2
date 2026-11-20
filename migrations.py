@@ -245,6 +245,31 @@ RECORDING_DETAILS = [
 ]
 
 
+# -- 5: artifact storage (refs, not bytes) and resumable recording uploads -----------------------------
+
+ARTIFACTS = [
+    """CREATE TABLE IF NOT EXISTS artifacts (
+        id {id}, backend TEXT NOT NULL, bucket TEXT NOT NULL, object_key TEXT NOT NULL,
+        version_id TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL,
+        content_type TEXT NOT NULL, kind TEXT NOT NULL, app_id INTEGER, created_at TEXT NOT NULL,
+        UNIQUE (backend, bucket, object_key, version_id)
+    )""",
+    add_columns([(table, "artifact_id", "INTEGER REFERENCES artifacts(id)")
+                 for table in ("attachments", "brief_packages", "releases")]),
+    """CREATE TABLE IF NOT EXISTS uploads (
+        id TEXT PRIMARY KEY, machine_id INTEGER NOT NULL REFERENCES machines(id),
+        recording_id TEXT NOT NULL, session_id TEXT NOT NULL, contract_version TEXT NOT NULL,
+        total_bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, content_type TEXT NOT NULL,
+        mode TEXT NOT NULL, chunk_size INTEGER NOT NULL, backend TEXT NOT NULL, object_key TEXT NOT NULL,
+        multipart_id TEXT NOT NULL DEFAULT '', object_version TEXT NOT NULL DEFAULT '',
+        state TEXT NOT NULL, received_bytes INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+        token_sha TEXT NOT NULL, token_expires TEXT NOT NULL, artifact_id INTEGER REFERENCES artifacts(id),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS uploads_recording ON uploads(recording_id)",
+]
+
+
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
@@ -253,6 +278,7 @@ MIGRATIONS = [
     (2, "release verification", RELEASE_VERIFICATION),
     (3, "build jobs", BUILD_JOBS),
     (4, "recording details", RECORDING_DETAILS),
+    (5, "artifacts and uploads", ARTIFACTS),
 ]
 
 
@@ -353,7 +379,9 @@ def copy(source, dest, batch=500, out=print):
                 out(f"{table}: {len(rows)}")
             if dst.engine == "postgresql":
                 for table in tables:
-                    sequence = dst.execute("SELECT pg_get_serial_sequence(?, 'id')", (table,)).fetchone()[0]                         if "id" in dst.columns(table) else None
+                    if "id" not in dst.columns(table):
+                        continue
+                    sequence = dst.execute("SELECT pg_get_serial_sequence(?, 'id')", (table,)).fetchone()[0]
                     if sequence:  # the next id the database assigns follows the copied ones
                         dst.execute(f'SELECT setval(?, COALESCE((SELECT MAX(id) FROM "{table}"), 1), '
                                     f'(SELECT MAX(id) FROM "{table}") IS NOT NULL)', (sequence,))
@@ -362,6 +390,12 @@ def copy(source, dest, batch=500, out=print):
             if found != count:
                 raise RuntimeError(f"{table}: copied {count} rows but the destination has {found}.")
         dst.commit()
+        local = dst.execute("SELECT COUNT(*) FROM artifacts WHERE backend = 'local'").fetchone()[0] \
+            if "artifacts" in tables else 0
+        dst.commit()
+        if local:  # the rows were copied, the files they refer to were not
+            out(f"{local} artifacts are files in {database.state_dir(source) / 'artifacts'}: give the new portal "
+                f"TWINLAB2_ARTIFACT_DIR pointing at that folder (or a copy of it).")
         return counts
     finally:
         src.close()

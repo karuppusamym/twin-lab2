@@ -239,11 +239,12 @@ class CompletenessTest(Base):
         self.assertIn("✓ UI Automation", page)
 
     def test_upload_progress_comes_from_the_storage_api_when_there_is_one(self):
-        self.app = create_app(self.database)  # the storage session's route, on a fresh app
+        self.app = create_app(self.database)  # the storage API (uploads.py), answering a known progress
 
-        @self.app.get("/api/recordings/<recording_id>/upload")
         def upload(recording_id):
-            return {"state": "uploading", "received_bytes": 4096, "total_bytes": 10240}
+            return {"state": "receiving", "received_bytes": 4096, "total_bytes": 10240, "last_error": None}
+
+        self.app.view_functions["recording_upload"] = upload
 
         self.app.testing = True
         self.client = self.app.test_client()
@@ -253,9 +254,11 @@ class CompletenessTest(Base):
         self.pair()
         self.send(references_1_1())
         page = self.client.get(f"/recordings/{RECORDING}").data.decode()
-        self.assertIn("Uploading 40% (4.0 KB of 10.0 KB)", page)
+        self.assertIn("Receiving 40% (4.0 KB of 10.0 KB)", page)
         self.assertIn(f'data-upload-url="/api/recordings/{RECORDING}/upload"', page)
         self.assertEqual(portal.upload_view({"status": "complete"})["text"], "Complete")
+        self.assertTrue(portal.upload_view({"state": "confirmed", "received_bytes": 1, "total_bytes": 1})["complete"])
+        self.assertIsNone(portal.upload_view({"state": "none", "received_bytes": 0, "total_bytes": 0}))
         self.assertIsNone(portal.upload_view(None))
 
 

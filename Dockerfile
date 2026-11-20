@@ -21,7 +21,7 @@ COPY agent/__init__.py agent/twinlab.py agent/
 RUN python -m agent.twinlab fetch
 COPY templates templates
 COPY static static
-RUN mkdir -p /data && chgrp -R 0 /data /app && chmod -R g=u /data /app
+RUN mkdir -p /data /artifacts && chgrp -R 0 /data /artifacts /app && chmod -R g=u /data /artifacts /app
 
 USER 1001
 EXPOSE 8080

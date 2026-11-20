@@ -18,6 +18,7 @@ from flask import Flask, abort, g, redirect, render_template, request, send_file
 from werkzeug.exceptions import HTTPException
 from werkzeug.routing import RequestRedirect
 
+import artifacts
 import buildpack
 import db as database
 import completeness
@@ -28,6 +29,7 @@ import builds_web
 import migrations
 import registry
 import scenarios
+import uploads
 import verification as commit_checks
 
 LOCAL = {"127.0.0.1", "::1"}
@@ -119,6 +121,18 @@ def record_test(connection, release_id, commit, platform, launch, reset_result, 
     connection.execute("UPDATE releases SET state = 'tested' WHERE id = ?", (release_id,))
 
 
+def store_brief(connection, app_id, revision, contents, package):
+    """Keep a frozen build brief and its pack (as a `builder_package` artifact) under its
+    revision, once: the same revision is the same bytes. No commit."""
+    connection.execute("INSERT INTO briefs(revision, app_id, manifest) VALUES (?, ?, ?) ON CONFLICT (revision) DO NOTHING",
+                       (revision, app_id, contents))
+    if connection.execute("SELECT 1 FROM brief_packages WHERE revision = ?", (revision,)).fetchone() is None:
+        ref = artifacts.save(connection, artifacts.put(package, kind="builder_package", app_id=app_id,
+                                                       content_type="application/zip"))
+        connection.execute("INSERT INTO brief_packages(revision, archive, artifact_id) VALUES (?, ?, ?)",
+                           (revision, b"", ref.id))
+
+
 def verify_commit(connection, app_id, repo, sha, github=None, runner=None, pr_number=None, ref="",
                   base_url=None, user="verification"):
     """“Verify this build”: a Packaged release of exactly `sha` (from GitHub), its checks, Twin
@@ -131,10 +145,7 @@ def verify_commit(connection, app_id, repo, sha, github=None, runner=None, pr_nu
         raise ValueError("Add a business scenario before verifying a build.")
     # The brief the build answers: the app's current one, stored as an export would store it.
     revision, contents, _, package = buildpack.build(connection, app_id, VERSION_PATH)
-    connection.execute("INSERT INTO briefs(revision, app_id, manifest) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-                       (revision, app_id, contents))
-    connection.execute("INSERT INTO brief_packages(revision, archive) VALUES (?, ?) ON CONFLICT DO NOTHING",
-                       (revision, package))
+    store_brief(connection, app_id, revision, contents, package)
     release_id = commit_checks.package_commit(connection, app_id, repo, sha, github, revision, pr_number, ref)
     return verify_release(connection, release_id, github, runner, base_url, user)
 
@@ -332,6 +343,8 @@ def upload_view(data):
         return None
 
     state = str(data.get("state") or data.get("status") or "").strip()[:40]
+    if state.lower() == "none":  # the storage API: this recording has no upload
+        return None
     done = first("received_bytes", "bytes_received", "uploaded_bytes", "uploaded", "received")
     total = first("total_bytes", "bytes_total", "size", "total")
     parts, of = first("parts_received", "received_parts", "parts_done"), first("parts_total", "total_parts")
@@ -343,7 +356,7 @@ def upload_view(data):
     if percent is None and parts is not None and of:
         percent = parts / of * 100
     percent = None if percent is None else max(0, min(100, round(percent)))
-    complete = state.lower() in ("complete", "completed", "done", "uploaded", "stored") or percent == 100
+    complete = state.lower() in ("complete", "completed", "done", "uploaded", "stored", "confirmed") or percent == 100
     words = [state.replace("_", " ").capitalize() or ("Complete" if complete else "Uploading")]
     if percent is not None:
         words.append(f"{percent}%")
@@ -351,6 +364,8 @@ def upload_view(data):
         words.append(f"({human(done)} of {human(total)})")
     elif parts is not None and of:
         words.append(f"({parts} of {of} parts)")
+    if isinstance(data.get("last_error"), str) and data["last_error"]:
+        words.append(f"· {data['last_error'][:300]}")
     return {"text": " ".join(words), "percent": percent, "complete": complete}
 
 
@@ -361,7 +376,7 @@ def human(size):
         size /= 1024
 
 
-def add_release(target, app_id, version, revision, repository, ref, subdirectory=None):
+def add_release(target, app_id, version, revision, repository, ref, subdirectory=None, store=None):
     import subprocess
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", version):
@@ -390,10 +405,15 @@ def add_release(target, app_id, version, revision, repository, ref, subdirectory
         archive = git("archive", "--format=zip", tree)
         if not archive or not any(entries):
             raise ValueError("The selected Git tree is empty.")
+        if connection.execute("SELECT 1 FROM releases WHERE app_id = ? AND version = ?", (app_id, version)).fetchone():
+            raise ValueError(f"Version {version} is already registered for this app.")
+        ref = artifacts.save(connection, artifacts.put(
+            archive, kind="release_download", app_id=app_id, content_type="application/zip",
+            target=store or artifacts.from_env(target)))
         connection.execute(
-            """INSERT INTO releases(app_id,version,revision,commit_sha,archive,archive_sha)
-               VALUES (?,?,?,?,?,?)""",
-            (app_id, version, revision, commit, archive, hashlib.sha256(archive).hexdigest()),
+            """INSERT INTO releases(app_id,version,revision,commit_sha,archive,archive_sha,artifact_id)
+               VALUES (?,?,?,?,?,?,?)""",
+            (app_id, version, revision, commit, b"", ref.sha256, ref.id),
         )
     return commit
 
@@ -416,6 +436,7 @@ def create_app(target):
     target = str(target)
     if database.engine_of(target) == "sqlite":
         database.sqlite_path(target).parent.mkdir(parents=True, exist_ok=True)
+    artifacts.init_app(app, target)
 
     def db():
         if "db" not in g:
@@ -433,6 +454,10 @@ def create_app(target):
         with db():  # requirements text written by older portals (or by hand) becomes a scenario
             scenarios.import_requirements(db())
         event_ids.migrate(db())  # data: references by number become references by event_id
+        if os.environ.get("TWINLAB2_ARTIFACT_MIGRATE", "1") != "0":
+            moved = artifacts.migrate_blobs(db())
+            for table, key, reason in moved["failed"]:
+                app.logger.warning("blob of %s %s not moved to artifact storage: %s", table, key, reason)
 
     app.jinja_env.filters["status_label"] = lambda status: journey.STATUS_LABELS.get(
         status, str(status).replace("_", " "))
@@ -445,7 +470,8 @@ def create_app(target):
         """Every page needs a signed-in user: the OpenShift OAuth proxy's user when the portal
         runs behind it, a password when one is set, else only this machine. The agent API has
         its own bearer token (registry)."""
-        if request.path.startswith(("/api/agent/", "/static/")) or request.endpoint in ("login", "health"):
+        if request.path.startswith(("/static/", *uploads.MACHINE_PATHS)) or request.endpoint in (
+                "login", "health", "artifact_download"):
             return None
         if trust_proxy:
             user = request.headers.get("X-Forwarded-User") or request.headers.get("X-Forwarded-Preferred-Username")
@@ -489,7 +515,7 @@ def create_app(target):
 
     @app.before_request
     def protect_forms():
-        if request.path.startswith("/api/agent/"):
+        if request.path.startswith(uploads.MACHINE_PATHS):
             return
         if "form_token" not in session:
             session["form_token"] = secrets.token_hex(32)
@@ -611,7 +637,8 @@ def create_app(target):
 
     @app.get("/setup")
     def setup():
-        return render_template("setup.html", apps=db().execute("SELECT id, name FROM apps ORDER BY name").fetchall())
+        return render_template("setup.html", apps=db().execute("SELECT id, name FROM apps ORDER BY name").fetchall(),
+                               storage=artifacts.store().describe())
 
     @app.post("/apps/<int:app_id>/scenarios", defaults={"scenario_id": None})
     @app.post("/apps/<int:app_id>/scenarios/<int:scenario_id>")
@@ -647,10 +674,13 @@ def create_app(target):
         content = upload.read()
         if not content or len(content) > 4 * 1024 * 1024:
             abort(400, "Evidence files must be between 1 byte and 4 MiB.")
+        ref = artifacts.put(content, kind="restricted_evidence", app_id=app_id,
+                            content_type=artifacts.content_type_for(extension))
         with db():
+            ref = artifacts.save(db(), ref)
             db().execute(
-                "INSERT INTO attachments(app_id,title,kind,extension,content) VALUES (?,?,?,?,?)",
-                (app_id, title, kind, extension, content),
+                "INSERT INTO attachments(app_id,title,kind,extension,content,artifact_id) VALUES (?,?,?,?,?,?)",
+                (app_id, title, kind, extension, b"", ref.id),
             )
         return redirect(url_for("demo", app_id=app_id))
 
@@ -755,20 +785,29 @@ def create_app(target):
             abort(400, "Add a business scenario before exporting.")
         revision, contents, _, package = buildpack.build(db(), app_id, VERSION_PATH)
         with db():
-            db().execute("INSERT INTO briefs(revision, app_id, manifest) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-                         (revision, app_id, contents))
-            db().execute("INSERT INTO brief_packages(revision, archive) VALUES (?, ?) ON CONFLICT DO NOTHING",
-                         (revision, package))
+            store_brief(db(), app_id, revision, contents, package)
         return revision
 
-    def stored_pack(app_id, revision):
+    def pack_row(app_id, revision):
         row = db().execute("""
-            SELECT archive FROM brief_packages JOIN briefs USING (revision)
-            WHERE app_id = ? AND revision = ?
+            SELECT brief_packages.archive, brief_packages.artifact_id FROM brief_packages
+            JOIN briefs USING (revision) WHERE app_id = ? AND revision = ?
         """, (app_id, revision)).fetchone()
         if row is None:
             abort(404)
-        return row["archive"]
+        return row
+
+    def stored_pack(app_id, revision):
+        return artifacts.content(db(), pack_row(app_id, revision), "archive")
+
+    def send_stored(row, column, filename):
+        """A download of a stored artifact: a short-lived presigned URL when the store is S3,
+        else the bytes through the portal, checked against the ref's SHA-256."""
+        ref = artifacts.ref_of(db(), row)
+        if ref is not None and ref.backend == "s3":
+            return redirect(artifacts.presign_get(ref, 300, filename))
+        return send_file(io.BytesIO(artifacts.content(db(), row, column)), mimetype="application/zip",
+                         as_attachment=True, download_name=filename)
 
     @app.get("/apps/<int:app_id>/build-pack")
     def build_pack(app_id):
@@ -792,10 +831,8 @@ def create_app(target):
     @app.get("/apps/<int:app_id>/briefs/<revision>")
     def download_brief(app_id, revision):
         item = get_app(app_id)
-        package = stored_pack(app_id, revision)
         slug = re.sub(r"[^a-z0-9]+", "-", item["name"].lower()).strip("-") or "demo"
-        return send_file(io.BytesIO(package), mimetype="application/zip", as_attachment=True,
-                         download_name=f"{slug}-{revision[:12]}.zip")
+        return send_stored(pack_row(app_id, revision), "archive", f"{slug}-{revision[:12]}.zip")
 
     def get_release(release_id):
         item = db().execute(
@@ -951,10 +988,10 @@ def create_app(target):
         item = db().execute("SELECT * FROM releases WHERE id = ?", (release_id,)).fetchone()
         if item is None:
             abort(404)
-        return send_file(io.BytesIO(item["archive"]), mimetype="application/zip",
-                         as_attachment=True, download_name=f"demo-{item['app_id']}-{item['version']}.zip")
+        return send_stored(item, "archive", f"demo-{item['app_id']}-{item['version']}.zip")
 
     registry.register(app, db)
+    uploads.register(app, db)
     builds_web.register(app, db, get_app, pack_view, target,
                         dev_worker=not trust_proxy and os.environ.get("TWINLAB2_DEV_WORKER", "1") != "0")
     return app
@@ -980,6 +1017,8 @@ if __name__ == "__main__":
     publish.add_argument("repository", type=Path)
     publish.add_argument("--ref", default="HEAD")
     publish.add_argument("--subdirectory")
+    moving = commands.add_parser("artifacts", help="Copy SQLite blobs to artifact storage and check them.")
+    moving.add_argument("--purge", action="store_true", help="then empty the blobs whose copy verifies")
     args = parser.parse_args()
     app = create_app(args.database)
     if args.command == "release":
@@ -990,5 +1029,14 @@ if __name__ == "__main__":
         except (ValueError, *database.IntegrityError, CalledProcessError, OSError) as error:
             parser.exit(1, f"Release registration failed: {error}\n")
         print(f"Registered {args.version} from {commit}.")
+    elif args.command == "artifacts":
+        with app.app_context(), closing(database.connect(args.database)) as connection:
+            result = artifacts.migrate_blobs(connection)
+            print(f"Copied {result['copied']} blobs to {artifacts.store().backend} artifact storage.")
+            for table, key, reason in result["failed"]:
+                print(f"Not copied: {table} {key}: {reason}")
+            if args.purge:
+                purged = artifacts.purge_blobs(connection)
+                print(f"Emptied {purged['purged']} blobs; kept {len(purged['kept'])} whose copy did not verify.")
     else:
         app.run(host=args.host, port=args.port)
