@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Merge {{ plan.source.name }} · TwinLab2{% endblock %}
+{% block content %}
+<p><a href="{{ url_for('demo', app_id=plan.source.id) }}">{{ plan.source.name }}</a></p>
+<h1>Merge {{ plan.source.name }} into {{ plan.target.name }}</h1>
+<p>Everything below moves to <a href="{{ url_for('demo', app_id=plan.target.id) }}">{{ plan.target.name }}</a>, then {{ plan.source.name }} is removed. Nothing is merged until you confirm.</p>
+{% if plan.blockers %}
+  <p class="error">This application cannot be merged while it has {{ plan.blockers | join(", ") }}.</p>
+{% endif %}
+<div class="columns">
+  <section>
+    <h2>Moves</h2>
+    <h3>Identities</h3>
+    {% for key in plan.identities %}<p><code>{{ key }}</code></p>{% else %}<p class="muted">None.</p>{% endfor %}
+    {% if plan.identities and plan.source.url_match != plan.target.url_match %}
+      <p class="muted">{{ plan.target.name }} matches web addresses {{ "by the whole host" if plan.target.url_match == "host" else "by path" }}: the moved web addresses match that way too.</p>
+    {% endif %}
+    <h3>Recorded flows</h3>
+    {% for flow in plan.flows %}
+      <p>{{ flow.name }} <code>{{ flow.key }}</code>{% if flow.shared %} <span class="muted">· also recorded for {{ plan.target.name }}: the steps are combined</span>{% endif %}</p>
+    {% else %}<p class="muted">None.</p>{% endfor %}
+    <h3>Linked recordings</h3>
+    {% for link in plan.links %}<p>{{ link.name }} <span class="muted">· {{ link.selected }} events selected</span></p>{% else %}<p class="muted">None.</p>{% endfor %}
+    <h3>Automations</h3>
+    {% for name in plan.automations %}<p>{{ name }}</p>{% else %}<p class="muted">None.</p>{% endfor %}
+    <h3>Build briefs</h3>
+    {% for brief in plan.briefs %}
+      <p><code>{{ brief.revision[:12] }}</code> <span class="muted">· {{ "kept with its download" if brief.package else "kept" }}</span></p>
+    {% else %}<p class="muted">None.</p>{% endfor %}
+  </section>
+  <section>
+    <h2>Combined</h2>
+    {% for link in plan.combined %}
+      <h3>{{ link.name }}</h3>
+      <p>Both applications link this recording. {{ plan.source.name }} selected {{ link.source | length }} events, {{ plan.target.name }} {{ link.target | length }}: the merged link selects {{ link.selection | length }} ({{ link.selection | join(", ") }}).
+        {% if link.suggested %}{{ link.suggested | length }} more ({{ link.suggested | join(", ") }}) were not reviewed and stay <span class="badge discovered">new, not yet reviewed</span> until you select them.{% endif %}</p>
+      {% if link.notes %}<p class="notes">{{ link.notes }}</p>{% endif %}
+    {% else %}
+      <p class="muted">No recording is linked to both applications.</p>
+    {% endfor %}
+  </section>
+</div>
+{% if not plan.blockers %}
+<form method="post" action="{{ url_for('merge_app', app_id=plan.source.id) }}">
+  <input type="hidden" name="token" value="{{ session.form_token }}">
+  <input type="hidden" name="into" value="{{ plan.target.id }}">
+  <input type="hidden" name="confirm" value="{{ plan.fingerprint }}">
+  <button>Merge into {{ plan.target.name }}</button>
+  <a href="{{ url_for('demo', app_id=plan.source.id) }}">Cancel</a>
+</form>
+{% endif %}
+{% endblock %}

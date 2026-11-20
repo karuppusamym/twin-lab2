@@ -55,3 +55,14 @@ The built recorder, paired with the portal on this PC, recorded an offered sessi
 example.com, visited in the session's browser, left no step and no HAR entry; the other applications in front appear as "Other applications". No typed text, result or account number reached the portal. The first run lost the web steps (the built recorder announced its browser before Playwright had attached its listeners); the session now announces the browser only once it listens, and the second run recorded them.
 
 Not checked: a real UiPath robot, a real mainframe or emulator, a second PC, a signed build.
+
+## Evidence integrity: resend, merge, web identity by path (2026-11-20)
+
+Windows 11, Python 3.13. Locally tested with automated tests on temporary databases (`tests/test_integrity.py`); not tried by hand in a browser, not run with the recorder.
+
+| Check | Result |
+|---|---|
+| Resend keeps the owner's selection | Pass. Select only event 1 of a recording, send it again: the selection stays `[1]` (it became `[1, 2]` before). An event new in a resend is stored as a suggestion, shown as "new, not yet reviewed" on the recording and the application, and left out of the build pack until the owner saves it. A link the owner has not reviewed still follows the resend. |
+| Merge | Pass. An application with an exported brief merges (it failed with `IntegrityError: FOREIGN KEY constraint failed` before); the brief and its package download from the surviving application, byte for byte. The preview lists what moves and what is combined; the merge needs the preview's confirmation and refuses one made before the applications changed. Two reviewed links to one recording become the union of the selections with both notes; an unreviewed link adds suggestions only. Rows in a table the merge does not move (attachments, releases) block it. |
+| Web identity by path | Pass. `https://example.test/orders` and `/billing` are two identities; one host's steps go to Orders, Billing, a longer `/orders/lines` and a host-only identity by the longest matching path; steps no path claims go to a discovered application, not to a path target; the owner's whole-host override; a second claim on the same host and path is refused. Path identities are not sent to the recorder as deny keys. |
+| Migration | Pass. A catalog without the new columns opens; its links count as reviewed and keep their selection and notes; a host-only identity stored before still maps references; migrating twice is harmless. |
