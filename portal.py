@@ -14,12 +14,13 @@ import secrets
 import sqlite3
 from urllib.parse import urlsplit, urlunsplit
 import urllib.request
-from zipfile import ZipFile
 
 from flask import Flask, abort, g, redirect, render_template, request, send_file, session, url_for
 
+import buildpack
 import journey
 import registry
+import scenarios
 
 LOCAL = {"127.0.0.1", "::1"}
 
@@ -348,6 +349,7 @@ def create_app(database):
         db().executescript(SCHEMA)
         migrate_releases(db())
         registry.migrate(db())
+        scenarios.migrate(db())
         columns = {row[1] for row in db().execute("PRAGMA table_info(apps)")}
         for column in ("owner", "purpose"):
             if column not in columns:
@@ -490,14 +492,20 @@ def create_app(database):
                 "INSERT INTO apps(name, git_url, requirements, owner, purpose) VALUES (?, ?, ?, ?, ?)",
                 (name, git_url, requirements, owner, purpose),
             )
+        scenarios.migrate(db())
         return redirect(url_for("demo", app_id=result.lastrowid))
+
+    def selected_events(app_id):
+        """The events selected for the app, as `recording#seq` with their pack references."""
+        return {scenarios.event_ref(rec["recording_id"], event["seq"]): dict(event, recording=rec["recording"])
+                for rec in buildpack.evidence(db(), app_id) for event in rec["events"]}
 
     @app.route("/apps/<int:app_id>", methods=["GET", "POST"])
     def demo(app_id):
         item = get_app(app_id)
         if request.method == "POST":
             # Each form on the application and setup pages sends only its own fields.
-            limits = {"owner": 120, "purpose": 500, "git_url": 500, "requirements": 100000}
+            limits = {"owner": 120, "purpose": 500, "git_url": 500}
             with db():
                 for column, limit in limits.items():
                     if column in request.form:
@@ -511,6 +519,8 @@ def create_app(database):
             journey=journey.for_app(db(), item),
             attachments=attachments(app_id), kinds=ATTACHMENT_TYPES, releases=releases(app_id),
             others=db().execute("SELECT id, name FROM apps WHERE id != ? ORDER BY name", (app_id,)).fetchall(),
+            scenarios=scenarios.load(db(), app_id), choices=selected_events(app_id),
+            fields=scenarios.FIELDS,
         )
 
     @app.get("/apps/<int:app_id>/setup")
@@ -520,6 +530,26 @@ def create_app(database):
     @app.get("/setup")
     def setup():
         return render_template("setup.html", apps=db().execute("SELECT id, name FROM apps ORDER BY name").fetchall())
+
+    @app.post("/apps/<int:app_id>/scenarios", defaults={"scenario_id": None})
+    @app.post("/apps/<int:app_id>/scenarios/<int:scenario_id>")
+    def save_scenario(app_id, scenario_id):
+        get_app(app_id)
+        try:
+            values = scenarios.from_form(request.form, set(selected_events(app_id)))
+        except ValueError as error:
+            abort(400, str(error))
+        try:
+            scenario_id = scenarios.save(db(), app_id, values, scenario_id)
+        except LookupError:
+            abort(404)
+        return redirect(url_for("demo", app_id=app_id, _anchor=f"scenario-{scenario_id}"))
+
+    @app.post("/apps/<int:app_id>/scenarios/<int:scenario_id>/remove")
+    def remove_scenario(app_id, scenario_id):
+        get_app(app_id)
+        scenarios.remove(db(), app_id, scenario_id)
+        return redirect(url_for("demo", app_id=app_id))
 
     @app.post("/apps/<int:app_id>/attachments")
     def add_attachment(app_id):
@@ -612,65 +642,49 @@ def create_app(database):
             apps=db().execute("SELECT * FROM apps ORDER BY name").fetchall(),
         )
 
-    @app.get("/apps/<int:app_id>/build-pack")
-    def build_pack(app_id):
-        item = get_app(app_id)
-        if not item["requirements"]:
-            abort(400, "Add build requirements before exporting.")
-        manifest = {"format": 1, "app": dict(item), "evidence": []}
-        for link in links(app_id):
-            selection = set(json.loads(link["selection"]))
-            manifest["evidence"].append({
-                "recording_id": link["id"], "notes": link["notes"],
-                "events": [{"seq": event["seq"], "action": event["action"]}
-                           for event in json.loads(link["events"]) if event["seq"] in selection],
-            })
-        files = {}
-        manifest["attachments"] = []
-        for attachment in attachments(app_id):
-            path = f"attachments/{attachment['id']}{attachment['extension']}"
-            content = attachment["content"]
-            files[path] = content
-            manifest["attachments"].append({
-                "path": path, "title": attachment["title"], "kind": attachment["kind"],
-                "sha256": hashlib.sha256(content).hexdigest(),
-            })
-        contents = json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2)
-        revision = hashlib.sha256(contents.encode("utf-8")).hexdigest()
-        task = (
-            f"# Build {item['name']}\n\nBrief revision `{revision}`\n\n"
-            f"## Build requirements\n\n{item['requirements']}\n\n"
-            "Use evidence.json for the reviewed recording notes, event references and attachments. "
-            "Record assumptions and unresolved behavior in BUILD-NOTES.md. "
-            "Provide a local launcher, synthetic seed/reset steps, and smoke checks for the "
-            "requested business outcomes. Commit the source and run instructions to the demo repo.\n\n"
-            "## Version endpoint\n\n"
-            f"A server demo answers `GET /{VERSION_PATH}` (relative to its deployed URL) with HTTP 200 "
-            "and JSON `{\"commit\": \"<full 40-character Git commit it was built from>\"}`, so the "
-            "catalog can verify which release a deployment runs.\n"
-        )
-        package = io.BytesIO()
-        with ZipFile(package, "w") as archive:
-            archive.writestr("BUILD_TASK.md", task)
-            archive.writestr("evidence.json", contents)
-            for path, content in files.items():
-                archive.writestr(path, content)
+    def store_pack(app_id):
+        """Build the app's pack and store it under its revision: the bytes a preview shows and
+        a download serves are the stored ones."""
+        get_app(app_id)
+        if not scenarios.load(db(), app_id):
+            abort(400, "Add a business scenario before exporting.")
+        revision, contents, _, package = buildpack.build(db(), app_id, VERSION_PATH)
         with db():
             db().execute("INSERT OR IGNORE INTO briefs VALUES (?, ?, ?)", (revision, app_id, contents))
-            db().execute("INSERT OR IGNORE INTO brief_packages VALUES (?, ?)", (revision, package.getvalue()))
-        return download_brief(app_id, revision)
+            db().execute("INSERT OR IGNORE INTO brief_packages VALUES (?, ?)", (revision, package))
+        return revision
 
-    @app.get("/apps/<int:app_id>/briefs/<revision>")
-    def download_brief(app_id, revision):
-        item = get_app(app_id)
+    def stored_pack(app_id, revision):
         row = db().execute("""
             SELECT archive FROM brief_packages JOIN briefs USING (revision)
             WHERE app_id = ? AND revision = ?
         """, (app_id, revision)).fetchone()
         if row is None:
             abort(404)
+        return row["archive"]
+
+    @app.get("/apps/<int:app_id>/build-pack")
+    def build_pack(app_id):
+        return download_brief(app_id, store_pack(app_id))
+
+    @app.get("/apps/<int:app_id>/build-pack/preview")
+    def preview_pack(app_id):
+        """Exactly what the download contains: every file of the stored archive, its size and
+        SHA-256, text files in full."""
+        revision = store_pack(app_id)
+        package = stored_pack(app_id, revision)
+        files = [{"path": path, "size": len(content), "sha256": hashlib.sha256(content).hexdigest(),
+                  "text": content.decode("utf-8") if buildpack.is_text(path) else None}
+                 for path, content in buildpack.read(package).items()]
+        return render_template("preview.html", item=get_app(app_id), revision=revision, files=files,
+                               size=len(package), sha256=hashlib.sha256(package).hexdigest())
+
+    @app.get("/apps/<int:app_id>/briefs/<revision>")
+    def download_brief(app_id, revision):
+        item = get_app(app_id)
+        package = stored_pack(app_id, revision)
         slug = re.sub(r"[^a-z0-9]+", "-", item["name"].lower()).strip("-") or "demo"
-        return send_file(io.BytesIO(row["archive"]), mimetype="application/zip", as_attachment=True,
+        return send_file(io.BytesIO(package), mimetype="application/zip", as_attachment=True,
                          download_name=f"{slug}-{revision[:12]}.zip")
 
     def get_release(release_id):

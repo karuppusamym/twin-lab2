@@ -98,21 +98,22 @@
 
 <section id="behaviour">
   <h2>3. Review required behaviour</h2>
-  <form method="post">
-    <input type="hidden" name="token" value="{{ session.form_token }}">
-    <label>Requirements
-      <textarea name="requirements" rows="8" placeholder="Describe the demo screens, business rules, sample data, and expected outcomes.">{{ item.requirements }}</textarea>
-    </label>
-    <button>Save brief</button>
-  </form>
+  <div id="scenarios">
+    <p class="muted">One business scenario per outcome the copy must reproduce. Use made-up example values only: the build pack must contain no real customer data.</p>
+    {% for scenario in scenarios %}
+      {% with sc = scenario, form_id = "scenario-" ~ scenario.id %}{% include "_scenario.html" %}{% endwith %}
+    {% endfor %}
+    {% with sc = none, form_id = "scenario-new" %}{% include "_scenario.html" %}{% endwith %}
+  </div>
 </section>
 
 <section id="build">
   <h2>4. Build</h2>
-  {% if item.requirements %}
-    <p><a href="{{ url_for('build_pack', app_id=item.id) }}">Download build pack</a></p>
+  {% if scenarios %}
+    <p><a href="{{ url_for('preview_pack', app_id=item.id) }}">Preview build pack</a> ·
+      <a href="{{ url_for('build_pack', app_id=item.id) }}">Download build pack</a></p>
   {% else %}
-    <p>Write down the required behaviour first: the build pack is made from it and the examples.</p>
+    <p class="muted">Add a business scenario to export a build pack.</p>
   {% endif %}
   <h3>Releases</h3>
   {% for release in releases %}

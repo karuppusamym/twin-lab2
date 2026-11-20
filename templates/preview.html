@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Build pack preview · {{ item.name }} · TwinLab2{% endblock %}
+{% block content %}
+<h1>Build pack preview: <a href="{{ url_for('demo', app_id=item.id) }}">{{ item.name }}</a></h1>
+<section>
+  <p>This is exactly what the download contains: {{ files | length }} file{{ "s" if files | length != 1 }},
+    {{ size }} bytes, archive SHA-256 <code id="archive-sha256">{{ sha256 }}</code>.
+    Revision <code>{{ revision }}</code>.</p>
+  <p><a href="{{ url_for('download_brief', app_id=item.id, revision=revision) }}">Download this build pack</a></p>
+  <table class="flow">
+    <thead><tr><th>File</th><th>Bytes</th><th>SHA-256</th></tr></thead>
+    <tbody>{% for file in files %}
+      <tr><td><a href="#file-{{ loop.index }}">{{ file.path }}</a></td><td>{{ file.size }}</td><td><code>{{ file.sha256 }}</code></td></tr>
+    {% endfor %}</tbody>
+  </table>
+</section>
+{% for file in files %}
+<section id="file-{{ loop.index }}" class="pack-file">
+  <h2><code>{{ file.path }}</code> <span class="muted">{{ file.size }} bytes</span></h2>
+  {% if file.text is not none %}
+    <pre class="file" data-path="{{ file.path }}">{{ file.text }}</pre>
+  {% else %}
+    <p class="muted">Binary file, shown by size and SHA-256 only.</p>
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

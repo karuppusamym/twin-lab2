@@ -7,8 +7,8 @@ over facts the portal already has, so the catalog, the application page and the 
 The first required step not done is the current stage; its hint is the single next action.
 
 `facts(db, app)` gathers the facts from the catalog. To change what a step needs (for example
-guided scenario fields instead of the requirements text, or release states such as Packaged,
-Tested, Published), change the fact here; the pages only read `stage`, `next` and `missing`.
+what counts as reviewed behaviour, or which release states count as verified), change the fact
+here; the pages only read `stage`, `next` and `missing`.
 """
 
 from __future__ import annotations
@@ -145,9 +145,9 @@ def app_journey(
              choose_hint, f"{base}#choose", choose_action),
         Step("examples", JOURNEY[1], examples > 0, examples_hint, examples_href, examples_action),
         Step("behaviour", JOURNEY[2], behaviour,
-             "Review the recorded examples and write down the behaviour the demo must have: "
-             "screens, business rules, sample data and expected outcomes.",
-             f"{base}#behaviour", "Review behaviour"),
+             "Review the recorded examples and add a business scenario for each outcome the "
+             "demo must reproduce: starting conditions, actions, expected result, failure cases.",
+             f"{base}#behaviour", "Add a scenario"),
         Step("build", JOURNEY[3], bool(releases), build_hint, f"{base}#build",
              "Register a release" if briefs else "Download build pack"),
         Step("verify", JOURNEY[4], state in VERIFIED_STATES, verify_hint, release_href,
@@ -185,10 +185,20 @@ def facts(db, app) -> dict:
         "identities": count("SELECT count(*) FROM app_identities WHERE app_id = ?"),
         "machines": db.execute("SELECT count(*) FROM machines WHERE revoked_at IS NULL").fetchone()[0],
         "examples": examples,
-        "behaviour": bool((app["requirements"] or "").strip()),
+        "behaviour": behaviour_reviewed(db, app),
         "briefs": count("SELECT count(*) FROM briefs WHERE app_id = ?"),
         "releases": releases,
     }
+
+
+def behaviour_reviewed(db, app) -> bool:
+    """Required behaviour is written down once the app has a business scenario (the build pack
+    needs one); a catalog from before scenarios counts its free-text requirements."""
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "scenarios" in tables and db.execute(
+            "SELECT 1 FROM scenarios WHERE app_id = ? LIMIT 1", (app["id"],)).fetchone():
+        return True
+    return bool((app["requirements"] or "").strip())
 
 
 def for_app(db, app) -> Journey:

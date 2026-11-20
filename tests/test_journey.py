@@ -86,7 +86,7 @@ class JourneyPagesTest(unittest.TestCase):
         self.post("/apps", name="Orders")
         self.post("/apps/1", git_url="https://git.example.test/orders.git", next="setup")
         self.post("/apps/1", owner="Ops team", purpose="Demo")
-        self.post("/apps/1", requirements="Show the order screen.")
+        self.post("/apps/1/scenarios", name="Show the order screen.")
         setup = self.client.get("/apps/1/setup").data.decode()
         self.assertIn("https://git.example.test/orders.git", setup)
         page = self.client.get("/apps/1").data.decode()
