@@ -118,6 +118,12 @@ class Deployment:
         self.server.server_close()
 
 
+def page_reasons(test, release_id):
+    """The reasons of the release's latest verification report, as one string."""
+    rows = test.row("SELECT content FROM release_artifacts WHERE release_id = ? ORDER BY id DESC", release_id)
+    return " ".join(json.loads(rows[0]["content"])["reasons"])
+
+
 class FakeTwinLab:
     """Stands in for independent.PinnedTwinLab: the replay and reset results it is told."""
 
@@ -387,12 +393,34 @@ class VerificationTest(unittest.TestCase):
         test = self.row("SELECT results FROM release_tests WHERE release_id = ?", release_id)[0]
         # The results are recorded (a fail is evidence), and nothing hides the failed outcome.
         self.assertEqual(json.loads(test["results"])[0]["result"], "fail")
+        # ... and the release is not Tested: all of it must hold (README, Verify this build)
+        self.assertEqual(self.state(release_id), "packaged")
+        self.assertIn("Not Tested: Scenario", page_reasons(self, release_id))
         self.twin.reset_result = {"result": None, "notes": "no lab"}
         self.settings(lab_url="")
         release_id, page = self.verified_with([run("build")])
         reports = self.row("SELECT content FROM release_artifacts WHERE release_id = ? ORDER BY id DESC", release_id)
         report = json.loads(reports[0]["content"])
         self.assertIn("Record whether the reset check passed or failed.", " ".join(report["reasons"]))
+
+    def test_a_failed_reset_or_a_scenario_not_run_keeps_the_release_packaged(self):
+        self.twin.reset_result = {"result": "fail", "notes": "after reset these tables differ from the baseline: invoices"}
+        release_id, _ = self.verified_with([run("build")])
+        self.assertEqual(self.state(release_id), "packaged")
+        self.assertIn("The reset check failed", page_reasons(self, release_id))
+        self.twin.reset_result = {"result": "pass", "notes": "reset restored the baseline (3 table(s))"}
+        self.twin.default = {"status": "pass", "cases": []}  # replayed, but nothing judged the outcome
+        self.post(f"/releases/{release_id}/verify")
+        self.assertEqual(self.state(release_id), "packaged")
+        self.assertIn("not-run", page_reasons(self, release_id))
+        # a later verification where all of it holds makes the same release Tested
+        self.twin.default = FakeTwinLab().default
+        self.post(f"/releases/{release_id}/verify")
+        self.assertEqual(self.state(release_id), "tested")
+        # and one that fails again takes it back to Packaged (the latest evidence decides)
+        self.twin.reset_result = {"result": "fail", "notes": "differs"}
+        self.post(f"/releases/{release_id}/verify")
+        self.assertEqual(self.state(release_id), "packaged")
 
     def test_a_repository_without_github_has_no_ci_gate(self):
         self.post("/apps/1", git_url="", next="setup")
@@ -425,6 +453,16 @@ class IndependentChecksTest(unittest.TestCase):
         report = independent.run(twin, self.scenarios, self.manifest, "http://app.test/", "http://lab.test/")
         self.assertEqual(report["scenarios"][0]["result"], "fail")
         self.assertEqual(report["reset"]["result"], "pass")
+
+    def test_a_recording_shared_by_scenarios_is_replayed_once(self):
+        # the second replay would start from the data the first one saved, not from the seed
+        manifest = {"scenarios": [{"name": "Invoice", "events": [{"recording_id": "r1", "seq": 1}]},
+                                  {"name": "Approval", "events": [{"recording_id": "r1", "seq": 2}]}]}
+        scenarios = [{"id": "scenario-1", "name": "Invoice"}, {"id": "scenario-2", "name": "Approval"}]
+        twin = FakeTwinLab()
+        report = independent.run(twin, scenarios, manifest, "http://app.test/", "http://lab.test/")
+        self.assertEqual([c for c in twin.calls if c[0] == "replay"], [("replay", "r1", "http://app.test/")])
+        self.assertEqual([s["result"] for s in report["scenarios"]], ["pass", "pass"])
 
     def test_twin_lab_must_be_the_pinned_tree(self):
         class Unpinned(FakeTwinLab):

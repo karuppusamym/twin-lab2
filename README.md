@@ -24,13 +24,13 @@ Each capability carries one of three labels:
 - **Locally tested**: exercised end to end on the developer's own Windows PC, by the automated tests or a manual run.
 - **Externally validated**: confirmed in a target environment by its users (a managed PC, an OpenShift cluster, a clean machine, a fresh agent build).
 
-**Nothing is externally validated yet.** No recorder trial on a live managed PC, no OpenShift deployment, no fresh coding-agent rebuild from a build pack and no clean-machine install have been done. The Orders/Billing release replay packaged previously built fixture apps.
+**Nothing is externally validated yet.** No recorder trial on a live managed PC and no OpenShift deployment have been done. A blind agent rebuild from exported packs and a clean-container install were done once, locally, on fixture apps (the Orders-to-Billing milestone in [VERIFICATION.md](VERIFICATION.md)); the earlier Orders/Billing release replay packaged previously built fixture apps.
 
 | Capability | Status | Evidence and limits |
 |---|---|---|
 | Portal journey: stage, missing information and one next action per application; Setup / Advanced for machines, identities, Git and deployment settings | Locally tested | `tests/test_journey.py`; pages rendered from a local run |
 | Catalog: applications, Twin Lab recording import, evidence links, reviewed attachments | Locally tested | `tests/test_workflow.py` |
-| Build pack export | Locally tested | Automated tests check its contents and immutable revisions. No coding agent has built an app from a pack in this project |
+| Build pack export | Locally tested | Automated tests check its contents and immutable revisions. In the Orders-to-Billing milestone, blind Claude subagents built both apps from exported packs alone; the v1 pack lacked interface structure the replay compares, which an owner note closed by v3 |
 | Release registration from a committed Git tree, release download | Locally tested | Automated tests; the Orders/Billing replay used previously built fixture apps, not a fresh rebuild |
 | Release states Packaged → Tested → Published; deployment version check | Locally tested | `tests/test_release_states.py`; the journey's Verify step is done once the latest release is Tested, Open or download once it is Published. No real deployment has answered the version check |
 | Tested bound to the built commit: required GitHub checks, Windows validation, Twin Lab replay/outcome/reset, verification report | Locally tested | `tests/test_verification.py` against a fake GitHub API and a fake Twin Lab runner; the pinned labctl runner was smoke-run locally (replay and reset reach labctl). Never run against the real GitHub API or a real built app |
@@ -105,7 +105,7 @@ python migrations.py copy .state/catalog.db "postgresql://twinlab2:…@host:5432
 `python -m pytest` runs on SQLite. Set `TWINLAB2_TEST_DATABASE_URL` to run the same suite on PostgreSQL. Every test gets a new database on that server, and the databases are dropped at the end of the run:
 
 ```powershell
-docker run -d --name twinlab2-pg -e POSTGRES_PASSWORD=twinlab2 -e POSTGRES_INITDB_ARGS="--locale=C" -p 55432:5432 postgres:16
+docker run -d --name twinlab2-pg -e POSTGRES_PASSWORD=twinlab2 -e POSTGRES_INITDB_ARGS="--locale=C --encoding=UTF8" -p 55432:5432 postgres:16
 ```
 
 ```powershell
