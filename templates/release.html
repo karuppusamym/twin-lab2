@@ -2,21 +2,82 @@
 {% block title %}{{ item.name }} {{ release.version }} · TwinLab2{% endblock %}
 {% block content %}
 <p><a href="{{ url_for('demo', app_id=item.id) }}">{{ item.name }}</a></p>
-<h1>{{ item.name }} {{ release.version }}</h1>
+<h1>{{ item.name }} {{ release.version }} <span class="badge {{ release.state }}">{{ release.state | capitalize }}</span></h1>
+<p class="muted">Packaged → Tested → Published. A release is Tested once its test results are recorded here, and only a Tested release can be published.</p>
 <p><a href="{{ url_for('download_release', release_id=release.id) }}">Download release ZIP</a></p>
 <dl class="release-details">
   <dt>Git commit</dt><dd><code>{{ release.commit_sha }}</code></dd>
   <dt>Build brief</dt><dd><a href="{{ url_for('download_brief', app_id=item.id, revision=release.revision) }}"><code>{{ release.revision }}</code></a></dd>
   <dt>ZIP checksum</dt><dd><code>{{ release.archive_sha }}</code></dd>
+  {% if release.published_at %}<dt>Published</dt><dd>{{ release.published_at }}</dd>{% endif %}
 </dl>
 <section>
+  <h2>Test results</h2>
+  {% if test %}
+    <dl class="release-details">
+      <dt>Tested commit</dt><dd><code>{{ test.commit_sha }}</code></dd>
+      <dt>Supported platform</dt><dd>{{ test.platform }}</dd>
+      <dt>Launch instructions</dt><dd class="notes">{{ test.launch }}</dd>
+      <dt>Reset check</dt><dd><span class="badge {{ test.reset_result }}">{{ test.reset_result }}</span>{% if test.reset_notes %} {{ test.reset_notes }}{% endif %}</dd>
+      <dt>Tested by</dt><dd>{{ test.tested_by }}, {{ test.tested_at }}</dd>
+    </dl>
+    <table class="flow">
+      <tr><th>Scenario</th><th>Result</th></tr>
+      {% for row in loads(test.results) %}
+        <tr><td>{{ row.name }}</td><td><span class="badge {{ row.result }}">{{ row.result }}</span></td></tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>Not tested yet: what this release does is unknown until its scenarios are run.</p>
+  {% endif %}
+  {% if release.state != "published" %}
+    {% if scenarios %}
+    <form method="post" action="{{ url_for('test_release', release_id=release.id) }}">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <label>Tested commit <input name="commit" required placeholder="{{ release.commit_sha }}"></label>
+      <fieldset><legend>Scenario results (from the build brief)</legend>
+        {% for scenario in scenarios %}
+          <label>{{ scenario.name }}
+            <select name="result:{{ scenario.id }}" required>
+              <option value="">Choose</option>
+              {% for value in results %}<option>{{ value }}</option>{% endfor %}
+            </select></label>
+        {% endfor %}
+      </fieldset>
+      <label>Supported platform <input name="platform" required placeholder="Windows 11, Python 3.13"></label>
+      <label>Launch instructions <textarea name="launch" rows="4" required></textarea></label>
+      <label>Reset check
+        <select name="reset_result" required><option value="">Choose</option><option>pass</option><option>fail</option></select></label>
+      <label>Reset notes <input name="reset_notes"></label>
+      <button>Record test results</button>
+    </form>
+    {% else %}
+      <p>The build brief names no scenarios, so this release cannot be tested. Link a recording to the app and export a new brief.</p>
+    {% endif %}
+  {% endif %}
+  {% if release.state == "tested" %}
+    <form method="post" action="{{ url_for('publish_release', release_id=release.id) }}">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <button>Publish this release</button>
+    </form>
+  {% endif %}
+</section>
+<section>
   <h2>Deployments</h2>
+  <p class="muted">A deployment is Verified when <code>GET &lt;URL&gt;/{{ version_path }}</code> reports this release's commit.</p>
   {% for deployment in deployments %}
-    <h3>{{ deployment.environment }}</h3>
-    <p><a href="{{ deployment.url }}">Open demo</a></p>
+    <h3>{{ deployment.environment }} <span class="badge {{ deployment.verification }}">{{ deployment_label(deployment) }}</span></h3>
+    <p><a href="{{ deployment.url }}">Open demo</a> <span class="muted">{{ deployment_reason(deployment) }}{% if deployment.checked_at %} Checked {{ deployment.checked_at }}.{% endif %}</span></p>
+    <form class="inline" method="post" action="{{ url_for('check_deployment', release_id=release.id) }}">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <input type="hidden" name="environment" value="{{ deployment.environment }}">
+      <button class="secondary">Check version again</button>
+    </form>
     {% if deployment.username %}<p>Demo username <code>{{ deployment.username }}</code></p>{% endif %}
     {% if deployment.secret_ref %}<p>Demo secret reference <code>{{ deployment.secret_ref }}</code></p>{% endif %}
   {% endfor %}
+  <details class="advanced" id="deployment-setup">
+  <summary>Setup / Advanced: deployment configuration</summary>
   <form method="post">
     <input type="hidden" name="token" value="{{ session.form_token }}">
     <label>Environment <input name="environment" required placeholder="OpenShift demo"></label>
@@ -25,5 +86,6 @@
     <label>Demo secret reference <input name="secret_ref" placeholder="vault:demo/billing"></label>
     <button>Save deployment</button>
   </form>
+  </details>
 </section>
 {% endblock %}

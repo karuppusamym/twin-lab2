@@ -1,12 +1,16 @@
 # Local verification
 
+Every result below is **Locally tested** (on the developer's Windows PC) unless it says otherwise; labels as in the README's *What works today*. **Nothing here is externally validated**: there has been no recorder trial on a live managed PC, no OpenShift deployment, no fresh coding-agent rebuild from a build pack and no clean-machine install. The Orders/Billing release replay used previously built fixture apps.
+
+Since 2026-11-20 the portal calls offering a session **Request a recording** (the stored session status is still `offered`) and a confirmed application **Confirmed application** (stored status `known`). The results below keep the wording of the day they were run.
+
 | Check | Result |
 |---|---|
 | Live Chromium recorder | Attached to a local Chromium session with CDP and recorded nine events across tabs, including interactions. The session retained the upstream commit and stable event IDs. |
 | Mixed-source recovery | Automated fixture combined web and Windows channel logs, recovered an incomplete final line, reimported without deleting later events, and kept the original event linked. |
 | Catalog and Git releases | Automated tests verified many-to-many recording assignments, reviewed attachments, immutable older build packs, packaging from the committed tree, running the extracted ZIP, earlier release downloads and deployment registration. |
 | Orders/Billing release replay | Imported the existing 108-event recording, exported separate briefs, packaged the previously built fixture apps from temporary Git commits, downloaded both ZIPs and launched both extracted apps. The existing judge replayed all 107 executable steps. All 16 acceptance cases passed within the declared scope. |
-| OpenShift | Manifest wiring was checked locally. Cluster rollout, image registry access, and route behavior need a target OpenShift project. |
+| OpenShift | Implemented only. Manifest wiring was checked locally. Cluster rollout, image registry access, and route behavior need a target OpenShift project. |
 
 The live capture used a browser. The mixed desktop test used recorded input fixtures. A fresh enterprise desktop capture, fresh agent rebuild, and clean-machine dependency installation were outside this test run. Interface evidence for direct API, database and utility calls is supplied through reviewed attachments.
 
@@ -55,6 +59,43 @@ The built recorder, paired with the portal on this PC, recorded an offered sessi
 example.com, visited in the session's browser, left no step and no HAR entry; the other applications in front appear as "Other applications". No typed text, result or account number reached the portal. The first run lost the web steps (the built recorder announced its browser before Playwright had attached its listeners); the session now announces the browser only once it listens, and the second run recorded them.
 
 Not checked: a real UiPath robot, a real mainframe or emulator, a second PC, a signed build.
+
+## Release states and deployment verification (2026-11-20)
+
+Locally tested by `tests/test_release_states.py` (unit tests against the Flask test client, a temporary Git repo and SQLite catalog):
+
+| Check | Result |
+|---|---|
+| Packaged | Pass. A newly registered release is Packaged; **Publish** is refused (400) and it is not shown in the catalog as a tested release. |
+| Packaged → Tested refusals | Pass. Refused, with nothing stored, for: another commit, an abbreviated commit, no platform, no launch instructions, no or invalid reset check, a brief scenario without a result, an unknown result value, a result for a scenario not in the brief. A brief without scenarios cannot be tested. |
+| Packaged → Tested → Published | Pass. Results linked to the brief's scenarios (from linked recordings, and from an explicit `scenarios` list) are stored and shown; a re-test replaces them; publishing a Tested release succeeds; testing or publishing a Published release again is refused; the ZIP still downloads. |
+| Catalog card | Pass. Shows the latest Tested release (not a newer Packaged one), its pass/fail/not-run counts and platform, **Open demo** only with a deployment, and **Download tested release**. |
+| Version check | Pass. A stub HTTP server on 127.0.0.1 and an OS-chosen free port: `{"commit": <release commit>}` at `<URL>/.twinlab/version` → Verified; another commit (after **Check version again**) → Registered URL (not verified) naming the commit it serves; 404, HTML, a JSON list, an abbreviated commit, and a stopped server → Registered URL (not verified), on the release page and the catalog. |
+| Migration | Pass. A catalog with the earlier `releases` and `deployments` tables opens twice; its release becomes Packaged and its deployment an unverified registered URL. |
+| Whole suite | `python -m unittest discover -s tests`: 27 tests, OK, 1 skipped (the Edge/CaseDesk end-to-end test, which needs `TWINLAB_AGENT_E2E=1`). |
+
+Not verified: a real deployment (OpenShift route) answering `/.twinlab/version`, a version check through a proxy or with a private certificate authority, and the pages in a browser (checked through the rendered HTML only).
+
+## Evidence integrity: resend, merge, web identity by path (2026-11-20)
+
+Windows 11, Python 3.13. Locally tested with automated tests on temporary databases (`tests/test_integrity.py`); not tried by hand in a browser, not run with the recorder.
+
+| Check | Result |
+|---|---|
+| Resend keeps the owner's selection | Pass. Select only event 1 of a recording, send it again: the selection stays `[1]` (it became `[1, 2]` before). An event new in a resend is stored as a suggestion, shown as "new, not yet reviewed" on the recording and the application, and left out of the build pack until the owner saves it. A link the owner has not reviewed still follows the resend. |
+| Merge | Pass. An application with an exported brief merges (it failed with `IntegrityError: FOREIGN KEY constraint failed` before); the brief and its package download from the surviving application, byte for byte. The preview lists what moves and what is combined; the merge needs the preview's confirmation and refuses one made before the applications changed. Two reviewed links to one recording become the union of the selections with both notes; an unreviewed link adds suggestions only. Rows in a table the merge does not move (attachments, releases) block it. |
+| Web identity by path | Pass. `https://example.test/orders` and `/billing` are two identities; one host's steps go to Orders, Billing, a longer `/orders/lines` and a host-only identity by the longest matching path; steps no path claims go to a discovered application, not to a path target; the owner's whole-host override; a second claim on the same host and path is refused. Path identities are not sent to the recorder as deny keys. |
+| Migration | Pass. A catalog without the new columns opens; its links count as reviewed and keep their selection and notes; a host-only identity stored before still maps references; migrating twice is harmless. |
+
+## The onboarding journey (2026-11-20)
+
+| Check | Result |
+|---|---|
+| Journey stage, missing information and one next action (`tests/test_journey.py`) | Pass. The first step not done is the stage; a discovered application asks for a scope decision; examples need an identity, then a paired machine; Verify is done once the latest release is Tested and Open or download once it is Published; a not-replicated application is out of the journey. |
+| Pages (`tests/test_journey.py`) | Pass. Each catalog card shows owner, purpose, stage, missing information and exactly one action; identities and the Git repository are on the Setup / Advanced page; machines are reached from Setup / Advanced, not the main navigation; the application page's forms no longer overwrite each other's fields. |
+| Local render | The catalog, an application page, its Setup / Advanced page, Request a recording and Setup / Advanced rendered from `python portal.py --port 8791` with a sample catalog. |
+
+Not checked: onboarding with real users.
 
 ## Recorder contract 1.0.0 and the pinned Twin Lab (2026-11-20)
 

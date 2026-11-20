@@ -36,7 +36,7 @@ class WorkflowTest(unittest.TestCase):
 
     def demo(self, name):
         path = self.post("/apps", name=name).location
-        self.assertEqual(self.post(path, requirements=f"Build {name}.").status_code, 302)
+        self.assertEqual(self.post(path + "/scenarios", name=f"Build {name}.").status_code, 302)
         return path
 
     def pack(self, path):

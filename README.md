@@ -8,18 +8,53 @@ python -m pip install -r requirements.txt
 python portal.py
 ```
 
-Open `http://127.0.0.1:8765`. Create a demo app, import a Twin Lab `steps.jsonl`, and assign events and notes from the recording page. Save requirements on the app page and download the build pack. For an existing multi-app example, use `../rebuild-trial/judge/recording/order-to-invoice/steps.jsonl`.
+Open `http://127.0.0.1:8765`. The **Applications** page follows each application through one journey: **Choose application → Add examples → Review required behaviour → Build → Verify → Open or download**. Each card shows the application's owner, purpose, current stage, missing information and the one thing to do next; the application page shows the same journey with its steps in order. Create a demo app, import a Twin Lab `steps.jsonl` (or request a recording), and assign events and notes from the recording page. On the app page, add one business scenario per outcome the copy must reproduce (starting conditions, actions linked to selected events, expected result, failure cases, synthetic example values, unresolved questions), preview the build pack file by file, and download it. Existing free-text requirements are moved into a scenario's notes. Recorder machines, pairing, application identities, Git details and deployment configuration are under **Setup / Advanced**.
+
+A recording can also register applications it finds as *Discovered: decide scope*. On the application page, the **Scope decision** makes it a **Confirmed application** (replicate it), merges it into the application it is the same as, or marks it **Not replicated** (later recordings note it only as used). In the database these are the statuses `known`, `discovered` and `not_replicated`. For an existing multi-app example, use `../rebuild-trial/judge/recording/order-to-invoice/steps.jsonl`.
 
 The portal is local and writes its catalog to `.state/catalog.db`. Use `--database` and `--port` to override those defaults. Run `python -m unittest discover -s tests -v` to check the catalog, recording recovery and release workflows. [Verification results](VERIFICATION.md)
+
+## What works today
+
+Each capability carries one of three labels:
+
+- **Implemented**: the code is written and has unit tests where noted, but nobody has exercised it end to end.
+- **Locally tested**: exercised end to end on the developer's own Windows PC, by the automated tests or a manual run.
+- **Externally validated**: confirmed in a target environment by its users (a managed PC, an OpenShift cluster, a clean machine, a fresh agent build).
+
+**Nothing is externally validated yet.** No recorder trial on a live managed PC, no OpenShift deployment, no fresh coding-agent rebuild from a build pack and no clean-machine install have been done. The Orders/Billing release replay packaged previously built fixture apps.
+
+| Capability | Status | Evidence and limits |
+|---|---|---|
+| Portal journey: stage, missing information and one next action per application; Setup / Advanced for machines, identities, Git and deployment settings | Locally tested | `tests/test_journey.py`; pages rendered from a local run |
+| Catalog: applications, Twin Lab recording import, evidence links, reviewed attachments | Locally tested | `tests/test_workflow.py` |
+| Build pack export | Locally tested | Automated tests check its contents and immutable revisions. No coding agent has built an app from a pack in this project |
+| Release registration from a committed Git tree, release download | Locally tested | Automated tests; the Orders/Billing replay used previously built fixture apps, not a fresh rebuild |
+| Release states Packaged → Tested → Published; deployment version check | Locally tested | `tests/test_release_states.py`; the journey's Verify step is done once the latest release is Tested, Open or download once it is Published. No real deployment has answered the version check |
+| Deployment registration (URL, demo username, secret reference) | Locally tested | Automated tests register a URL; no demo has been deployed |
+| OpenShift manifest for a demo (`openshift.py`) | Implemented | Manifest wiring checked locally; never applied to a cluster |
+| Portal on OpenShift (`Dockerfile`, `deploy/openshift-portal.yaml`) | Locally tested (image), Implemented (manifest) | The image ran locally as an arbitrary UID; the manifest, OAuth proxy, route and volume have not run on a cluster |
+| Machine pairing, agent API, references mapped to applications | Locally tested | `tests/test_registry.py`, `tests/test_agent.py` |
+| Evidence integrity: a resend keeps the reviewed selection, merge with a preview, web identity by path | Locally tested | `tests/test_integrity.py` |
+| Business scenarios and build-pack preview | Locally tested | `tests/test_buildpack.py`; no coding agent has built from these packs yet |
+| Portable recorder (built program): web, desktop and synthetic mainframe | Locally tested | One developer PC, unsigned build; no managed PC, endpoint protection or AppLocker; no real mainframe or emulator |
+| UiPath: targets from a project, the robot's log | Implemented | Unit tests in Twin Lab; no real UiPath robot has been recorded |
+| Recording recovery after an interrupted capture | Locally tested | Fixture logs (`tests/test_workflow.py`) |
 
 ## TwinLabRecorder: a portable recorder that tells the portal what it recorded
 
 `TwinLabRecorder.exe` is one folder: copy it to a Windows PC and run it, with no install and no administrator rights. It records one session across the applications a person or a robot uses. The session's **target** applications are recorded in full. Every other application is recorded only as having been used, and Windows itself, Adobe, Outlook, Teams and password managers always stay that way. **The recording stays on the PC.** The portal receives only references: the applications recorded and each one's steps as labels (control ids and the application's own words, never a typed value). It maps the recording to its applications and registers an application it has not seen as *discovered*. Design: `twin-lab/docs/11-session-recorder.md`.
 
-1. In the portal, **Machines → Make a pairing code**. On the PC, run `TwinLabRecorder.exe` and choose **Pair with portal…** (or `TwinLabRecorder.exe pair --portal https://… --code ABCDE-FGHJK --name "Workstation 7"`).
-2. Give each application an identity on its page (its executable, such as `CaseDesk.exe`, or its web address), then **Sessions → Offer a session**: name, machine, target applications (full or steps only), and optionally the automation it is for. Or start a session on the recorder itself (**My own session**).
-3. On the PC, choose the offered session and **Start**. The recorder opens its own Edge window for web targets; use the applications as the process does. **Stop recording** when done.
+1. In the portal, **Setup / Advanced → Machines and pairing → Make a pairing code**. On the PC, run `TwinLabRecorder.exe` and choose **Pair with portal…** (or `TwinLabRecorder.exe pair --portal https://… --code ABCDE-FGHJK --name "Workstation 7"`).
+2. Give each application an identity on its **Setup / Advanced** page (its executable, such as `CaseDesk.exe`, or its web address), then **Request a recording**: name, machine, target applications (full or steps only), and optionally the automation it is for. Or start a session on the recorder itself (**My own session**).
+3. On the PC, choose the requested session and **Start**. The recorder opens its own Edge window for web targets; use the applications as the process does. **Stop recording** when done.
 4. Review what will be sent (**Recordings on this PC**) and **Send references**. The portal's **Recordings** page shows the session, its applications and the timeline across them; an application's page shows its recorded flows and the automations that touch it.
+
+Applications that share a host are told apart by path: give each one its address with its path (`https://example.test/orders`, `https://example.test/billing`) and the portal assigns each recorded web step by the path of its page, the longest matching path winning; a host-only address (`https://example.test`) takes the steps no path claims. The recorder still records the whole origin. On an application's page **Web addresses match → the whole host** is the owner's override for an application that is its whole host.
+
+The first time a recording arrives, each application's link selects all of its steps (*not yet reviewed*). Once the owner saves the assignment on the recording's page, sending the recording again never changes that selection: events new in the resend are shown as *new, not yet reviewed* and stay out of the build pack until the owner selects them.
+
+**Merge** on an application's page opens a preview first: the identities, recorded flows, linked recordings, automations, scenarios and build briefs that move, and every recording both applications link, with the combined selection and notes. A reviewed selection is not widened by an unreviewed one; those events become suggestions. Earlier build briefs and their downloads move to the surviving application. An application with releases or attachments cannot be merged.
 
 Command line: `sessions`, `record --session N` (or `--exe X.exe --origin https://…`), `show <id>`, `send <id>`, `recover`. Add `--portable-data` to keep everything in `data\` beside the program, `--ca-bundle` for a private certificate authority. Recordings are in `%LOCALAPPDATA%\TwinLabRecorder\recordings\`.
 
@@ -71,7 +106,11 @@ Import the session's top-level `steps.jsonl`. Recovered imports retain previousl
    oc get route billing
    ```
 
-4. Add the environment and route URL on the release page. You can include a demo username and the reference to its password in your secret manager.
+4. Add the environment and route URL on the release page, under **Setup / Advanced: deployment configuration**. You can include a demo username and the reference to its password in your secret manager. The portal then asks the deployment for `GET <URL>/.twinlab/version`; when it answers HTTP 200 with JSON `{"commit": "<full 40-character Git commit>"}` equal to the release's commit, the deployment is **Verified**. Otherwise (no endpoint, another commit, unreachable) every page shows it as **Registered URL (not verified)**. **Check version again** on the release page repeats the check. The build pack asks the builder for this endpoint.
+
+### Release states: Packaged → Tested → Published
+
+A registered release is **Packaged**: its committed tree is archived, nothing more is known. On the release page, **Record test results** makes it **Tested** and stores the evidence: the tested commit (it must be the packaged commit), a pass, fail or not-run result for every scenario of the release's build brief (the brief's `scenarios`, else one per linked recording, named by its notes), the supported platform, launch instructions and the reset check (pass or fail). It can be tested again until it is published. **Publish** is refused unless the release is Tested, and a Published release is final. The catalog shows each app's latest Tested or Published release with its results, **Open demo** (a verified deployment first, else a registered URL labelled as not verified) and **Download tested release**. Releases registered before these states existed are Packaged.
 
 TwinLab2 helps a demo owner turn examples of an application into a runnable, versioned demo. The owner opens an app in the catalog, adds recordings and requirements, reviews what the demo should do, and gives the resulting build brief to a coding agent. A customer of the catalog can download a release or open a deployed demo.
 

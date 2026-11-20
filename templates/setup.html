@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Setup / Advanced · TwinLab2{% endblock %}
+{% block content %}
+<h1>Setup / Advanced</h1>
+<p>For the people who run the portal and the recorders. The main flow (choose application, add examples, review required behaviour, build, verify, open or download) does not need these pages.</p>
+<div class="columns">
+  <section>
+    <h2>Recorder machines</h2>
+    <p><a href="{{ url_for('machines') }}">Machines and pairing</a>: make a pairing code for a PC's recorder, see when each machine was last seen, revoke one.</p>
+    <h2>Automations</h2>
+    <p><a href="{{ url_for('automations') }}">Automations</a>: the bots and processes recordings are made for, and the applications they touch.</p>
+  </section>
+  <section>
+    <h2>Applications</h2>
+    <p class="muted">Identities, Git repository and deployment configuration of each application.</p>
+    {% for app in apps %}
+      <p><a href="{{ url_for('app_setup', app_id=app.id) }}">{{ app.name }}</a></p>
+    {% else %}
+      <p>No applications yet.</p>
+    {% endfor %}
+  </section>
+</div>
+{% endblock %}

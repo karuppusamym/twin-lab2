@@ -88,7 +88,8 @@ CODE_MINUTES = 10
 FAILURES_PER_10_MIN = 20
 STATUSES = ("known", "discovered", "not_replicated")
 LEVELS = ("full", "steps")
-KEY = re.compile(r"^(desktop:[^\x00-\x1f]{1,200}|exe:[\w .()+-]{1,80}\.exe|web:https?://[\w.\-\[\]:]{1,200}"
+KEY = re.compile(r"^(desktop:[^\x00-\x1f]{1,200}|exe:[\w .()+-]{1,80}\.exe"
+                 r"|web:https?://[\w.\-\[\]:]{1,200}(/[^\s\x00-\x1f?#]{1,300})?"
                  r"|mainframe:[\w.\-\[\]:]{1,200}:\d{1,5})$",
                  re.I)  # fmt: skip
 SESSION_KEY = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$")
@@ -110,12 +111,37 @@ def migrate(db):
         db.execute("ALTER TABLE apps ADD COLUMN status TEXT NOT NULL DEFAULT 'known'")
     if "surface" not in columns:
         db.execute("ALTER TABLE apps ADD COLUMN surface TEXT NOT NULL DEFAULT ''")
+    if "url_match" not in columns:
+        # how the application's web addresses match: `path` (longest path prefix wins) or
+        # `host` (the owner's override: the addresses stand for their whole host). Identities
+        # stored before paths were kept are host-only, so they match exactly as they did.
+        db.execute("ALTER TABLE apps ADD COLUMN url_match TEXT NOT NULL DEFAULT 'path'")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(evidence)")}
+    if "reviewed" not in columns:
+        # links stored before this column existed are treated as reviewed: a resend then only
+        # suggests events, it never changes their selection.
+        db.execute("ALTER TABLE evidence ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 1")
+    if "suggested" not in columns:
+        db.execute("ALTER TABLE evidence ADD COLUMN suggested TEXT NOT NULL DEFAULT '[]'")
     db.commit()
+
+
+def web_parts(key):
+    """`web:https://host/orders` -> (`web:https://host`, `/orders`); a host-only key has path ``."""
+    rest = key[4:]
+    cut = rest.find("/", rest.find("//") + 2)
+    return ("web:" + rest, "") if cut < 0 else ("web:" + rest[:cut], rest[cut:])
+
+
+def path_matches(prefix, path):
+    return not prefix or path == prefix or path.startswith(prefix + "/")
 
 
 def normalise_key(text):
     """An identity key from what a person types: `desktop:Company/Product`, an executable
-    name (`exe:CaseDesk.exe`), or a web address (`web:https://host[:port]`)."""
+    name (`exe:CaseDesk.exe`), or a web address (`web:https://host[:port][/path]`). A web
+    address keeps its path (without query, fragment or trailing slash): applications that
+    share a host are told apart by path, the longest matching path prefix winning."""
     text = (text or "").strip()
     if not text:
         return None
@@ -129,13 +155,18 @@ def normalise_key(text):
     if text.lower().endswith(".exe") and ":" not in text:
         text = "exe:" + text
     if text.startswith("web:"):
-        parts = urlsplit(text[4:])
-        if parts.scheme not in ("http", "https") or not parts.hostname or parts.username:
+        try:
+            parts = urlsplit(text[4:])
+            port = parts.port
+        except ValueError:
             return None
-        port = parts.port
-        default = {"http": 80, "https": 443}[parts.scheme]
+        scheme = parts.scheme.lower()
+        if scheme not in ("http", "https") or not parts.hostname or parts.username:
+            return None
+        default = {"http": 80, "https": 443}[scheme]
         host = parts.hostname.lower()
-        text = f"web:{parts.scheme}://{host}" + (f":{port}" if port and port != default else "")
+        path = re.sub(r"/{2,}", "/", parts.path or "").rstrip("/")
+        text = f"web:{scheme}://{host}" + (f":{port}" if port and port != default else "") + path
     if text.startswith("exe:"):
         text = "exe:" + text[4:].lower()
     return text if KEY.match(text) else None
@@ -144,7 +175,12 @@ def normalise_key(text):
 def target_of(key, level, app_id, name):
     target = {"level": level, "app_id": app_id, "name": name}
     if key.startswith("web:"):
-        target["origin"] = key[4:]
+        # the recorder records the whole origin; the portal assigns steps to an application
+        # by path when the references arrive
+        origin, path = web_parts(key)
+        target["origin"] = origin[4:]
+        if path:
+            target["path"] = path
     elif key.startswith("exe:"):
         target["exe"] = key[4:]
     elif key.startswith("mainframe:"):
@@ -362,10 +398,43 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         return db().execute("SELECT * FROM app_identities WHERE app_id = ? ORDER BY key", (app_id,)).fetchall()
 
     def deny_keys():
+        """Keys the recorder must not record in full. The recorder knows origins, not paths, so a
+        path identity is not sent: denying it would deny the applications sharing its host."""
         return [r["key"] for r in db().execute("""
             SELECT key FROM app_identities JOIN apps ON apps.id = app_identities.app_id
             WHERE apps.status = 'not_replicated' AND key NOT LIKE 'exe:%'
-        """)]  # fmt: skip
+        """) if not r["key"].startswith("web:") or not web_parts(r["key"])[1]]  # fmt: skip
+
+    def web_identities(origin):
+        """The identities on one origin as (key, app_id, prefix): a `host` application's prefix is
+        empty, so its addresses stand for the whole host."""
+        rows = db().execute("""
+            SELECT app_identities.key, app_identities.app_id, apps.url_match FROM app_identities
+            JOIN apps ON apps.id = app_identities.app_id
+            WHERE app_identities.key = ? OR substr(app_identities.key, 1, ?) = ?
+        """, (origin, len(origin) + 1, origin + "/")).fetchall()
+        return [(r["key"], r["app_id"], "" if r["url_match"] == "host" else web_parts(r["key"])[1]) for r in rows]
+
+    def resolve_web(key):
+        """The identity a web address belongs to: the longest matching path prefix wins; a
+        host-only identity (or a `host` application) matches every path on its host."""
+        origin, path = web_parts(key)
+        best = None
+        for ident, app_id, prefix in web_identities(origin):
+            if path_matches(prefix, path):
+                rank = (len(prefix), ident == key, -app_id)
+                if best is None or rank > best[0]:
+                    best = (rank, ident, app_id)
+        return (best[1], best[2]) if best else None
+
+    def web_clash(app_id, key, url_match):
+        """Another application that already claims the same host and path as `key` would."""
+        origin, path = web_parts(key)
+        prefix = "" if url_match == "host" else path
+        for ident, other, other_prefix in web_identities(origin):
+            if other != app_id and other_prefix == prefix:
+                return other
+        return None
 
     @app.get("/sessions")
     def sessions():
@@ -459,6 +528,11 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         app_id = None
         if item.get("app_id") and db().execute("SELECT 1 FROM apps WHERE id = ?", (item["app_id"],)).fetchone():
             app_id = item["app_id"]
+            if item["key"].startswith("web:"):
+                # a target known by path does not claim the rest of its host
+                origin = web_parts(item["key"])[0]
+                if any(other == app_id for _, other, prefix in web_identities(origin) if prefix):
+                    app_id = None
         if app_id is None and item.get("exe"):
             row = db().execute("SELECT app_id FROM app_identities WHERE key = ?",
                                ("exe:" + item["exe"].lower(),)).fetchone()  # fmt: skip
@@ -476,6 +550,54 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                      (item["key"], app_id, item["surface"], json.dumps(facts)))  # fmt: skip
         return app_id, created
 
+    def assign_steps(item, steps):
+        """The recorded application's steps per catalog application, as (app_id, identity key,
+        steps, created). A web origin's steps go by the path of their screen to the identity with
+        the longest matching path prefix; steps no identity claims go to `app_for(item)`."""
+        groups, rest = {}, []
+        if item["key"].startswith("web:"):
+            origin = web_parts(item["key"])[0]
+            for step in steps:
+                url = normalise_key(step.get("screen") or "") if str(step.get("screen", "")).startswith("http") else None
+                url = url if url and web_parts(url)[0] == origin else item["key"]
+                found = resolve_web(url)
+                if found is None:
+                    rest.append(step)
+                else:
+                    groups.setdefault(found, []).append(step)
+            if not steps:
+                found = resolve_web(item["key"])
+                if found is not None:
+                    groups[found] = []
+        else:
+            rest = list(steps)
+        out = [(app_id, key, group, False) for (key, app_id), group in groups.items()]
+        if rest or not groups:
+            app_id, created = app_for(item)
+            out.append((app_id, item["key"], rest, created))
+        return out
+
+    def link_evidence(app_id, recording_id, numbers, seen):
+        """The application's evidence link to the recording. A first receipt (or one the owner
+        has not reviewed yet) selects every step, as before. Once the owner has reviewed the
+        selection it is never changed by a resend: events that are new in the resend are kept as
+        suggestions, shown as new and not yet reviewed until the owner saves the assignment."""
+        row = db().execute("SELECT * FROM evidence WHERE app_id = ? AND recording_id = ?",
+                           (app_id, recording_id)).fetchone()  # fmt: skip
+        if row is None:
+            if numbers:
+                db().execute("""INSERT INTO evidence(app_id, recording_id, selection, notes, reviewed, suggested)
+                                VALUES (?, ?, ?, '', 0, '[]')""", (app_id, recording_id, json.dumps(sorted(numbers))))
+        elif not row["reviewed"]:
+            if numbers:
+                db().execute("UPDATE evidence SET selection = ? WHERE app_id = ? AND recording_id = ?",
+                             (json.dumps(sorted(numbers)), app_id, recording_id))  # fmt: skip
+        else:
+            selection = set(json.loads(row["selection"]))
+            suggested = (set(json.loads(row["suggested"])) | (numbers - seen)) & numbers
+            db().execute("UPDATE evidence SET suggested = ? WHERE app_id = ? AND recording_id = ?",
+                         (json.dumps(sorted(suggested - selection)), app_id, recording_id))  # fmt: skip
+
     @app.post("/api/agent/references")
     def agent_references():
         machine = agent_machine()
@@ -489,10 +611,10 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         except (ValueError, TypeError) as error:
             return jsonify(error=f"invalid references: {error}"), 400
         rec_name, rec_version = recorder_of(doc)
-        received = {"contract_version": doc["contract_version"], "recorder": rec_name,
-                    "recorder_version": rec_version,
-                    "twinlab_commit": (doc.get("recorder") or {}).get("twinlab_commit")
-                    or refs["session"].get("twinlab_commit")}  # fmt: skip
+        sender = {"contract_version": doc["contract_version"], "recorder": rec_name,
+                  "recorder_version": rec_version,
+                  "twinlab_commit": (doc.get("recorder") or {}).get("twinlab_commit")
+                  or refs["session"].get("twinlab_commit")}  # fmt: skip
         s = refs["session"]
         recording_id = "ws-" + s["id"]
         capture = None
@@ -524,29 +646,35 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                             received_at = excluded.received_at, automation_id = excluded.automation_id""",
                          (recording_id, s["id"], machine["id"], capture["id"] if capture else None,
                           automation_id, json.dumps(refs), now()))  # fmt: skip
+            seen = {}  # what earlier sends of this recording had, per application
+            for row in db().execute("SELECT app_id, flow FROM recording_apps WHERE recording_id = ?", (recording_id,)):
+                seen.setdefault(row["app_id"], set()).update(st["n"] for st in json.loads(row["flow"]))
             db().execute("DELETE FROM recording_apps WHERE recording_id = ?", (recording_id,))
+            received = {}  # app_id -> step numbers in this send
             for item in refs["apps"]:
-                app_id, created = app_for(item)
-                steps = refs["flows"].get(item["key"], [])
-                db().execute("INSERT OR REPLACE INTO recording_apps VALUES (?, ?, ?, ?, ?)",
-                             (recording_id, app_id, item["key"], item["level"], json.dumps(steps)))  # fmt: skip
-                selection = sorted({st["n"] for st in steps})
-                if selection:
-                    db().execute("""INSERT INTO evidence VALUES (?, ?, ?, '')
-                                    ON CONFLICT(app_id, recording_id) DO UPDATE SET selection = excluded.selection""",
-                                 (app_id, recording_id, json.dumps(selection)))  # fmt: skip
-                if automation_id is not None:
-                    db().execute("INSERT OR IGNORE INTO automation_apps VALUES (?, ?)", (automation_id, app_id))
-                (discovered if created else mapped).append(app_id)
+                for app_id, key, steps, created in assign_steps(item, refs["flows"].get(item["key"], [])):
+                    old = db().execute("SELECT flow FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",
+                                       (recording_id, app_id, key)).fetchone()  # fmt: skip
+                    if old is not None:  # two references resolved to one identity
+                        steps = json.loads(old["flow"]) + steps
+                    db().execute("INSERT OR REPLACE INTO recording_apps VALUES (?, ?, ?, ?, ?)",
+                                 (recording_id, app_id, key, item["level"], json.dumps(steps)))  # fmt: skip
+                    received.setdefault(app_id, set()).update(st["n"] for st in steps)
+                    if automation_id is not None:
+                        db().execute("INSERT OR IGNORE INTO automation_apps VALUES (?, ?)", (automation_id, app_id))
+                    if app_id not in mapped and app_id not in discovered:
+                        (discovered if created else mapped).append(app_id)
+            for app_id, numbers in received.items():
+                link_evidence(app_id, recording_id, numbers, seen.get(app_id, set()))
             if capture is not None:
                 db().execute("UPDATE capture_sessions SET status = 'recorded', recording_id = ? WHERE id = ?",
                              (recording_id, capture["id"]))  # fmt: skip
             db().execute("INSERT OR REPLACE INTO recording_contracts VALUES (?, ?, ?, ?, ?, ?)",
-                         (recording_id, received["contract_version"], received["recorder"],
-                          received["recorder_version"], received["twinlab_commit"], now()))  # fmt: skip
+                         (recording_id, sender["contract_version"], sender["recorder"],
+                          sender["recorder_version"], sender["twinlab_commit"], now()))  # fmt: skip
             db().execute("INSERT OR REPLACE INTO machine_contracts VALUES (?, ?, ?, ?)",
-                         (machine["id"], received["contract_version"],
-                          f"{received['recorder']} {received['recorder_version']}", now()))  # fmt: skip
+                         (machine["id"], sender["contract_version"],
+                          f"{sender['recorder']} {sender['recorder_version']}", now()))  # fmt: skip
         return jsonify(recording_id=recording_id, mapped=mapped, discovered=discovered,
                        url=url_for("recording", recording_id=recording_id, _external=True))  # fmt: skip
 
@@ -566,14 +694,17 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
             JOIN apps ON apps.id = recording_apps.app_id WHERE recording_id = ? ORDER BY apps.name
         """, (recording_id,)).fetchall()
         payload = json.loads(ref["payload"])
-        received = db().execute("SELECT * FROM recording_contracts WHERE recording_id = ?",
-                                (recording_id,)).fetchone()  # fmt: skip
-        names = {a["key"]: a["name"] for a in apps}
-        timeline = [dict(run, name=names.get(run["app"], "Other applications" if run["app"] == "presence"
-                                             else run["app"])) for run in payload["timeline"]]  # fmt: skip
-        return {"ref": ref, "session": payload["session"], "apps": apps, "timeline": timeline,
-                "contract": received,
-                "flows": {a["app_id"]: json.loads(a["flow"]) for a in apps}}  # fmt: skip
+        def name_of(key):  # a web origin's steps may have gone to several applications by path
+            if key == "presence":
+                return "Other applications"
+            found = [a["name"] for a in apps if a["key"] == key or a["key"].startswith(key + "/")]
+            return ", ".join(dict.fromkeys(found)) or key
+
+        timeline = [dict(run, name=name_of(run["app"])) for run in payload["timeline"]]
+        sender = db().execute("SELECT * FROM recording_contracts WHERE recording_id = ?",
+                              (recording_id,)).fetchone()  # fmt: skip
+        return {"ref": ref, "session": payload["session"], "timeline": timeline, "contract": sender,
+                "apps": [dict(a, steps=json.loads(a["flow"])) for a in apps]}  # fmt: skip
 
     def app_recordings(app_id):
         rows = db().execute("""
@@ -621,11 +752,16 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         other = db().execute("SELECT app_id FROM app_identities WHERE key = ?", (key,)).fetchone()
         if other is not None and other["app_id"] != app_id:
             abort(409, "Another application already has this identity: merge them instead.")
+        if key.startswith("web:"):
+            mode = db().execute("SELECT url_match FROM apps WHERE id = ?", (app_id,)).fetchone()[0]
+            if web_clash(app_id, key, mode) is not None:
+                abort(409, "Another application already matches this host and path: add a longer path, "
+                           "or merge them if they are the same application.")
         surface = key.split(":", 1)[0] if key.startswith(("web:", "mainframe:")) else "desktop"
         with db():
             db().execute("INSERT OR IGNORE INTO app_identities VALUES (?, ?, ?, '{}')", (key, app_id, surface))
             db().execute("UPDATE apps SET surface = ? WHERE id = ? AND surface = ''", (surface, app_id))
-        return redirect(url_for("demo", app_id=app_id))
+        return redirect(url_for("app_setup", app_id=app_id))
 
     @app.post("/apps/<int:app_id>/status")
     def set_status(app_id):
@@ -639,23 +775,150 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                 db().execute("UPDATE apps SET name = ? WHERE id = ?", (name, app_id))
         return redirect(url_for("demo", app_id=app_id))
 
+    @app.post("/apps/<int:app_id>/url-match")
+    def set_url_match(app_id):
+        """The owner's override of how the application's web addresses match."""
+        mode = request.form.get("url_match")
+        if mode not in ("path", "host") or db().execute("SELECT 1 FROM apps WHERE id = ?", (app_id,)).fetchone() is None:
+            abort(400, "Choose path or host.")
+        for row in identities(app_id):
+            if row["key"].startswith("web:") and web_clash(app_id, row["key"], mode) is not None:
+                abort(409, "Another application already matches this whole host.")
+        with db():
+            db().execute("UPDATE apps SET url_match = ? WHERE id = ?", (mode, app_id))
+        return redirect(url_for("app_setup", app_id=app_id))
+
+    # -- merging two applications ------------------------------------------------------------------
+    # Moved to the surviving application: identities, recorded flows, evidence links,
+    # automations, scenarios and historical build briefs with their packages. An evidence link both
+    # applications have to the same recording is combined (shown in the preview first); nothing
+    # is dropped. Rows in any other table that refers to the application block the merge.
+
+    MOVED = {"app_identities", "recording_apps", "evidence", "automation_apps", "briefs", "scenarios"}
+
+    def combine_links(keep, gone, gone_name):
+        """One evidence link from two links to the same recording. A reviewed selection is never
+        widened by an unreviewed one: those events become suggestions for the owner instead."""
+        def sel(row):
+            return set(json.loads(row["selection"]))
+
+        def sug(row):
+            return set(json.loads(row["suggested"]))
+
+        if keep["reviewed"] and gone["reviewed"] or not keep["reviewed"] and not gone["reviewed"]:
+            selection = sel(keep) | sel(gone)
+            suggested = sug(keep) | sug(gone)
+        else:
+            reviewed, other = (keep, gone) if keep["reviewed"] else (gone, keep)
+            selection = sel(reviewed)
+            suggested = sug(keep) | sug(gone) | sel(other)
+        notes = [n for n in (keep["notes"].strip(), gone["notes"].strip()) if n]
+        if len(notes) == 2 and notes[0] != notes[1]:
+            notes = [notes[0], f"Merged from {gone_name}: {notes[1]}"]
+        return {"selection": sorted(selection), "suggested": sorted(suggested - selection),
+                "notes": "\n\n".join(dict.fromkeys(notes)),
+                "reviewed": 1 if keep["reviewed"] or gone["reviewed"] else 0}
+
+    def merge_plan(app_id, into):
+        source = db().execute("SELECT * FROM apps WHERE id = ?", (app_id,)).fetchone()
+        target = db().execute("SELECT * FROM apps WHERE id = ?", (into,)).fetchone()
+        if source is None:
+            abort(404)
+        if target is None or into == app_id:
+            abort(400, "Choose the application to merge into.")
+        blockers = []
+        for (table,) in db().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+            if table in MOVED:
+                continue
+            for fk in db().execute(f'PRAGMA foreign_key_list("{table}")').fetchall():
+                if fk["table"] == "apps":
+                    count = db().execute(f'SELECT COUNT(*) FROM "{table}" WHERE "{fk["from"]}" = ?',
+                                         (app_id,)).fetchone()[0]  # fmt: skip
+                    if count:
+                        blockers.append(f"{count} {table.replace('_', ' ')}")
+        target_links = {r["recording_id"]: r for r in db().execute(
+            "SELECT * FROM evidence WHERE app_id = ?", (into,))}  # fmt: skip
+        moving, combined = [], []
+        for row in db().execute("""SELECT evidence.*, recordings.name FROM evidence
+                                   JOIN recordings ON recordings.id = evidence.recording_id
+                                   WHERE app_id = ? ORDER BY recordings.name""", (app_id,)).fetchall():  # fmt: skip
+            keep = target_links.get(row["recording_id"])
+            if keep is None:
+                moving.append({"recording_id": row["recording_id"], "name": row["name"],
+                               "selected": len(json.loads(row["selection"]))})  # fmt: skip
+            else:
+                combined.append({"recording_id": row["recording_id"], "name": row["name"],
+                                 "source": json.loads(row["selection"]), "target": json.loads(keep["selection"]),
+                                 "source_notes": row["notes"], "target_notes": keep["notes"],
+                                 **combine_links(keep, row, source["name"])})  # fmt: skip
+        flows = db().execute("""SELECT recording_apps.recording_id, recording_apps.key, recordings.name,
+                                       EXISTS (SELECT 1 FROM recording_apps t WHERE t.app_id = ?
+                                               AND t.recording_id = recording_apps.recording_id
+                                               AND t.key = recording_apps.key) AS shared
+                                FROM recording_apps JOIN recordings ON recordings.id = recording_apps.recording_id
+                                WHERE app_id = ? ORDER BY recordings.name""", (into, app_id)).fetchall()  # fmt: skip
+        plan = {
+            "source": {"id": source["id"], "name": source["name"], "url_match": source["url_match"]},
+            "target": {"id": target["id"], "name": target["name"], "url_match": target["url_match"]},
+            "identities": [r["key"] for r in identities(app_id)],
+            "flows": [{"recording_id": r["recording_id"], "name": r["name"], "key": r["key"],
+                       "shared": bool(r["shared"])} for r in flows],  # fmt: skip
+            "links": moving, "combined": combined,
+            "automations": [r["name"] for r in app_automations(app_id)],
+            "briefs": [{"revision": r["revision"], "package": bool(r["package"])} for r in db().execute(
+                """SELECT revision, EXISTS (SELECT 1 FROM brief_packages p WHERE p.revision = briefs.revision)
+                   AS package FROM briefs WHERE app_id = ? ORDER BY revision""", (app_id,))],  # fmt: skip
+            "scenarios": [r["name"] for r in db().execute(
+                "SELECT name FROM scenarios WHERE app_id = ? ORDER BY position, id", (app_id,))],
+            "blockers": blockers,
+        }
+        plan["fingerprint"] = sha(json.dumps(plan, sort_keys=True))[:16]
+        return plan
+
+    @app.get("/apps/<int:app_id>/merge")
+    def merge_preview(app_id):
+        plan = merge_plan(app_id, request.args.get("into", type=int))
+        return render_template("merge.html", plan=plan)
+
     @app.post("/apps/<int:app_id>/merge")
     def merge_app(app_id):
         into = request.form.get("into", type=int)
-        if into is None or into == app_id or db().execute("SELECT 1 FROM apps WHERE id = ?", (into,)).fetchone() is None:
-            abort(400, "Choose the application to merge into.")
-        if db().execute("SELECT 1 FROM releases WHERE app_id = ?", (app_id,)).fetchone() or \
-                db().execute("SELECT 1 FROM attachments WHERE app_id = ?", (app_id,)).fetchone():
-            abort(400, "Only an application without releases or attachments can be merged.")
+        plan = merge_plan(app_id, into)
+        if request.form.get("confirm") != plan["fingerprint"]:
+            # not confirmed, or the applications changed since the preview: show it (again)
+            return redirect(url_for("merge_preview", app_id=app_id, into=into))
+        if plan["blockers"]:
+            abort(400, "This application cannot be merged: " + ", ".join(plan["blockers"]) + ".")
         with db():
             db().execute("UPDATE app_identities SET app_id = ? WHERE app_id = ?", (into, app_id))
-            db().execute("UPDATE OR IGNORE recording_apps SET app_id = ? WHERE app_id = ?", (into, app_id))
-            db().execute("DELETE FROM recording_apps WHERE app_id = ?", (app_id,))
-            db().execute("UPDATE OR IGNORE evidence SET app_id = ? WHERE app_id = ?", (into, app_id))
-            db().execute("DELETE FROM evidence WHERE app_id = ?", (app_id,))
-            db().execute("UPDATE OR IGNORE automation_apps SET app_id = ? WHERE app_id = ?", (into, app_id))
+            for row in db().execute("SELECT * FROM recording_apps WHERE app_id = ?", (app_id,)).fetchall():
+                keep = db().execute("SELECT flow FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",
+                                    (row["recording_id"], into, row["key"])).fetchone()  # fmt: skip
+                if keep is None:
+                    db().execute("UPDATE recording_apps SET app_id = ? WHERE recording_id = ? AND app_id = ? AND key = ?",
+                                 (into, row["recording_id"], app_id, row["key"]))  # fmt: skip
+                    continue
+                steps = {st["n"]: st for st in json.loads(row["flow"])}
+                steps.update({st["n"]: st for st in json.loads(keep["flow"])})
+                db().execute("UPDATE recording_apps SET flow = ? WHERE recording_id = ? AND app_id = ? AND key = ?",
+                             (json.dumps([steps[n] for n in sorted(steps)]), row["recording_id"], into, row["key"]))
+                db().execute("DELETE FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",
+                             (row["recording_id"], app_id, row["key"]))  # fmt: skip
+            for link in plan["combined"]:
+                db().execute("""UPDATE evidence SET selection = ?, suggested = ?, notes = ?, reviewed = ?
+                                WHERE app_id = ? AND recording_id = ?""",
+                             (json.dumps(link["selection"]), json.dumps(link["suggested"]), link["notes"],
+                              link["reviewed"], into, link["recording_id"]))  # fmt: skip
+                db().execute("DELETE FROM evidence WHERE app_id = ? AND recording_id = ?", (app_id, link["recording_id"]))
+            db().execute("UPDATE evidence SET app_id = ? WHERE app_id = ?", (into, app_id))
+            db().execute("INSERT OR IGNORE INTO automation_apps SELECT automation_id, ? FROM automation_apps "
+                         "WHERE app_id = ?", (into, app_id))  # fmt: skip
             db().execute("DELETE FROM automation_apps WHERE app_id = ?", (app_id,))
-            db().execute("DELETE FROM briefs WHERE app_id = ? AND revision NOT IN (SELECT revision FROM releases)", (app_id,))
+            db().execute("UPDATE briefs SET app_id = ? WHERE app_id = ?", (into, app_id))
+            # scenarios follow the target's own, in their order
+            db().execute("""UPDATE scenarios SET app_id = ?, position = position +
+                            (SELECT COALESCE(MAX(position), 0) FROM scenarios WHERE app_id = ?) WHERE app_id = ?""",
+                         (into, into, app_id))  # fmt: skip
             db().execute("DELETE FROM apps WHERE id = ?", (app_id,))
         return redirect(url_for("demo", app_id=into))
 

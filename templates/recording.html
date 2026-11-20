@@ -14,9 +14,9 @@
   {% for a in refs.apps %}
     <details {% if loop.first %}open{% endif %}>
       <summary><a href="{{ url_for('demo', app_id=a.app_id) }}">{{ a.name }}</a>
-        {% if a.status != "known" %}<span class="badge {{ a.status }}">{{ a.status | replace("_", " ") }}</span>{% endif %}
+        <span class="badge {{ a.status }}">{{ a.status | status_label }}</span>
         <span class="muted">{{ a.level }} · <code>{{ a.key }}</code></span></summary>
-      {% with steps = refs.flows[a.app_id] %}{% include "_flow.html" %}{% endwith %}
+      {% with steps = a.steps %}{% include "_flow.html" %}{% endwith %}
     </details>
   {% endfor %}
 </section>
@@ -36,6 +36,12 @@
     <form method="post">
       <input type="hidden" name="token" value="{{ session.form_token }}">
       <input type="hidden" name="app_id" value="{{ app_id }}">
+      {% if saved and not saved.reviewed %}
+        <p class="muted">Selected automatically from the recording: not yet reviewed. Save the assignment to confirm it.</p>
+      {% endif %}
+      {% if suggested %}
+        <p class="muted">{{ suggested | length }} event{{ "s" if suggested | length != 1 }} new in a later send of this recording, not yet reviewed: they are not in the build pack until you select them and save.</p>
+      {% endif %}
       <label>Outcome and build notes <textarea name="notes" rows="4">{{ saved.notes if saved else '' }}</textarea></label>
       {% for source, group in events | groupby("source", case_sensitive=true) %}
         <fieldset>
@@ -44,7 +50,7 @@
           <div class="events">
             {% for event in group %}
               <label><input type="checkbox" name="event" value="{{ event.seq }}" {% if event.seq in selected %}checked{% endif %}>
-                {{ event.seq }} · {{ event.action }}</label>
+                {{ event.seq }} · {{ event.action }}{% if event.seq in suggested %} <span class="badge discovered">new, not yet reviewed</span>{% endif %}</label>
             {% endfor %}
           </div>
         </fieldset>
