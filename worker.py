@@ -22,7 +22,7 @@ import builds
 import db as database
 import jobqueue
 
-TYPES = ("build", "build.cancel", "build.message")
+TYPES = ("build", "build.cancel", "build.message", "build.interrupt")
 log = logging.getLogger("twinlab2.worker")
 
 

@@ -333,6 +333,64 @@ ROLES_AUDIT = [
 ]
 
 
+# -- 7: build sessions (several providers, attempts and conversations per approved package) -------------
+
+
+def _sessions_from_devin_builds(connection):
+    """Existing Devin builds become Devin build sessions: their session, status, budget and cost
+    move to the provider-neutral columns. `active_app` is no longer set (one active build per
+    application is gone: each session has its own branch and workspace)."""
+    connection.execute("""UPDATE builds SET provider_session_id = devin_session_id, provider_url = devin_url,
+                          provider_status = devin_status, provider_detail = devin_status_detail,
+                          budget = acu_budget, cost = acus_consumed, active_app = NULL""")
+    connection.execute("UPDATE build_messages SET state = 'delivery_uncertain' WHERE state = 'uncertain'")
+    connection.execute("UPDATE build_messages SET state = 'queued' WHERE state = 'sending' AND sent_at IS NULL")
+
+
+BUILD_SESSIONS = [
+    add_columns([
+        ("builds", "provider", "TEXT NOT NULL DEFAULT 'devin'"),
+        ("builds", "model", "TEXT NOT NULL DEFAULT ''"),
+        ("builds", "request_key", "TEXT"),
+        ("builds", "package_rev", "INTEGER"),
+        ("builds", "parent_build", "INTEGER REFERENCES builds(id)"),
+        ("builds", "branch", "TEXT NOT NULL DEFAULT ''"),
+        ("builds", "workspace", "TEXT NOT NULL DEFAULT ''"),
+        ("builds", "budget", "REAL"),
+        ("builds", "budget_unit", "TEXT NOT NULL DEFAULT 'ACU'"),
+        ("builds", "cost", "REAL"),
+        ("builds", "cost_unit", "TEXT NOT NULL DEFAULT 'ACU'"),
+        ("builds", "provider_session_id", "TEXT"),
+        ("builds", "provider_url", "TEXT"),
+        ("builds", "provider_status", "TEXT"),
+        ("builds", "provider_detail", "TEXT"),
+        ("builds", "provider_state", "TEXT NOT NULL DEFAULT '{}'"),
+        ("builds", "event_cursor", "TEXT NOT NULL DEFAULT ''"),
+        ("build_messages", "kind", "TEXT NOT NULL DEFAULT 'clarification'"),
+        ("build_messages", "direction", "TEXT NOT NULL DEFAULT 'to_provider'"),
+        ("build_messages", "event_id", "TEXT"),
+        ("build_messages", "request_key", "TEXT"),
+        ("build_messages", "reply_to", "INTEGER REFERENCES build_messages(id)"),
+        ("build_messages", "data", "TEXT NOT NULL DEFAULT '{}'"),
+        ("build_messages", "scenario_id", "INTEGER"),
+        ("build_messages", "sent_at", "TEXT"),
+        ("releases", "build_id", "INTEGER REFERENCES builds(id)"),
+    ]),
+    # a repeated click carries the same request key and finds its session; NULLs never collide
+    "CREATE UNIQUE INDEX IF NOT EXISTS builds_request_key ON builds(request_key)",
+    "CREATE INDEX IF NOT EXISTS builds_app ON builds(app_id, id)",
+    # an incoming provider event is stored once per session; an outgoing message once per request
+    "CREATE UNIQUE INDEX IF NOT EXISTS build_messages_event ON build_messages(build_id, event_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS build_messages_request ON build_messages(request_key)",
+    # one release publish per application at a time (sessions build in parallel, publishing is coordinated)
+    """CREATE TABLE IF NOT EXISTS publish_locks (
+        app_id INTEGER PRIMARY KEY REFERENCES apps(id), release_id INTEGER NOT NULL, holder TEXT NOT NULL,
+        acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL
+    )""",
+    _sessions_from_devin_builds,
+]
+
+
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
@@ -343,6 +401,7 @@ MIGRATIONS = [
     (4, "recording details", RECORDING_DETAILS),
     (5, "artifacts and uploads", ARTIFACTS),
     (6, "roles and audit", ROLES_AUDIT),
+    (7, "build sessions", BUILD_SESSIONS),
 ]
 
 

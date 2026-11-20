@@ -16,6 +16,15 @@ The live capture used a browser. The mixed desktop test used recorded input fixt
 
 Run `python -m unittest discover -s tests -v` from the project directory to repeat the automated catalog, recovery and release checks.
 
+## Build sessions: providers, chat, isolation (2026-11-20)
+
+| Check | Status | Result |
+|---|---|---|
+| Devin port onto the provider interface (`providers/devin_provider.py`) | Locally tested | Every Build with Devin test passes against the fake Devin and GitHub APIs (`tests/test_builds.py`): pack upload and binding, an uncertain create found by its tag and never repeated, a lost create made again only after checking, a worker killed mid-create, cancel (also during the check), an expired key, a later build's change summary. |
+| Sessions, chat and coordination (`tests/test_sessions.py`, an in-memory fake provider) | Locally tested | Duplicate clicks return the request's session and New session starts another; two parallel sessions on one package keep their own branch, workspace and conversation; an improvement session starts from another session's commit; a lost reply, a worker that died mid-send and a reply never acknowledged are all Delivery uncertain and never resent; a scope change is held, sent nowhere, and becomes revision 2 only after the owner approves it; tool approvals; interrupt and cancel; a worker restart binds the session its predecessor started; one publish per application (409 while held, taken over when expired); a session cannot take over another session's release; Compare results runs the release checks on each candidate commit; the migration turns Devin builds into Devin sessions. |
+| PostgreSQL | Locally tested | The session, build, roles and verification tests pass on PostgreSQL 16 (Docker) as well as SQLite. |
+| Real Devin sessions | Not run | No Devin API call was made: everything ran against the fakes. Nothing is externally validated. |
+
 ## Workstation recorder and portal references (2026-11-19)
 
 Windows 11, Edge 142, .NET 6 SDK, Python 3.13, Twin Lab `labctl.workstation` (twin-lab branch `claude/new-session-6114b2`).

@@ -164,7 +164,7 @@
     {% endif %}
   {% endif %}
   {% if builder %}
-  {% if packages %}<p><a class="button" href="{{ url_for('build_page', app_id=item.id) }}">Build with Devin</a></p>{% endif %}
+  {% if packages %}<p><a class="button" href="{{ url_for('build_page', app_id=item.id) }}">Build sessions</a></p>{% endif %}
   <h3>Builder-approved packages</h3>
   {% for p in packages %}
     <p><a href="{{ url_for('package', app_id=item.id, rev=p.rev) }}">Revision {{ p.rev }}</a>

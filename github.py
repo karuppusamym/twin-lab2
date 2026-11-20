@@ -86,6 +86,16 @@ class GitHub:
             raise GitHubError(0, f"GitHub gave no commit for {repo}@{branch}.")
         return sha
 
+    def commit(self, repo, sha):
+        """The full SHA of `sha` in `repo` (GitHubError 404 when the repository has no such commit)."""
+        if not re.fullmatch(r"[0-9a-f]{7,40}", sha or ""):
+            raise ValueError("That is not a commit SHA.")
+        doc = self._get(f"/repos/{normalize_repo(repo)}/commits/{sha}")
+        found = str(doc.get("sha") or "")
+        if not re.fullmatch(r"[0-9a-f]{40}", found):
+            raise GitHubError(0, f"GitHub gave no commit for {repo}@{sha}.")
+        return found
+
     def pull(self, repo, number):
         doc = self._get(f"/repos/{normalize_repo(repo)}/pulls/{int(number)}")
         return {"number": int(doc.get("number") or number), "url": doc.get("html_url"),

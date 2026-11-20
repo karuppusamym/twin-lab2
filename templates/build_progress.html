@@ -1,27 +1,34 @@
 {% extends "base.html" %}
-{% block title %}Build progress · {{ item.name }} · TwinLab2{% endblock %}
+{% set who = provider_label(build.provider) or build.provider %}
+{% block title %}Session #{{ build.id }} · {{ item.name }} · TwinLab2{% endblock %}
 {% block head %}{% if build.state not in build_final %}<meta http-equiv="refresh" content="10">{% endif %}{% endblock %}
 {% block content %}
 <p class="crumbs"><a href="{{ url_for('demo', app_id=item.id) }}">{{ item.name }}</a> ·
-  <a href="{{ url_for('build_page', app_id=item.id) }}">Build</a> · Attempt {{ build.attempt }}</p>
-<h1>Build progress: {{ item.name }}, attempt {{ build.attempt }}</h1>
+  <a href="{{ url_for('build_page', app_id=item.id) }}">Build</a> · Session #{{ build.id }}</p>
+<h1>Build session #{{ build.id }}: {{ item.name }}, {{ who }}{% if build.model %} ({{ build.model }}){% endif %}</h1>
 
 <section class="nextcard">
   <p id="build-state"><span class="badge {{ build.state }}">{{ build_label(build.state) }}</span>
   {% if build.state == "queued" %}Waiting for the build worker.
-  {% elif build.state == "starting" %}Starting a Devin session.
-  {% elif build.state == "checking_started" %}Devin gave no clear answer to the start request, so nothing is sent again until
-    the worker has checked whether the session started.
-  {% elif build.state == "running" %}Devin is working.
-  {% elif build.state == "waiting_for_answer" %}Devin has a question for you below.
-  {% elif build.state == "ready_for_verification" %}Devin has finished. The pull request is not tested yet: it is verified
-    independently against its head commit.
-  {% elif build.state == "failed" %}The build did not complete.
-  {% elif build.state == "cancelled" %}The build was cancelled.{% endif %}</p>
+  {% elif build.state == "starting" %}Starting a {{ who }} session.
+  {% elif build.state == "checking_started" %}{{ who }} gave no clear answer to the start request, so nothing is started again
+    until the worker has checked whether the session started.
+  {% elif build.state == "running" %}{{ who }} is working.
+  {% elif build.state == "waiting_for_answer" %}{{ who }} is waiting for you: see the conversation below.
+  {% elif build.state == "ready_for_verification" %}{{ who }} has finished. The result is not tested yet: it is verified
+    independently against its commit.
+  {% elif build.state == "failed" %}The session did not complete.
+  {% elif build.state == "cancelled" %}The session was cancelled.{% endif %}</p>
   {% if build.error %}<p class="error">{{ build.error }}</p>{% endif %}
   {% if build.note %}<p class="muted">{{ build.note }}</p>{% endif %}
   <div class="actions">
     {% if build.state not in build_final %}
+    {% if "interrupt" in capabilities and build.provider_session_id %}
+    <form method="post" action="{{ url_for('interrupt_build', build_id=build.id) }}" class="inline">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <button class="secondary">Interrupt</button>
+    </form>
+    {% endif %}
     <form method="post" action="{{ url_for('cancel_build', build_id=build.id) }}" class="inline">
       <input type="hidden" name="token" value="{{ session.form_token }}">
       <button class="secondary">Cancel build</button>
@@ -29,47 +36,78 @@
     {% elif build.state in ("failed", "cancelled") %}
     <form method="post" action="{{ url_for('retry_build', build_id=build.id) }}" class="inline">
       <input type="hidden" name="token" value="{{ session.form_token }}">
+      <input type="hidden" name="request_key" value="{{ request_key }}">
       <button>Retry</button>
     </form>
     {% endif %}
+    <a class="button secondary" href="{{ url_for('build_page', app_id=item.id, parent=build.id if build.head_sha else None) }}#start">New session</a>
   </div>
 </section>
 
-{% if build.state == "waiting_for_answer" or messages %}
-<section id="questions">
-  <h2>Devin's questions</h2>
-  {% for q in questions %}<blockquote class="question">{{ q }}</blockquote>{% endfor %}
+<section id="chat">
+  <h2>Conversation</h2>
+  {% if not messages %}<p class="muted">No messages yet.</p>{% endif %}
+  <ol class="chat">
   {% for m in messages %}
-    <p><strong>{{ m.author }}</strong>: {{ m.body }} <span class="muted">({{ {"sending": "sending", "sent": "sent",
-      "uncertain": "may not have arrived", "failed": "not sent"}[m.state] }})</span>
-      {% if m.error %}<span class="error">{{ m.error }}</span>{% endif %}</p>
+    {% set data = message_data(m) %}
+    <li class="msg {{ m.direction }} {{ m.kind }}" id="message-{{ m.id }}">
+      <strong>{{ m.author }}</strong> <span class="muted">· {{ m.kind | replace("_", " ") }} · {{ m.created_at[:19] | replace("T", " ") }}</span>
+      {% if m.direction == "from_provider" and m.kind == "clarification" %}<blockquote class="question">{{ m.body }}</blockquote>
+      {% elif m.kind == "tool_approval" and m.direction == "from_provider" %}
+        <p>Asks to run <code>{{ data.tool }}</code>{% if data.input %}: <code>{{ data.input | tojson }}</code>{% endif %}</p>
+        {% if answered.get(m.id) %}<p class="muted">You chose {{ answered[m.id].body }}.</p>
+        {% elif build.state not in build_final %}
+        <form method="post" action="{{ url_for('decide_tool', build_id=build.id, message_id=m.id) }}" class="inline">
+          <input type="hidden" name="token" value="{{ session.form_token }}">
+          <input type="hidden" name="request_key" value="tool:{{ m.id }}">
+          <button name="decision" value="approve">Approve</button>
+          <button name="decision" value="deny" class="secondary">Deny</button>
+        </form>
+        {% endif %}
+      {% else %}<p>{{ m.body }}</p>{% endif %}
+      {% if m.direction == "to_provider" %}
+        <span class="delivery {{ m.state }}" data-delivery="{{ m.state }}">{{ delivery_label(m.state) }}</span>
+        {% if m.kind == "scope_change" and m.scenario_id %}<span class="muted">· proposed as a scenario for the next package revision
+          {% if can("owner", app_id=item.id) %}(<a href="{{ url_for('preview_pack', app_id=item.id) }}">review</a>){% endif %}</span>{% endif %}
+      {% endif %}
+      {% if m.error %}<span class="error">{{ m.error }}</span>{% endif %}
+    </li>
   {% endfor %}
-  {% if build.state in ("waiting_for_answer", "running") and build.devin_session_id %}
-  <form method="post" action="{{ url_for('answer_build', build_id=build.id) }}">
+  </ol>
+  {% for q in questions %}{% if not outstanding %}<blockquote class="question">{{ q }}</blockquote>{% endif %}{% endfor %}
+  {% if build.state not in build_final %}
+  <form method="post" action="{{ url_for('answer_build', build_id=build.id) }}" id="answer-form">
     <input type="hidden" name="token" value="{{ session.form_token }}">
+    <input type="hidden" name="request_key" value="{{ request_key }}">
+    {% for q in outstanding if q.kind == "clarification" %}{% if loop.last %}<input type="hidden" name="reply_to" value="{{ q.id }}">{% endif %}{% endfor %}
     <label>Your answer <textarea name="answer" rows="4" required></textarea></label>
-    <button>Send to Devin</button>
+    <label class="check"><input type="checkbox" name="scope_change" value="1"> This changes agreed behaviour
+      (not sent: it becomes a proposed scenario, reviewed as a new package revision)</label>
+    <button {% if "reply" not in capabilities or not build.provider_session_id %}title="The session takes replies once it has started"{% endif %}>Send to {{ who }}</button>
   </form>
+  <p class="muted">A message that got no clear answer is marked Delivery uncertain and is not sent again: check the
+    session{% if build.provider_url %} (<a href="{{ build.provider_url }}">open it</a>){% endif %} before answering again.</p>
   {% endif %}
 </section>
-{% endif %}
 
 <section id="details">
   <h2>What is being built</h2>
   <dl class="about">
-    <dt>Build pack</dt><dd>Revision <code>{{ build.revision[:12] }}</code>, SHA-256 <code>{{ build.pack_sha256 }}</code>
+    <dt>Package</dt><dd>Revision {% if build.package_rev %}{{ build.package_rev }}, {% endif %}<code>{{ build.revision[:12] }}</code>, SHA-256 <code>{{ build.pack_sha256 }}</code>
       {% if frozen %}<span class="badge verified">Frozen</span>{% endif %}
       · <a href="{{ url_for('download_brief', app_id=item.id, revision=build.revision) }}">download</a></dd>
     <dt>Repository</dt><dd><a href="https://github.com/{{ build.repo }}">{{ build.repo }}</a>, from
-      <code>{{ build.base_branch }}</code> at <code>{{ build.base_sha[:12] }}</code></dd>
+      <code>{{ build.base_branch }}</code> at <code>{{ build.base_sha[:12] }}</code>
+      {% if parent %}(the commit of <a href="{{ url_for('build_progress', build_id=parent.id) }}">session #{{ parent.id }}</a>){% endif %}</dd>
+    <dt>Branch</dt><dd><code id="branch">{{ build.branch }}</code></dd>
     {% if build.previous_revision %}<dt>Previous revision</dt><dd><code>{{ build.previous_revision[:12] }}</code></dd>{% endif %}
     {% if build.change_summary %}<dt>Change summary</dt><dd>{{ build.change_summary }}</dd>{% endif %}
-    <dt>ACU budget</dt><dd>{{ build.acu_budget }}{% if build.acus_consumed is not none %} ({{ build.acus_consumed }} used){% endif %}</dd>
-    <dt>Devin session</dt><dd>{% if build.devin_url %}<a href="{{ build.devin_url }}" id="devin-link">{{ build.devin_session_id }}</a>
-      {% elif build.devin_session_id %}{{ build.devin_session_id }}{% else %}not started yet{% endif %}
-      {% if build.devin_status %}<span class="muted">({{ build.devin_status }}{% if build.devin_status_detail %}/{{ build.devin_status_detail }}{% endif %})</span>{% endif %}</dd>
+    <dt>Budget</dt><dd>{{ (build.budget if build.budget is not none else build.acu_budget) | amount }} {{ build.budget_unit }}{% if build.cost is not none %} ({{ build.cost | amount }} {{ build.cost_unit }} used){% endif %}</dd>
+    <dt>{{ who }} session</dt><dd>{% if build.provider_url %}<a href="{{ build.provider_url }}" id="devin-link">{{ build.provider_session_id }}</a>
+      {% elif build.provider_session_id %}{{ build.provider_session_id }}{% else %}not started yet{% endif %}
+      {% if build.provider_status %}<span class="muted">({{ build.provider_status }}{% if build.provider_detail %}/{{ build.provider_detail }}{% endif %})</span>{% endif %}</dd>
     <dt>Pull request</dt><dd>{% if build.pr_number %}<a href="{{ build.pr_url }}" id="pr-link">#{{ build.pr_number }}</a>
-      {% if build.head_sha %}head <code id="head-sha">{{ build.head_sha }}</code>{% endif %}{% else %}none yet{% endif %}</dd>
+      {% if build.head_sha %}head <code id="head-sha">{{ build.head_sha }}</code>{% endif %}{% elif build.head_sha %}commit <code id="head-sha">{{ build.head_sha }}</code>{% else %}none yet{% endif %}</dd>
     <dt>Requested</dt><dd>by {{ build.requested_by }} at {{ build.created_at[:19] | replace("T", " ") }} UTC</dd>
   </dl>
 </section>
@@ -77,18 +115,21 @@
 <section id="checks">
   <h2>Independent checks</h2>
   {% if build.head_sha %}
-  <p class="muted">This build is not Tested until the checks on commit <code>{{ build.head_sha[:12] }}</code> pass.</p>
+  <p class="muted">This session is not Tested until the checks on commit <code>{{ build.head_sha[:12] }}</code> pass.
+    <a href="{{ url_for('compare_sessions', app_id=item.id, ids=build.id) }}">Compare results</a></p>
   {% if build.state == "ready_for_verification" %}
   <form method="post" action="{{ url_for('verify_build', app_id=item.id) }}" class="inline" id="verify-form">
     <input type="hidden" name="token" value="{{ session.form_token }}">
     <input type="hidden" name="repo" value="{{ build.repo }}">
     <input type="hidden" name="sha" value="{{ build.head_sha }}">
+    <input type="hidden" name="build_id" value="{{ build.id }}">
+    <input type="hidden" name="ref" value="{{ build.branch }}">
     {% if build.pr_number %}<input type="hidden" name="pr_number" value="{{ build.pr_number }}">{% endif %}
     <button>Verify this build</button>
   </form>
   {% endif %}
   {% else %}
-  <p class="muted">Checks run on the pull request's head commit once Devin opens one.</p>
+  <p class="muted">Checks run on the session's commit once {{ who }} produces one.</p>
   {% endif %}
 </section>
 {% endblock %}

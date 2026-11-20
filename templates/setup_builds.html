@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Build with Devin setup · TwinLab2{% endblock %}
+{% block title %}Build sessions setup · TwinLab2{% endblock %}
 {% block content %}
-<p class="crumbs"><a href="{{ url_for('setup') }}">Setup / Advanced</a> · Build with Devin</p>
-<h1>Build with Devin: Setup</h1>
+<p class="crumbs"><a href="{{ url_for('setup') }}">Setup / Advanced</a> · Build sessions</p>
+<h1>Build sessions: Setup</h1>
 <p>Credentials, repository connections, storage and the build worker. Keys and tokens are never shown back:
   an environment variable wins over a value saved here, and saved values are kept in the catalog database, so
   prefer environment variables (or a secret mount) in production.</p>

@@ -91,6 +91,7 @@ class FakeDevin(_Server):
         self.release = threading.Event()
         self.received = threading.Event()
         self.answers_404_for_messages = False
+        self.message_plan = []  # per message POST: "ok", "slow" (arrives, answers late), "fail_after" (arrives, 502)
 
     # --- what tests do ---
 
@@ -160,7 +161,12 @@ class FakeDevin(_Server):
                 s["messages"].append({"source": "user", "message": text})
                 if s["status_detail"] == "waiting_for_user":
                     s.update(status="running", status_detail="working")
+                mode = self.message_plan.pop(0) if self.message_plan else "ok"
             self.received.set()
+            if mode == "slow":
+                threading.Event().wait(self.slow_seconds)
+            if mode == "fail_after":
+                return h._send(502, {"title": "Bad Gateway", "detail": "upstream timed out"})
             return h._send(200, self.view(s))
         if method == "GET":
             return h._send(200, self.view(s))
@@ -213,7 +219,7 @@ class FakeGitHub(_Server):
             self.requests.append((method, url.path))
         if h.headers.get("Authorization") != f"Bearer {self.token}":
             return h._send(401, {"message": "Bad credentials"})
-        match = re.fullmatch(r"/repos/([^/]+/[^/]+)(?:/(branches|pulls)/(.+))?", url.path)
+        match = re.fullmatch(r"/repos/([^/]+/[^/]+)(?:/(branches|pulls|commits)/(.+))?", url.path)
         repo = self.repos.get(match.group(1)) if match else None
         if method != "GET" or repo is None:
             return h._send(404, {"message": "Not Found"})
@@ -226,6 +232,13 @@ class FakeGitHub(_Server):
             if name not in repo["branches"]:
                 return h._send(404, {"message": "Branch not found"})
             return h._send(200, {"name": name, "commit": {"sha": repo["branches"][name]}})
+        if match.group(2) == "commits":
+            sha = match.group(3)
+            known = set(repo["branches"].values()) | set(repo["pulls"].values()) | repo.setdefault("commits", set())
+            full = [c for c in known if c.startswith(sha)]
+            if not full:
+                return h._send(404, {"message": "No commit found for SHA"})
+            return h._send(200, {"sha": full[0]})
         number = int(match.group(3))
         if number not in repo["pulls"]:
             return h._send(404, {"message": "Not Found"})

@@ -359,14 +359,24 @@ def get_report(connection, release_id, report_id):
     return None if row is None else bytes(row["content"])
 
 
-def package_commit(connection, app_id, repo, sha, github, revision, pr_number=None, ref=""):
+def package_commit(connection, app_id, repo, sha, github, revision, pr_number=None, ref="", build_id=None):
     """A Packaged release of `sha` from the GitHub archive of that commit, under the build brief
-    `revision`; an existing release of the same commit is reused. Returns its id."""
+    `revision`; an existing release of the same commit is reused. Returns its id.
+
+    `build_id` is the build session the commit came from. A release belongs to the first session
+    that packaged it: another session cannot take it over (re-point its pull request or ref)."""
     existing = connection.execute(
-        "SELECT id FROM releases WHERE app_id = ? AND commit_sha = ? ORDER BY id DESC", (app_id, sha)).fetchone()
+        "SELECT id, build_id FROM releases WHERE app_id = ? AND commit_sha = ? ORDER BY id DESC", (app_id, sha)).fetchone()
     if existing is not None:
-        connection.execute("UPDATE releases SET repository = ?, pr_number = ?, source_ref = ? WHERE id = ?",
-                           (repo, pr_number, ref or "", existing["id"]))
+        owner = existing["build_id"]
+        if owner is not None and build_id is not None and owner != build_id:
+            raise ValueError(f"Commit {sha[:12]} is already release {existing['id']} of build session #{owner}: "
+                             "a session cannot take over another session's release.")
+        if owner is not None and build_id is None:
+            return existing["id"]  # a plain verification of a session's commit leaves its binding alone
+        connection.execute("UPDATE releases SET repository = ?, pr_number = ?, source_ref = ?, "
+                           "build_id = COALESCE(build_id, ?) WHERE id = ?",
+                           (repo, pr_number, ref or "", build_id, existing["id"]))
         return existing["id"]
     try:
         archive = github.zipball(repo, sha)
@@ -382,9 +392,9 @@ def package_commit(connection, app_id, repo, sha, github, revision, pr_number=No
         raise ValueError("GitHub did not return a ZIP archive of the commit.") from error
     cursor = connection.execute(
         """INSERT INTO releases(app_id, version, revision, commit_sha, archive, archive_sha,
-           repository, pr_number, source_ref) VALUES (?,?,?,?,?,?,?,?,?) RETURNING id""",
+           repository, pr_number, source_ref, build_id) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id""",
         (app_id, sha[:12], revision, sha, archive, hashlib.sha256(archive).hexdigest(),
-         repo, pr_number, ref or ""))
+         repo, pr_number, ref or "", build_id))
     return cursor.fetchone()[0]
 
 

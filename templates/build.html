@@ -2,58 +2,73 @@
 {% block title %}Build · {{ item.name }} · TwinLab2{% endblock %}
 {% block content %}
 <p class="crumbs"><a href="{{ url_for('demo', app_id=item.id) }}">{{ item.name }}</a> · Build</p>
-<h1>Build {{ item.name }} with Devin</h1>
-
-{% if current %}
-<section class="nextcard">
-  <p>A build is in progress: <a href="{{ url_for('build_progress', build_id=current.id) }}">attempt {{ current.attempt }}</a>,
-    <span class="badge {{ current.state }}">{{ build_label(current.state) }}</span>. Another build can start once it finishes or is cancelled.</p>
-</section>
-{% endif %}
+<h1>Build sessions: {{ item.name }}</h1>
+<p class="muted">A build session is one provider's attempt at one approved package revision, in its own branch and
+  workspace, with its own conversation, budget and results. One revision can have many sessions; compare their
+  commits with the same acceptance checks before you choose one. Publishing a release stays one at a time.</p>
 
 {% if problem %}
 <section><p class="error">{{ problem }}</p></section>
 {% else %}
 <section id="pack">
-  <h2>1. The build pack</h2>
+  <h2>1. The approved package</h2>
   {% if frozen %}
     <p><span class="badge verified">Approved</span> revision {{ pack.rev }} by {{ frozen.frozen_by }} at {{ frozen.frozen_at[:19] | replace("T", " ") }} UTC.
-      A build sends exactly these bytes. {% if can("owner", app_id=item.id) %}<a href="{{ url_for('preview_pack', app_id=item.id) }}">Preview and approve a newer package</a>{% endif %}</p>
+      A session sends exactly the bytes of the revision it is given. {% if can("owner", app_id=item.id) %}<a href="{{ url_for('preview_pack', app_id=item.id) }}">Preview and approve a newer package</a>{% endif %}</p>
   {% else %}
-    <p>A build sends only a package an owner approved.{% if can("owner", app_id=item.id) %}
+    <p>A session sends only a package an owner approved.{% if can("owner", app_id=item.id) %}
       <a href="{{ url_for('preview_pack', app_id=item.id) }}#approve">Preview and approve it</a>.{% endif %}</p>
   {% endif %}
   {% include "_pack_preview.html" %}
 </section>
 
 <section id="start">
-  <h2>2. Target and budget</h2>
-  {% if devin_ready %}<p class="error">{{ devin_ready }}</p>{% endif %}
+  <h2>2. New build session</h2>
   {% if not repos %}
-    <p class="error">No GitHub repository is connected yet: an owner connects one under
-      <a href="{{ url_for('build_setup') }}#repos">Setup, Build with Devin</a>.</p>
+    <p class="error">No GitHub repository is connected yet: an admin connects one under
+      <a href="{{ url_for('build_setup') }}#repos">Setup, Build sessions</a>.</p>
   {% endif %}
   {% if previous and previous.revision != pack.revision %}
-    <p>The previous build (attempt {{ previous.attempt }}) used revision <code>{{ previous.revision[:12] }}</code>
+    <p>The previous session (#{{ previous.id }}) used revision <code>{{ previous.revision[:12] }}</code>
       {% if previous.pr_number %}and opened <a href="{{ previous.pr_url }}">pull request #{{ previous.pr_number }}</a>{% endif %}.
-      Devin gets this pack, that revision and your summary of what changed.</p>
+      The provider gets this pack, that revision and your summary of what changed.</p>
     {% if changes %}<ul class="muted">{% for change in changes %}<li>{{ change }}</li>{% endfor %}</ul>{% endif %}
   {% endif %}
   <form method="post" action="{{ url_for('start_build', app_id=item.id) }}" id="build-form">
     <input type="hidden" name="token" value="{{ session.form_token }}">
-    <input type="hidden" name="revision" value="{{ pack.revision }}">
+    <input type="hidden" name="request_key" value="{{ request_key }}">
+    <label>Provider
+      <select name="provider" id="provider">
+        {% for p in providers %}<option value="{{ p.name }}" {% if p.ready %}data-problem="{{ p.ready }}"{% endif %}>{{ p.label }}{% if p.ready %} (not ready){% endif %}</option>{% endfor %}
+      </select></label>
+    <ul class="muted" id="provider-notes">
+      {% for p in providers %}<li><strong>{{ p.label }}</strong>: {{ p.capability_text or "no capabilities" }}.
+        Budget in {{ p.budget_unit }}{% if p.model %}; model {{ p.model }}{% endif %}.
+        {% if p.ready %}<span class="error">{{ p.ready }}</span>{% endif %}</li>{% endfor %}
+    </ul>
+    <label>Model <input name="model" placeholder="the provider's configured model"></label>
+    <label>Package revision
+      <select name="revision">
+        {% for r in revisions %}<option value="{{ r.revision }}" {% if loop.first %}selected{% endif %}>Revision {{ r.rev }} · {{ r.sha256[:12] }} · approved by {{ r.approved_by }}</option>{% endfor %}
+      </select></label>
     <label>Repository
       <select name="repo" required>
         {% for repo in repos %}<option value="{{ repo.repo }}" data-branch="{{ repo.default_branch }}">{{ repo.repo }}</option>{% endfor %}
       </select></label>
     <label>Base branch <input name="base_branch" placeholder="{{ repos[0].default_branch if repos else 'main' }} (the repository's default)"></label>
-    <p class="muted">The branch is resolved to its commit when the build is queued; Devin starts from that commit.</p>
+    <label>Starting commit
+      <select name="start_commit">
+        <option value="">The base branch's head when the session is queued</option>
+        {% for b in starting_points %}<option value="session:{{ b.id }}" {% if parent == b.id %}selected{% endif %}>Session #{{ b.id }} ({{ provider_label(b.provider) }}): {{ b.head_sha[:12] }}</option>{% endfor %}
+      </select></label>
+    <p class="muted">Each session works on its own branch <code>twinlab2/app-{{ item.id }}/session-N-provider</code> and,
+      where the provider runs here, its own workspace.</p>
     <label>What changed since the previous build
       <textarea name="change_summary" rows="4" {% if previous and previous.revision != pack.revision %}required{% endif %}
         placeholder="{{ 'Required for a later build of a changed pack' if previous else 'Optional for the first build' }}"></textarea></label>
-    <label>ACU budget <input name="acu_budget" type="number" min="1" max="1000" value="{{ budget }}" required></label>
-    <p class="muted">Sent to Devin as the session's ACU limit.</p>
-    <button {% if not frozen or current or not repos or devin_ready %}disabled{% endif %}>Build with Devin</button>
+    <label>Budget <input name="budget" type="number" min="0.01" step="any" value="{{ budget | amount }}" required></label>
+    <p class="muted">In the provider's own unit (Devin: ACUs; Claude: US dollars; Copilot: premium requests).</p>
+    <button {% if not frozen or not repos %}disabled{% endif %}>Start build session</button>
     {% if not frozen %}<span class="muted">Freeze the pack first.</span>{% endif %}
   </form>
 </section>
@@ -61,16 +76,24 @@
 
 {% if history %}
 <section id="history">
-  <h2>Builds</h2>
+  <h2>Sessions</h2>
+  <form method="get" action="{{ url_for('compare_sessions', app_id=item.id) }}" id="compare-form">
   <table class="flow">
-    <thead><tr><th>Attempt</th><th>State</th><th>Revision</th><th>Repository</th><th>Pull request</th></tr></thead>
+    <thead><tr><th></th><th>Session</th><th>Provider</th><th>State</th><th>Revision</th><th>Branch</th><th>Cost</th><th>Questions</th><th>Pull request</th></tr></thead>
     <tbody>{% for b in history %}
-      <tr><td><a href="{{ url_for('build_progress', build_id=b.id) }}">{{ b.attempt }}</a></td>
+      <tr><td>{% if b.head_sha %}<input type="checkbox" name="session" value="{{ b.id }}" aria-label="Compare session {{ b.id }}">{% endif %}</td>
+        <td><a href="{{ url_for('build_progress', build_id=b.id) }}">#{{ b.id }}</a>{% if b.parent_build %} <span class="muted">from #{{ b.parent_build }}</span>{% endif %}</td>
+        <td>{{ provider_label(b.provider) }}{% if b.model %} <span class="muted">{{ b.model }}</span>{% endif %}</td>
         <td><span class="badge {{ b.state }}">{{ build_label(b.state) }}</span></td>
-        <td><code>{{ b.revision[:12] }}</code></td><td>{{ b.repo }}@{{ b.base_branch }}</td>
+        <td><code>{{ b.revision[:12] }}</code>{% if b.package_rev %} (rev {{ b.package_rev }}){% endif %}</td>
+        <td><code>{{ b.branch }}</code></td>
+        <td>{% if b.cost is not none %}{{ b.cost | amount }} {{ b.cost_unit }}{% endif %} <span class="muted">/ {{ (b.budget if b.budget is not none else b.acu_budget) | amount }} {{ b.budget_unit }}</span></td>
+        <td>{% if waiting[b.id] %}<strong>{{ waiting[b.id] }} outstanding</strong>{% endif %}</td>
         <td>{% if b.pr_number %}<a href="{{ b.pr_url }}">#{{ b.pr_number }}</a>{% endif %}</td></tr>
     {% endfor %}</tbody>
   </table>
+  <button class="secondary">Compare results</button>
+  </form>
 </section>
 {% endif %}
 {% endblock %}
