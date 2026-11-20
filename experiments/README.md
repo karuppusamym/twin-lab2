@@ -1,5 +1,9 @@
 # Provider adapter experiment
 
+> The production version is `providers/` (see the README's *Build sessions*): `providers/clarify.py` is this
+> probe on the official `anthropic` SDK, and Claude sessions run the Agent SDK in `providers/runner.py`.
+> This folder is kept as the record of the experiment.
+
 This is an isolated package-review and clarification probe, not an enabled portal builder.
 `provider_probe.py` calls Claude's Messages API through httpx. It sends only BUILD_TASK.md and
 evidence.json from a checksum-matched pack, never extracts ZIP files and never executes model
