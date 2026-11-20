@@ -83,11 +83,13 @@ def brief_scenarios(manifest):
 
 
 def record_test(connection, release_id, commit, platform, launch, reset_result, reset_notes, results, user,
-                gate=None, github=None):
+                gate=None, github=None, tested=True):
     """Store a release's acceptance evidence and make it Tested. ValueError when the evidence is
     incomplete, is for another commit, the release is already Published, or the commit's required
     checks (and Windows validation) are not green (`verification`). `gate` is a verification
-    result just computed for this release; without one the checks are fetched now."""
+    result just computed for this release; without one the checks are fetched now.
+    `tested=False` stores the evidence only: the release is (or goes back to) Packaged. Twin Lab's
+    automated verification uses it when a scenario or the reset check did not pass."""
     release = connection.execute(
         "SELECT releases.*, briefs.manifest FROM releases JOIN briefs USING (revision) WHERE releases.id = ?",
         (release_id,),
@@ -126,7 +128,7 @@ def record_test(connection, release_id, commit, platform, launch, reset_result, 
         tested_at = excluded.tested_at
     """, (release_id, release["commit_sha"], platform[:500], launch[:8000], reset_result,
           (reset_notes or "").strip()[:2000], json.dumps(rows), user, registry.now()))
-    connection.execute("UPDATE releases SET state = 'tested' WHERE id = ?", (release_id,))
+    connection.execute("UPDATE releases SET state = ? WHERE id = ?", ("tested" if tested else "packaged", release_id))
 
 
 def store_brief(connection, app_id, revision, contents, package):
@@ -196,10 +198,18 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
     if twin is not None and not twin.get("problems"):
         reset = twin["reset"] or {}
         platform = commit_checks.PLATFORMS[app["target_platform"]] if app["target_platform"] else ""
+        # Tested only when all of it holds: every scenario passed and the reset restored the
+        # baseline. Otherwise the results are kept as evidence and the release stays Packaged.
+        held = [f"Scenario “{s['name']}”: {s['result']}" + (f" ({s['why']})" if s.get("why") else "") + "."
+                for s in twin["scenarios"] if s["result"] != "pass"]
+        if reset.get("result") == "fail":
+            held.append("The reset check failed: " + (reset.get("notes") or "no notes") + ".")
         try:
             record_test(connection, release_id, sha, platform, app["launch"], reset.get("result"),
-                        reset.get("notes"), {s["id"]: s["result"] for s in twin["scenarios"]}, user, gate=gate)
-            tested = True
+                        reset.get("notes"), {s["id"]: s["result"] for s in twin["scenarios"]}, user, gate=gate,
+                        tested=not held)
+            tested = not held
+            reasons += [f"Not Tested: {item}" for item in held]
         except ValueError as error:
             if gate["ok"]:  # else its reasons are already listed
                 reasons.append(str(error))

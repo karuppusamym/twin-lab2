@@ -5,3 +5,4 @@ __pycache__/
 /dist/
 /agent/_build.json
 /vendor/
+/agent/data/
