@@ -93,6 +93,7 @@ The recorder run from source then prints a note. `agent/build.py` refuses it unl
 | References sent to the portal | `labctl.workstation.timeline.outbox`, then stamped and validated by `agent.main.contract_references` |
 | Browser launch or attach (`capture.py`) | `lab/labctl/labctl/evidence_cli.py` and `lab/labctl/labctl/recorder.py` |
 | Windows desktop attach (`capture.py`) | `lab/labctl/labctl/desktop/cli.py` and `lab/labctl/labctl/desktop/recorder.py` |
+| Build with Devin (`devin.py`) | `labctl.devin.client` (`DevinClient`, `DevinError`, `UNCERTAIN_SESSION`), `labctl.devin.config.load_config`, `labctl.devin.jobs.map_status` |
 | Manual OpenShift deployment reference | `lab/labctl/labctl/ocp_manual.py`. TwinLab2 renders its own smaller resource set for prebuilt images. |
 
 `capture.py` uses the pinned copy by default. It records the lock's commit in `session.json`. It can
@@ -107,3 +108,14 @@ When twin-lab emits these itself, the recorder stops stamping them:
 
 Separately, tagged releases with a published wheel or a checksummed asset would allow a hashed
 requirements pin.
+
+For Build with Devin, `devin.py` subclasses the pinned `DevinClient` for two reads it lacks.
+twin-lab could take them over:
+
+- `DevinClient.list_sessions` takes only `first`. A `tags=` filter and paging (`after`) would let
+  a caller find the session an uncertain create may have started; `devin.BuildDevin.find_sessions`
+  does this today and also checks each session's tags itself.
+- There is no call for a session's messages. `BuildDevin.list_messages` reads
+  `GET /sessions/{id}/messages` and returns `[]` on 404, so Devin's questions can be shown.
+- `labctl.devin.mock` cannot simulate a create that times out or answers 5xx after creating, and
+  its session list ignores tags; TwinLab2's tests use their own fake (`tests/fakes.py`) for that.

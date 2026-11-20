@@ -90,9 +90,33 @@ For automation, start the browser with a local CDP endpoint and add `--cdp http:
 
 Import the session's top-level `steps.jsonl`. Recovered imports retain previously linked event IDs. Review scope and attach approved API contracts, synthetic database fixtures, utility examples, visual references, or acceptance cases directly to the app. The adapter records the collector commit for every capture: the pinned one, or a clean checkout's with `--twin-lab`. [Twin Lab baseline and update procedure](UPSTREAM.md)
 
+## Build with Devin
+
+On the application page, **Build with Devin** opens the **Build** page: the exact build pack (the same file-by-file preview as the download), a **Freeze this pack** button, the target repository and base branch, what changed since the previous build, and the ACU budget. Only a frozen pack is built, and the build sends exactly the frozen bytes (their SHA-256 is checked again). The branch is resolved to a commit when the build is queued; Devin starts from that commit. A later build of a changed pack must say what changed; Devin gets the new pack, the previous revision and its pull request, the summary and the list of files that differ.
+
+**Build progress** shows the state, Devin's questions with an answer box (the answer is sent to the session), the Devin session link, the pull request and its head commit, and a placeholder for the independent checks, with **Cancel** and **Retry**. Devin finishing is **Ready for verification**, never Tested.
+
+| State | Meaning |
+|---|---|
+| Queued | Waiting for the worker |
+| Starting | Uploading the pack and creating the Devin session |
+| Checking whether the build started | The create got no clear answer (timeout, 5xx, or a worker that stopped mid-call). Nothing is sent again until the worker has looked for the session by the build's tag: found, it is followed; not found, it is created once more |
+| Running | Devin is working |
+| Waiting for your answer | Devin asked something; answer on the page |
+| Ready for verification | Devin finished; the pull request awaits the independent checks |
+| Failed, Cancelled | Final; **Retry** makes a new attempt of the same frozen pack, repository and base commit |
+
+One build per application is active at a time (a unique column, plus a check), so a second click finds the first build. Builds run in one worker process beside the portal:
+
+```powershell
+python worker.py --database .state/catalog.db
+```
+
+Jobs are leased and kept alive by a heartbeat; a job held by a worker that died is taken over when its lease runs out. Under **Setup / Advanced: Build with Devin** an owner sets the Devin key and organisation and the GitHub token (environment variables `DEVIN_API_KEY`, `DEVIN_ORG_ID`, `DEVIN_BASE_URL`, `TWINLAB2_GITHUB_TOKEN`, `TWINLAB2_GITHUB_API` win over saved values; secrets are never shown), connects repositories, sets the default ACU budget, and sees the workers and the job queue. For development the worker can be started from there. The Devin client is Twin Lab's own, imported from the pinned commit ([UPSTREAM.md](UPSTREAM.md)); run `python -m agent.twinlab fetch` once.
+
 ## Build, package, and register a deployment
 
-1. Download the app's build pack. Give the ZIP to a coding agent along with access to the demo's Git repo. Include launch, seed, reset, and smoke-check instructions in the committed demo source; add a Dockerfile when a server release will use OpenShift.
+1. Download the app's build pack (or build it with Devin, above). Give the ZIP to a coding agent along with access to the demo's Git repo. Include launch, seed, reset, and smoke-check instructions in the committed demo source; add a Dockerfile when a server release will use OpenShift.
 2. Test the committed demo on the intended local platform. Register that committed tree using the app number in the portal URL and full brief revision in `BUILD_TASK.md`.
 
    ```powershell
