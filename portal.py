@@ -18,10 +18,12 @@ from flask import Flask, abort, g, redirect, render_template, request, send_file
 
 import buildpack
 import db as database
+import independent
 import journey
 import migrations
 import registry
 import scenarios
+import verification as commit_checks
 
 LOCAL = {"127.0.0.1", "::1"}
 
@@ -65,9 +67,12 @@ def brief_scenarios(manifest):
     return unique
 
 
-def record_test(connection, release_id, commit, platform, launch, reset_result, reset_notes, results, user):
+def record_test(connection, release_id, commit, platform, launch, reset_result, reset_notes, results, user,
+                gate=None, github=None):
     """Store a release's acceptance evidence and make it Tested. ValueError when the evidence is
-    incomplete, is for another commit, or the release is already Published."""
+    incomplete, is for another commit, the release is already Published, or the commit's required
+    checks (and Windows validation) are not green (`verification`). `gate` is a verification
+    result just computed for this release; without one the checks are fetched now."""
     release = connection.execute(
         "SELECT releases.*, briefs.manifest FROM releases JOIN briefs USING (revision) WHERE releases.id = ?",
         (release_id,),
@@ -94,6 +99,9 @@ def record_test(connection, release_id, commit, platform, launch, reset_result, 
         if result not in RESULTS:
             raise ValueError(f"Record pass, fail or not-run for “{item['name']}”.")
         rows.append({"id": item["id"], "name": item["name"], "result": result})
+    gate = gate or commit_checks.refresh(connection, release_id, github)
+    if not gate["ok"]:
+        raise ValueError("Not Tested: " + " ".join(gate["reasons"]))
     connection.execute("""
         INSERT INTO release_tests(release_id, commit_sha, platform, launch, reset_result, reset_notes,
                                   results, tested_by, tested_at) VALUES (?,?,?,?,?,?,?,?,?)
@@ -104,6 +112,79 @@ def record_test(connection, release_id, commit, platform, launch, reset_result, 
     """, (release_id, release["commit_sha"], platform[:500], launch[:8000], reset_result,
           (reset_notes or "").strip()[:2000], json.dumps(rows), user, registry.now()))
     connection.execute("UPDATE releases SET state = 'tested' WHERE id = ?", (release_id,))
+
+
+def verify_commit(connection, app_id, repo, sha, github=None, runner=None, pr_number=None, ref="",
+                  base_url=None, user="verification"):
+    """“Verify this build”: a Packaged release of exactly `sha` (from GitHub), its checks, Twin
+    Lab's independent checks against a deployment reporting that commit, and the Tested
+    transition when all of it holds. The release stays Packaged otherwise. The verification
+    report is stored either way. Returns {release_id, tested, reasons, report, report_sha}."""
+    repo, sha = commit_checks.check_commit_args(repo, sha)
+    github = github or commit_checks.GitHub()
+    if not scenarios.load(connection, app_id):
+        raise ValueError("Add a business scenario before verifying a build.")
+    # The brief the build answers: the app's current one, stored as an export would store it.
+    revision, contents, _, package = buildpack.build(connection, app_id, VERSION_PATH)
+    connection.execute("INSERT INTO briefs(revision, app_id, manifest) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                       (revision, app_id, contents))
+    connection.execute("INSERT INTO brief_packages(revision, archive) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                       (revision, package))
+    release_id = commit_checks.package_commit(connection, app_id, repo, sha, github, revision, pr_number, ref)
+    return verify_release(connection, release_id, github, runner, base_url, user)
+
+
+def verify_release(connection, release_id, github=None, runner=None, base_url=None, user="verification"):
+    """The verification of an existing release (see verify_commit)."""
+    release = connection.execute(
+        "SELECT releases.*, briefs.manifest FROM releases JOIN briefs USING (revision) WHERE releases.id = ?",
+        (release_id,)).fetchone()
+    if release is None:
+        raise LookupError("No such release.")
+    app = connection.execute("SELECT * FROM apps WHERE id = ?", (release["app_id"],)).fetchone()
+    sha, manifest = release["commit_sha"], json.loads(release["manifest"])
+    gate = commit_checks.refresh(connection, release_id, github)
+    reasons = list(gate["reasons"])
+    if base_url is None:
+        row = connection.execute(
+            "SELECT url FROM deployments WHERE release_id = ? AND verification = 'verified' ORDER BY environment",
+            (release_id,)).fetchone()
+        base_url = row["url"] if row else None
+    twin = None
+    if not base_url:
+        reasons.append(f"No deployment reports this release's commit at /{VERSION_PATH}, "
+                       "so Twin Lab's checks did not run.")
+    else:
+        observed = deployed_commit(base_url)
+        if observed != sha:
+            reasons.append(f"{base_url} reports " + (f"commit {observed[:12]}" if observed else "no commit") +
+                           f", not {sha[:12]}: Twin Lab's checks need the built commit.")
+        else:
+            twin = independent.run(runner or independent.PinnedTwinLab(), brief_scenarios(manifest), manifest,
+                                   base_url, app["lab_url"] or "")
+            reasons += twin.get("problems") or []
+    tested = False
+    if twin is not None and not twin.get("problems"):
+        reset = twin["reset"] or {}
+        platform = commit_checks.PLATFORMS[app["target_platform"]] if app["target_platform"] else ""
+        try:
+            record_test(connection, release_id, sha, platform, app["launch"], reset.get("result"),
+                        reset.get("notes"), {s["id"]: s["result"] for s in twin["scenarios"]}, user, gate=gate)
+            tested = True
+        except ValueError as error:
+            if gate["ok"]:  # else its reasons are already listed
+                reasons.append(str(error))
+    report = {
+        "format": "twinlab2-verification-report/1", "release_id": release_id, "app_id": release["app_id"],
+        "version": release["version"], "repository": gate["repository"], "commit": sha,
+        "pull_request": release["pr_number"], "ref": release["source_ref"], "created_at": registry.now(),
+        "github": {"checks": commit_checks.stored_checks(connection, gate["repository"], sha)
+                   if gate["repository"] else [],
+                   "required": gate["required"], "windows": gate["windows"], "green": gate["ok"]},
+        "twinlab": twin, "tested": tested, "reasons": reasons,
+    }
+    digest = commit_checks.put_report(connection, release_id, report)
+    return {"release_id": release_id, "tested": tested, "reasons": reasons, "report": report, "report_sha": digest}
 
 
 def publish(connection, release_id):
@@ -464,7 +545,11 @@ def create_app(target):
 
     @app.get("/apps/<int:app_id>/setup")
     def app_setup(app_id):
-        return render_template("app_setup.html", item=get_app(app_id), releases=releases(app_id))
+        item = get_app(app_id)
+        return render_template("app_setup.html", item=item, releases=releases(app_id),
+                               platforms=commit_checks.PLATFORMS, github_repo=commit_checks.github_repo(item["git_url"]),
+                               default_windows=commit_checks.WINDOWS_PATTERN,
+                               github_token=bool(commit_checks.GitHub().token))
 
     @app.get("/setup")
     def setup():
@@ -633,7 +718,8 @@ def create_app(target):
 
     def get_release(release_id):
         item = db().execute(
-            "SELECT id, app_id, version, revision, commit_sha, archive_sha, state, published_at FROM releases WHERE id = ?",
+            "SELECT id, app_id, version, revision, commit_sha, archive_sha, state, published_at, repository, "
+            "pr_number, source_ref FROM releases WHERE id = ?",
             (release_id,),
         ).fetchone()
         if item is None:
@@ -677,7 +763,8 @@ def create_app(target):
         brief = db().execute("SELECT manifest FROM briefs WHERE revision = ?", (item["revision"],)).fetchone()
         return render_template("release.html", release=item, item=get_app(item["app_id"]),
                                deployments=deployments, test=test, loads=json.loads, results=RESULTS,
-                               scenarios=brief_scenarios(json.loads(brief["manifest"])))
+                               scenarios=brief_scenarios(json.loads(brief["manifest"])),
+                               checks=commit_checks.summary(db(), release_id))
 
     @app.post("/releases/<int:release_id>/deployments/check")
     def check_deployment(release_id):
@@ -695,14 +782,78 @@ def create_app(target):
     def test_release(release_id):
         get_release(release_id)
         results = {key[len("result:"):]: value for key, value in request.form.items() if key.startswith("result:")}
+        with db():  # the fetched checks are kept even when the test is refused
+            gate = commit_checks.refresh(db(), release_id, github())
         try:
             with db():
                 record_test(db(), release_id, request.form.get("commit"), request.form.get("platform"),
                             request.form.get("launch"), request.form.get("reset_result"),
-                            request.form.get("reset_notes"), results, g.user)
+                            request.form.get("reset_notes"), results, g.user, gate=gate)
         except ValueError as error:
             abort(400, str(error))
         return redirect(url_for("release", release_id=release_id))
+
+    def github():
+        return app.config.get("GITHUB") or commit_checks.GitHub()
+
+    @app.post("/releases/<int:release_id>/checks")
+    def refresh_checks(release_id):
+        # ROLE: owner
+        get_release(release_id)
+        with db():
+            commit_checks.refresh(db(), release_id, github())
+        return redirect(url_for("release", release_id=release_id, _anchor="verification"))
+
+    @app.post("/releases/<int:release_id>/verify")
+    def verify_this_release(release_id):
+        # ROLE: owner
+        get_release(release_id)
+        with db():
+            verify_release(db(), release_id, github(), app.config.get("TWINLAB_RUNNER"), user=g.user)
+        return redirect(url_for("release", release_id=release_id, _anchor="verification"))
+
+    @app.post("/apps/<int:app_id>/verify-commit")
+    def verify_build(app_id):
+        """The “Verify this build” hook: a build's repository, head commit and pull request."""
+        # ROLE: owner
+        item = get_app(app_id)
+        try:
+            with db():
+                outcome = verify_commit(
+                    db(), app_id, request.form.get("repo") or commit_checks.github_repo(item["git_url"]),
+                    request.form.get("sha"), github(), app.config.get("TWINLAB_RUNNER"),
+                    request.form.get("pr_number", type=int), request.form.get("ref", "").strip()[:200],
+                    user=g.user)
+        except ValueError as error:
+            abort(400, str(error))
+        return redirect(url_for("release", release_id=outcome["release_id"], _anchor="verification"))
+
+    @app.post("/apps/<int:app_id>/verification")
+    def verification_settings(app_id):
+        # ROLE: owner
+        get_app(app_id)
+        platform = request.form.get("target_platform", "")
+        if platform not in commit_checks.PLATFORMS:
+            abort(400, "Choose a target platform.")
+        checks = "\n".join(line.strip()[:200] for line in request.form.get("required_checks", "").splitlines()
+                           if line.strip())[:4000]
+        lab_url = request.form.get("lab_url", "").strip()[:500]
+        if lab_url and urlsplit(lab_url).scheme not in ("http", "https"):
+            abort(400, "The lab agent URL must be HTTP or HTTPS.")
+        with db():
+            db().execute("""UPDATE apps SET required_checks = ?, target_platform = ?, windows_check_pattern = ?,
+                            lab_url = ?, launch = ? WHERE id = ?""",
+                         (checks, platform, request.form.get("windows_check_pattern", "").strip()[:200],
+                          lab_url, request.form.get("launch", "").strip()[:8000], app_id))
+        return redirect(url_for("app_setup", app_id=app_id, _anchor="verification"))
+
+    @app.get("/releases/<int:release_id>/reports/<int:report_id>")
+    def verification_report(release_id, report_id):
+        content = commit_checks.get_report(db(), release_id, report_id)
+        if content is None:
+            abort(404)
+        return send_file(io.BytesIO(content), mimetype="application/json", as_attachment=True,
+                         download_name=f"verification-{release_id}-{report_id}.json")
 
     @app.post("/releases/<int:release_id>/publish")
     def publish_release(release_id):

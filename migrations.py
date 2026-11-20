@@ -158,11 +158,44 @@ def add_columns(columns):
     return step
 
 
+# -- 2: release verification (checks of the exact built commit, gate results, reports) -------------
+
+RELEASE_VERIFICATION = [
+    """CREATE TABLE IF NOT EXISTS commit_checks (
+        repository TEXT NOT NULL, commit_sha TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
+        conclusion TEXT NOT NULL, url TEXT NOT NULL, completed_at TEXT, fetched_at TEXT NOT NULL,
+        PRIMARY KEY (repository, commit_sha, kind, name)
+    )""",
+    """CREATE TABLE IF NOT EXISTS release_verifications (
+        release_id INTEGER PRIMARY KEY REFERENCES releases(id), commit_sha TEXT NOT NULL,
+        repository TEXT NOT NULL, observed_head TEXT NOT NULL, status TEXT NOT NULL,
+        reasons TEXT NOT NULL, checked_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS release_artifacts (
+        id {id}, release_id INTEGER NOT NULL REFERENCES releases(id),
+        kind TEXT NOT NULL, sha256 TEXT NOT NULL, content {blob} NOT NULL, created_at TEXT NOT NULL
+    )""",
+    # IF NOT EXISTS / missing-only: a catalog may have these from the release-verification
+    # portal, which created them before numbered migrations
+    add_columns([
+        ("apps", "required_checks", "TEXT NOT NULL DEFAULT ''"),
+        ("apps", "target_platform", "TEXT NOT NULL DEFAULT ''"),
+        ("apps", "windows_check_pattern", "TEXT NOT NULL DEFAULT ''"),
+        ("apps", "lab_url", "TEXT NOT NULL DEFAULT ''"),
+        ("apps", "launch", "TEXT NOT NULL DEFAULT ''"),
+        ("releases", "repository", "TEXT NOT NULL DEFAULT ''"),
+        ("releases", "pr_number", "INTEGER"),
+        ("releases", "source_ref", "TEXT NOT NULL DEFAULT ''"),
+    ]),
+]
+
+
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
 MIGRATIONS = [
     (1, "baseline", [*BASELINE_TABLES, add_columns(BASELINE_COLUMNS)]),
+    (2, "release verification", RELEASE_VERIFICATION),
 ]
 
 
