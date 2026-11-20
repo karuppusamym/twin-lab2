@@ -8,7 +8,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt "gunicorn>=23,<24"
-COPY portal.py registry.py openshift.py buildpack.py scenarios.py journey.py recorder_contract.py      builds.py builds_web.py devin.py github.py jobqueue.py worker.py twinlab.lock.json ./
+COPY portal.py registry.py openshift.py buildpack.py scenarios.py journey.py recorder_contract.py \
+     event_ids.py completeness.py independent.py verification.py \
+     builds.py builds_web.py devin.py github.py jobqueue.py worker.py twinlab.lock.json ./
 COPY contract contract
 COPY agent/__init__.py agent/twinlab.py agent/
 # The Devin client is Twin Lab's, from the pinned commit, checked against the lock's digest.

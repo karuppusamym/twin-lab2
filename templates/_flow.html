@@ -1,6 +1,6 @@
 <div class="scroll"><table class="flow">
   <thead><tr><th>#</th><th>Action</th><th>Control</th><th>Label</th><th>Screen</th></tr></thead>
   <tbody>{% for st in steps %}
-    <tr><td>{{ st.n }}</td><td>{{ st.action }}{% if st.key %} {{ st.key }}{% endif %}</td><td>{{ st.control or "" }}</td><td>{{ st.label or "" }}</td><td>{{ st.screen or "" }}</td></tr>
+    <tr><td>{{ st.seq if st.seq is defined else st.n }}</td><td>{{ st.action }}{% if st.key %} {{ st.key }}{% endif %}</td><td>{{ st.control or "" }}</td><td>{{ st.label or "" }}</td><td>{{ st.screen or "" }}</td></tr>
   {% endfor %}</tbody>
 </table></div>

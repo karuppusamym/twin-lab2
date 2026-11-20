@@ -48,8 +48,9 @@ def screen_reference(value):
 
 
 def event_entry(event, step):
-    """A selected event: its number and action, with the reviewed references of its flow step."""
-    entry = {"seq": event["seq"], "action": event["action"]}
+    """A selected event: its id, its display order and action, with the reviewed references of its
+    flow step. `event_id` is the reference; `seq` only orders the events for reading."""
+    entry = {"event_id": event["event_id"], "seq": event["seq"], "action": event["action"]}
     if step:
         screen = screen_reference(step.get("screen"))
         if screen:
@@ -75,13 +76,36 @@ def evidence(db, app_id):
         for flow in db.execute("SELECT flow FROM recording_apps WHERE recording_id = ? AND app_id = ? ORDER BY key",
                                (row["id"], app_id)):
             for step in json.loads(flow["flow"]):
-                steps.setdefault(step.get("n"), step)
+                steps.setdefault(step.get("event_id"), step)
         selection = set(json.loads(row["selection"]))
         out.append({
             "recording_id": row["id"], "recording": row["name"], "notes": row["notes"],
-            "events": [event_entry(event, steps.get(event["seq"]))
-                       for event in json.loads(row["events"]) if event["seq"] in selection],
+            "events": [event_entry(event, steps.get(event["event_id"]))
+                       for event in json.loads(row["events"]) if event["event_id"] in selection],
         })
+    return out
+
+
+def preview(db, recording_id, limit=10):
+    """Per application linked to a recording, what its evidence would put in the build pack:
+    the selected events (the first `limit`, with their capture time when known) and counts."""
+    row = db.execute("SELECT events FROM recordings WHERE id = ?", (recording_id,)).fetchone()
+    events = json.loads(row[0]) if row else []
+    out = []
+    for link in db.execute("""
+        SELECT evidence.app_id, apps.name, evidence.selection, evidence.suggested, evidence.reviewed
+        FROM evidence JOIN apps ON apps.id = evidence.app_id WHERE evidence.recording_id = ? ORDER BY apps.name
+    """, (recording_id,)).fetchall():
+        steps = {}
+        for flow in db.execute("SELECT flow FROM recording_apps WHERE recording_id = ? AND app_id = ? ORDER BY key",
+                               (recording_id, link["app_id"])):
+            for step in json.loads(flow["flow"]):
+                steps.setdefault(step.get("event_id"), step)
+        selection = set(json.loads(link["selection"]))
+        chosen = [dict(event_entry(e, steps.get(e["event_id"])), time=e.get("time"), channel=e.get("channel"))
+                  for e in events if e["event_id"] in selection]
+        out.append({"app_id": link["app_id"], "name": link["name"], "reviewed": bool(link["reviewed"]),
+                    "count": len(chosen), "suggested": len(json.loads(link["suggested"])), "events": chosen[:limit]})
     return out
 
 
@@ -111,7 +135,7 @@ def scenario_entry(scenario, events):
 def manifest(db, app_id):
     app = db.execute("SELECT id, name, git_url, status, surface FROM apps WHERE id = ?", (app_id,)).fetchone()
     linked = evidence(db, app_id)
-    events = {scenarios.event_ref(rec["recording_id"], ev["seq"]): ev for rec in linked for ev in rec["events"]}
+    events = {scenarios.event_ref(rec["recording_id"], ev["event_id"]): ev for rec in linked for ev in rec["events"]}
     items = [scenario_entry(s, events) for s in scenarios.load(db, app_id)]
     used = {ref for s in scenarios.load(db, app_id) for ref in s["events"]}
     unlinked = sorted(set(events) - used)
@@ -148,7 +172,7 @@ def task_markdown(data, revision, version_path):
             out += ["**Starting conditions**", "", s["starting_conditions"], ""]
         bullets("Actions", s["actions"])
         bullets("Recorded events", [
-            f"{e['recording_id']} #{e['seq']} {e['action']}"
+            f"{e['recording_id']} #{e['seq']} {e['action']} (event `{e['event_id']}`)"
             + "".join(f" · {k} `{e[k]}`" for k in ("screen", "control", "label", "key") if k in e)
             for e in s["events"]])
         if s["expected_result"]:

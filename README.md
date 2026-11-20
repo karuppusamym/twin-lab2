@@ -69,7 +69,7 @@ python -m agent.twinlab fetch
 python agent\build.py
 ```
 
-The recorder and the portal speak the versioned [recorder contract](RECORDER-CONTRACT.md), now 1.0.0. The portal refuses a recorder whose contract it does not support, and it says which side to update. Recorders built before 0.2.0 declare no version: rebuild and redeploy them. Each recording keeps the recorder version and the contract version it was sent with. [How the Twin Lab pin is kept and moved](UPSTREAM.md)
+The recorder and the portal speak the versioned [recorder contract](RECORDER-CONTRACT.md), now 1.1.0: events carry ids assigned at capture time, and each recording reports how complete it is (1.0.x recorders are still accepted). The portal refuses a recorder whose contract it does not support, and it says which side to update. Recorders built before 0.2.0 declare no version: rebuild and redeploy them. Each recording keeps the recorder version and the contract version it was sent with. [How the Twin Lab pin is kept and moved](UPSTREAM.md)
 
 The build is not signed. Sign it before it runs on any machine other than a developer's: an unsigned program with keyboard hooks is likely to be stopped by endpoint protection.
 

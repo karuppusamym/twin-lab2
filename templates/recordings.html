@@ -9,6 +9,7 @@
       <a href="{{ url_for('recording', recording_id=r.id) }}"><strong>{{ r.name }}</strong></a>
       <span class="muted">{% if r.machine %}{{ r.machine }} · {{ r.received_at[:16] | replace("T", " ") }}{% else %}imported{% endif %}{% if r.automation %} · {{ r.automation }}{% endif %}</span>
       {% if r.apps %}<span>{{ r.apps }}</span>{% endif %}
+      <span class="badge {{ 'recorded' if r.status.label == 'Complete' else ('discovered' if r.status.attention else 'packaged') }}" title="{{ r.status.summary }}">{{ r.status.label }}</span>
     </div>
   {% else %}<p>No recordings yet.</p>{% endfor %}
 </section>
