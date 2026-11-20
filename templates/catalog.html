@@ -7,7 +7,8 @@
     {% if apps %}<ul class="list">{% for app in apps %}
       <li><a href="{{ url_for('demo', app_id=app.id) }}">{{ app.name }}</a>
         {% if app.status != "known" %}<span class="badge {{ app.status }}">{{ app.status | replace("_", " ") }}</span>{% endif %}
-        {% if app.surface %}<span class="muted">{{ app.surface }}</span>{% endif %}</li>
+        {% if app.surface %}<span class="muted">{{ app.surface }}</span>{% endif %}
+        {% with release = tested.get(app.id) %}{% include "_tested_release.html" %}{% endwith %}</li>
     {% endfor %}</ul>{% else %}<p>No applications yet. A recording registers the applications it finds.</p>{% endif %}
     <form action="{{ url_for('add_app') }}" method="post">
       <input type="hidden" name="token" value="{{ session.form_token }}">
