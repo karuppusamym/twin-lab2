@@ -22,6 +22,7 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
+import artifacts
 import scenarios
 
 FORMAT = 2
@@ -118,7 +119,7 @@ def manifest(db, app_id):
     files = {}
     for row in db.execute("SELECT * FROM attachments WHERE app_id = ? ORDER BY id", (app_id,)):
         path = f"attachments/{row['id']}{row['extension']}"
-        files[path] = bytes(row["content"])
+        files[path] = artifacts.content(db, row, "content")
         attachments.append({"path": path, "title": row["title"], "kind": row["kind"],
                             "sha256": hashlib.sha256(files[path]).hexdigest()})
     data = {

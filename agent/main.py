@@ -10,13 +10,17 @@
     TwinLabRecorder propose <project>    targets proposed from a UiPath project's XAML
     TwinLabRecorder show <session-id>    the references that would be sent
     TwinLabRecorder send <session-id>    send them (asks first; --yes to skip the question)
+    TwinLabRecorder upload <session-id>  queue the recorded session for upload and send the queue
+    TwinLabRecorder uploads              send what is queued (resuming), and show the queue
     TwinLabRecorder recover              finalise sessions an earlier run left unfinished
 
 Options for every command: `--portable-data` (keep everything in `data\\` beside the program),
 `--ca-bundle FILE` (a private certificate authority for the portal).
 
-The recordings stay in the data folder. Only the references go to the portal, and only when the
-person agrees. The collectors are Twin Lab's (`labctl.workstation`), run in this process.
+The recordings stay in the data folder. The references go to the portal only when the person
+agrees; a recording itself only when the person uploads it (`upload`), through the offline queue
+in `upload-queue\\` (agent.upload_queue), which keeps its copy until the portal confirms it.
+The collectors are Twin Lab's (`labctl.workstation`), run in this process.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ if __package__ in (None, ""):  # run as a script: python agent/main.py
 
 from agent import settings as st  # noqa: E402
 from agent.client import Portal, PortalError, check_portal  # noqa: E402
+from agent.upload_queue import UploadQueue, describe as describe_upload  # noqa: E402
 import recorder_contract as contract  # noqa: E402
 
 
@@ -646,6 +651,10 @@ def main(argv: list[str] | None = None) -> int:
     sd = sub.add_parser("send")
     sd.add_argument("session_id")
     sd.add_argument("--yes", action="store_true")
+    up = sub.add_parser("upload", help="queue a recorded session for upload and send what is queued")
+    up.add_argument("session_id")
+    uq = sub.add_parser("uploads", help="send what is queued and show the queue")
+    uq.add_argument("--now", action="store_true", help="also try jobs that are waiting to retry")
     sub.add_parser("recover")
     sub.add_parser("browser", help="open the kept browser profile to install an extension")
     pr = sub.add_parser("propose", help="targets proposed from a UiPath project's XAML")
@@ -726,6 +735,19 @@ def main(argv: list[str] | None = None) -> int:
                 print("not sent")
                 return 1
             print(json.dumps(send(cfg, args.session_id, args.ca_bundle)))
+        elif args.command in ("upload", "uploads"):
+            queue = UploadQueue(cfg.folder)
+            only = None
+            if args.command == "upload":
+                folder = cfg.recordings / args.session_id
+                if not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}", args.session_id) or not folder.is_dir():
+                    raise SystemExit(f"no recorded session {args.session_id}")
+                only = queue.add_session(folder, args.session_id)["id"]
+            jobs = queue.run(_portal(cfg, args.ca_bundle), only=only, force=args.command == "upload" or args.now)
+            for job in jobs:
+                print(describe_upload(job))
+            if not jobs:
+                print("nothing is queued for upload")
         elif args.command == "browser":
             _labctl()
             from labctl.workstation.session import open_profile
