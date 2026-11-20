@@ -17,3 +17,15 @@ The first delivery follows one demo from evidence import to a coding agent's inb
 - The catalog stores a projection of each recording with action names and source labels for assignment. Build packs include selected events, owner requirements, notes and approved visual or contract attachments. Raw capture artifacts stay in the recorder's source folder.
 - A ZIP contains Markdown instructions and a machine-readable evidence manifest. Its content hash identifies the exact exported brief. The app owner supplies the behavior and acceptance details needed to turn the event summary into an implementable task.
 - The release command archives a committed Git tree and associates it with the stored brief. The portal keeps previous release downloads and registers deployment URLs against a specific release.
+
+## Workstation recorder and portal references (2026-11-19)
+
+Design: `twin-lab/docs/11-session-recorder.md`. Built and checked locally (`VERIFICATION.md`):
+
+| Item | State |
+|---|---|
+| Portable recorder (`agent/`, PyInstaller one folder): pair, offered sessions, own sessions, record, review, send | Built; end to end on one PC with the built program |
+| Capture levels (full, steps, presence) and deny list, one timeline, references only | Built in Twin Lab `labctl.workstation` |
+| Portal: sign-in, machines and pairing, agent API, sessions, discovered applications, flows on recording and application pages, automations | Built (`registry.py`) |
+| Portal on OpenShift behind the OAuth proxy | Written (`Dockerfile`, `deploy/openshift-portal.yaml`), not run on a cluster |
+| Next | Sign the build and try it on a managed PC; upload recordings to GitHub or S3; clipboard hand-offs; split and build packs from a session; mainframe |

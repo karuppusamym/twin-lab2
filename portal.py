@@ -2,6 +2,7 @@
 
 import argparse
 from contextlib import closing
+import os
 from datetime import datetime, timezone
 import hashlib
 import io
@@ -14,6 +15,10 @@ from urllib.parse import urlsplit
 from zipfile import ZipFile
 
 from flask import Flask, abort, g, redirect, render_template, request, send_file, session, url_for
+
+import registry
+
+LOCAL = {"127.0.0.1", "::1"}
 
 
 SCHEMA = """
@@ -156,11 +161,17 @@ def add_release(database, app_id, version, revision, repository, ref, subdirecto
 
 def create_app(database):
     app = Flask(__name__)
+    hosts = [h.strip() for h in os.environ.get("TWINLAB2_HOSTS", "").split(",") if h.strip()]
     app.config.update(
-        SECRET_KEY=secrets.token_hex(32), MAX_CONTENT_LENGTH=16 * 1024 * 1024,
-        TRUSTED_HOSTS=["localhost", "127.0.0.1", "[::1]"],
+        SECRET_KEY=os.environ.get("TWINLAB2_SECRET_KEY") or secrets.token_hex(32),
+        MAX_CONTENT_LENGTH=16 * 1024 * 1024,
+        TRUSTED_HOSTS=["localhost", "127.0.0.1", "[::1]", *hosts],
         MAX_FORM_PARTS=20000,
+        SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=os.environ.get("TWINLAB2_SECURE_COOKIES") == "1",
     )
+    trust_proxy = os.environ.get("TWINLAB2_TRUST_PROXY_USER") == "1"
+    password = os.environ.get("TWINLAB2_PASSWORD", "")
     database = Path(database)
     database.parent.mkdir(parents=True, exist_ok=True)
 
@@ -179,9 +190,59 @@ def create_app(database):
 
     with app.app_context():
         db().executescript(SCHEMA)
+        registry.migrate(db())
+
+    @app.before_request
+    def sign_in():
+        """Every page needs a signed-in user: the OpenShift OAuth proxy's user when the portal
+        runs behind it, a password when one is set, else only this machine. The agent API has
+        its own bearer token (registry)."""
+        if request.path.startswith(("/api/agent/", "/static/")) or request.endpoint in ("login", "health"):
+            return None
+        if trust_proxy:
+            user = request.headers.get("X-Forwarded-User") or request.headers.get("X-Forwarded-Preferred-Username")
+            if not user:
+                abort(401, "Sign in through the OpenShift OAuth proxy.")
+            g.user = user[:120]
+        elif password:
+            if not session.get("user"):
+                return redirect(url_for("login", next=request.path))
+            g.user = session["user"]
+        else:
+            if request.remote_addr not in LOCAL:
+                abort(403, "This portal serves only this machine: set TWINLAB2_PASSWORD or run it behind the OAuth proxy.")
+            g.user = "local"
+        return None
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if not password:
+            return redirect(url_for("home"))
+        error = None
+        if request.method == "POST":
+            name = request.form.get("user", "").strip()[:80]
+            if name and secrets.compare_digest(request.form.get("password", ""), password):
+                session.clear()
+                session["user"] = name
+                target = request.args.get("next", "")
+                return redirect(target if target.startswith("/") and not target.startswith("//") else url_for("home"))
+            error = "Wrong password."
+        return render_template("login.html", error=error), 401 if error else 200
+
+    @app.post("/logout")
+    def logout():
+        session.clear()
+        return redirect(url_for("login") if password else url_for("home"))
+
+    @app.get("/healthz")
+    def health():
+        db().execute("SELECT 1")
+        return {"ok": True}
 
     @app.before_request
     def protect_forms():
+        if request.path.startswith("/api/agent/"):
+            return
         if "form_token" not in session:
             session["form_token"] = secrets.token_hex(32)
         if request.method == "POST" and request.form.get("token") != session["form_token"]:
@@ -220,7 +281,7 @@ def create_app(database):
     @app.get("/")
     def home():
         return render_template(
-            "catalog.html", apps=db().execute("SELECT * FROM apps ORDER BY name").fetchall(),
+            "catalog.html", apps=db().execute("SELECT * FROM apps ORDER BY status = 'not_replicated', name").fetchall(),
             recordings=db().execute("SELECT id, name FROM recordings ORDER BY name").fetchall(),
         )
 
@@ -252,6 +313,7 @@ def create_app(database):
         return render_template(
             "demo.html", item=item, links=links(app_id), loads=json.loads,
             attachments=attachments(app_id), kinds=ATTACHMENT_TYPES, releases=releases(app_id),
+            others=db().execute("SELECT id, name FROM apps WHERE id != ? ORDER BY name", (app_id,)).fetchall(),
         )
 
     @app.post("/apps/<int:app_id>/attachments")
@@ -443,12 +505,19 @@ def create_app(database):
         return send_file(io.BytesIO(item["archive"]), mimetype="application/zip",
                          as_attachment=True, download_name=f"demo-{item['app_id']}-{item['version']}.zip")
 
+    registry.register(app, db)
     return app
+
+
+def wsgi():
+    """The portal for a WSGI server (gunicorn "portal:wsgi()"), its catalog at TWINLAB2_DATABASE."""
+    return create_app(Path(os.environ.get("TWINLAB2_DATABASE", Path(__file__).parent / ".state/catalog.db")))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--database", type=Path, default=Path(__file__).parent / ".state/catalog.db")
     commands = parser.add_subparsers(dest="command")
     publish = commands.add_parser("release", help="Register a ZIP from a committed Git tree.")
@@ -469,4 +538,4 @@ if __name__ == "__main__":
             parser.exit(1, f"Release registration failed: {error}\n")
         print(f"Registered {args.version} from {commit}.")
     else:
-        app.run(host="127.0.0.1", port=args.port)
+        app.run(host=args.host, port=args.port)

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Sessions · TwinLab2{% endblock %}
+{% block content %}
+<h1>Recording sessions</h1>
+<p>A session made here is offered to its machine: the recorder lists it, and recording starts only when the person at the machine presses Start. The target applications are recorded in full (or steps only); every other application only as having been used.</p>
+<div class="columns">
+<section>
+  <h2>Offer a session</h2>
+  {% if machines and apps %}
+  <form method="post" action="{{ url_for('add_session') }}">
+    <input type="hidden" name="token" value="{{ session.form_token }}">
+    <label>Session name <input name="name" required placeholder="Order to invoice"></label>
+    <label>Machine <select name="machine_id">{% for m in machines %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}</select></label>
+    <label>Automation (optional) <select name="automation_id"><option value="">None</option>{% for a in automations %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}</select></label>
+    <fieldset><legend>Target applications</legend>
+      {% for app in apps %}
+        <div class="row">
+          <label class="check"><input type="checkbox" name="app" value="{{ app.id }}" {% if not app.ids %}disabled{% endif %}> {{ app.name }}</label>
+          <select name="level_{{ app.id }}" aria-label="Level for {{ app.name }}"><option value="full">full</option><option value="steps">steps only</option></select>
+          {% if not app.ids %}<span class="muted">add an identity on its page first</span>{% endif %}
+        </div>
+      {% endfor %}
+    </fieldset>
+    <button>Offer session</button>
+  </form>
+  {% else %}<p>Pair a machine and add an application with an identity first.</p>{% endif %}
+</section>
+<section>
+  <h2>Sessions</h2>
+  {% for s in sessions %}
+    <div class="row">
+      <strong>{{ s.name }}</strong> <span class="badge {{ s.status }}">{{ s.status }}</span>
+      <span class="muted">{{ s.machine }}{% if s.automation %} · {{ s.automation }}{% endif %} · {{ loads(s.targets) | map(attribute="name") | unique | join(", ") }}</span>
+      {% if s.recording_id %}<a href="{{ url_for('recording', recording_id=s.recording_id) }}">recording</a>{% endif %}
+      {% if s.status == "offered" %}
+      <form method="post" action="{{ url_for('withdraw_session', session_id=s.id) }}" class="inline">
+        <input type="hidden" name="token" value="{{ session.form_token }}"><button class="secondary">Withdraw</button>
+      </form>{% endif %}
+    </div>
+  {% else %}<p>No sessions yet.</p>{% endfor %}
+</section>
+</div>
+{% endblock %}

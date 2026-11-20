@@ -1,7 +1,56 @@
 {% extends "base.html" %}
 {% block title %}{{ item.name }} · TwinLab2{% endblock %}
 {% block content %}
-<h1>{{ item.name }}</h1>
+<h1>{{ item.name }} {% if item.status != "known" %}<span class="badge {{ item.status }}">{{ item.status | replace("_", " ") }}</span>{% endif %}</h1>
+{% if item.status == "discovered" %}
+  <p>A recording found this application. Confirm it to replicate it, rename it, merge it into an application it is the same as, or mark it as not replicated: later sessions then record it only as having been used.</p>
+{% endif %}
+<div class="columns">
+  <section>
+    <h2>Identity</h2>
+    {% for ident in app_identities(item.id) %}
+      <p><code>{{ ident.key }}</code></p>
+    {% else %}
+      <p>No identity yet: a session cannot target this application until it has one.</p>
+    {% endfor %}
+    <form method="post" action="{{ url_for('add_identity', app_id=item.id) }}">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <label>Executable name, web address or mainframe host <input name="key" required placeholder="CaseDesk.exe, https://billing.example.test or tn3270://mainframe.example.test:23"></label>
+      <button>Add identity</button>
+    </form>
+    <form method="post" action="{{ url_for('set_status', app_id=item.id) }}">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <label>Name <input name="name" value="{{ item.name }}"></label>
+      <label>Status <select name="status">{% for s in statuses %}<option value="{{ s }}" {% if s == item.status %}selected{% endif %}>{{ s | replace("_", " ") }}</option>{% endfor %}</select></label>
+      <button>Save</button>
+    </form>
+    {% if others %}
+    <form method="post" action="{{ url_for('merge_app', app_id=item.id) }}">
+      <input type="hidden" name="token" value="{{ session.form_token }}">
+      <label>Merge into <select name="into">{% for o in others %}<option value="{{ o.id }}">{{ o.name }}</option>{% endfor %}</select></label>
+      <button class="secondary">Merge</button>
+    </form>
+    {% endif %}
+    <h2>Automations</h2>
+    {% for a in app_automations(item.id) %}
+      <p><a href="{{ url_for('automation', automation_id=a.id) }}">{{ a.name }}</a></p>
+    {% else %}
+      <p>No automation yet.</p>
+    {% endfor %}
+  </section>
+  <section>
+    <h2>Recorded flows</h2>
+    {% for rec in app_recordings(item.id) %}
+      <details {% if loop.first %}open{% endif %}>
+        <summary><a href="{{ url_for('recording', recording_id=rec.recording_id) }}">{{ rec.recording_name }}</a>
+          <span class="muted">{{ rec.level }} · {{ rec.steps | length }} steps{% if rec.machine %} · {{ rec.machine }}{% endif %}{% if rec.received_at %} · {{ rec.received_at[:16] | replace("T", " ") }}{% endif %}</span></summary>
+        {% with steps = rec.steps %}{% include "_flow.html" %}{% endwith %}
+      </details>
+    {% else %}
+      <p>No recording of this application yet.</p>
+    {% endfor %}
+  </section>
+</div>
 <div class="columns">
   <section>
     <h2>Build brief</h2>

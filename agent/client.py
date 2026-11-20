@@ -1,0 +1,122 @@
+"""The recorder's calls to the portal: pair, list offered sessions, send references.
+
+HTTPS only (plain HTTP only for this machine: localhost, 127.0.0.1, [::1]); the system's
+certificate store, and `ca_bundle` for a private CA; the system's proxy settings. There is no
+switch that ignores certificates. Every answer is read as data in a fixed shape: targets are
+catalog ids and identities, never paths or commands.
+"""
+
+from __future__ import annotations
+
+import json
+import ssl
+import urllib.error
+import urllib.request
+from urllib.parse import urlsplit
+
+from agent.settings import APP, VERSION
+
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+class PortalError(Exception):
+    pass
+
+
+def check_portal(url: str) -> str:
+    parts = urlsplit((url or "").strip())
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.query:
+        raise PortalError("give the portal address, for example https://twinlab2.apps.example.test")
+    if parts.scheme == "http" and parts.hostname not in LOCAL_HOSTS:
+        raise PortalError("the portal must be reached over HTTPS (HTTP only on this machine)")
+    return f"{parts.scheme}://{parts.netloc}{parts.path.rstrip('/')}"
+
+
+class Portal:
+    def __init__(self, url: str, token: str | None = None, ca_bundle: str | None = None,
+                 timeout: float = 20) -> None:  # fmt: skip
+        self.url = check_portal(url)
+        self.token = token
+        self.timeout = timeout
+        self.context = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else ssl.create_default_context()
+
+    def _call(self, method: str, path: str, body: dict | None = None) -> dict:
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(self.url + path, data=data, method=method)
+        req.add_header("Accept", "application/json")
+        req.add_header("X-TwinLab-Recorder", f"{APP} {VERSION}")
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        if self.token:
+            req.add_header("Authorization", f"Bearer {self.token}")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=self.context) as r:
+                raw = r.read(4 * 1024 * 1024)
+        except urllib.error.HTTPError as exc:
+            try:
+                message = json.loads(exc.read(64 * 1024).decode("utf-8")).get("error")
+            except (ValueError, AttributeError, UnicodeDecodeError):
+                message = None
+            if exc.code == 401:
+                message = message or "this machine is not paired, or was revoked: pair it again"
+            raise PortalError(message or f"the portal answered {exc.code}") from exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise PortalError(f"the portal cannot be reached: {getattr(exc, 'reason', exc)}") from exc
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise PortalError("the portal's answer is not JSON") from exc
+        if not isinstance(doc, dict):
+            raise PortalError("unexpected answer from the portal")
+        return doc
+
+    def pair(self, code: str, name: str) -> dict:
+        doc = self._call("POST", "/api/agent/pair", {"code": code, "name": name})
+        if not isinstance(doc.get("token"), str) or not isinstance(doc.get("machine_id"), int):
+            raise PortalError("unexpected answer from the portal")
+        return doc
+
+    def sessions(self) -> dict:
+        doc = self._call("GET", "/api/agent/sessions")
+        out = []
+        for s in doc.get("sessions") or []:
+            if not isinstance(s, dict) or not isinstance(s.get("id"), int):
+                continue
+            out.append({"id": s["id"], "name": str(s.get("name") or "")[:120],
+                        "automation_id": s["automation_id"] if isinstance(s.get("automation_id"), int) else None,
+                        "targets": clean_targets(s.get("targets"))})  # fmt: skip
+        return {"sessions": out, "deny_keys": clean_keys(doc.get("deny_keys"))}
+
+    def apps(self) -> dict:
+        doc = self._call("GET", "/api/agent/apps")
+        apps = []
+        for a in doc.get("apps") or []:
+            if isinstance(a, dict) and isinstance(a.get("app_id"), int):
+                targets = clean_targets([a.get("target")])
+                if targets:
+                    apps.append({"app_id": a["app_id"], "name": str(a.get("name") or "")[:120],
+                                 "target": targets[0]})  # fmt: skip
+        return {"apps": apps, "deny_keys": clean_keys(doc.get("deny_keys"))}
+
+    def send(self, references: dict) -> dict:
+        return self._call("POST", "/api/agent/references", references)
+
+
+def clean_targets(items) -> list[dict]:
+    out = []
+    for t in items or []:
+        if not isinstance(t, dict):
+            continue
+        item = {"level": t.get("level") if t.get("level") in ("full", "steps") else "full"}
+        for k in ("key", "exe", "origin", "name", "tn3270"):
+            if isinstance(t.get(k), str) and 0 < len(t[k]) <= 200:
+                item[k] = t[k]
+        if isinstance(t.get("app_id"), int):
+            item["app_id"] = t["app_id"]
+        if any(k in item for k in ("key", "exe", "origin", "tn3270")):
+            out.append(item)
+    return out
+
+
+def clean_keys(items) -> list[str]:
+    return [k for k in items or [] if isinstance(k, str) and 0 < len(k) <= 220]

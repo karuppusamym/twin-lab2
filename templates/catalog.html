@@ -3,10 +3,12 @@
 <h1>Demo catalog</h1>
 <div class="columns">
   <section>
-    <h2>Demo apps</h2>
-    {% if apps %}<ul>{% for app in apps %}
-      <li><a href="{{ url_for('demo', app_id=app.id) }}">{{ app.name }}</a></li>
-    {% endfor %}</ul>{% else %}<p>No demo apps yet.</p>{% endif %}
+    <h2>Applications</h2>
+    {% if apps %}<ul class="list">{% for app in apps %}
+      <li><a href="{{ url_for('demo', app_id=app.id) }}">{{ app.name }}</a>
+        {% if app.status != "known" %}<span class="badge {{ app.status }}">{{ app.status | replace("_", " ") }}</span>{% endif %}
+        {% if app.surface %}<span class="muted">{{ app.surface }}</span>{% endif %}</li>
+    {% endfor %}</ul>{% else %}<p>No applications yet. A recording registers the applications it finds.</p>{% endif %}
     <form action="{{ url_for('add_app') }}" method="post">
       <input type="hidden" name="token" value="{{ session.form_token }}">
       <label>Demo name <input name="name" required></label>
@@ -15,9 +17,9 @@
   </section>
   <section>
     <h2>Recordings</h2>
-    {% if recordings %}<ul>{% for item in recordings %}
+    {% if recordings %}<ul class="list">{% for item in recordings %}
       <li><a href="{{ url_for('recording', recording_id=item.id) }}">{{ item.name }}</a></li>
-    {% endfor %}</ul>{% else %}<p>No recordings imported yet.</p>{% endif %}
+    {% endfor %}</ul>{% else %}<p>No recordings yet.</p>{% endif %}
     <form action="{{ url_for('import_recording') }}" method="post" enctype="multipart/form-data">
       <input type="hidden" name="token" value="{{ session.form_token }}">
       <label>Recording name <input name="name" required></label>
