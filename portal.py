@@ -20,6 +20,7 @@ import buildpack
 import db as database
 import independent
 import journey
+import builds_web
 import migrations
 import registry
 import scenarios
@@ -696,17 +697,20 @@ def create_app(target):
     def build_pack(app_id):
         return download_brief(app_id, store_pack(app_id))
 
-    @app.get("/apps/<int:app_id>/build-pack/preview")
-    def preview_pack(app_id):
+    def pack_view(app_id):
         """Exactly what the download contains: every file of the stored archive, its size and
-        SHA-256, text files in full."""
+        SHA-256, text files in full. The preview and the Build page both show this."""
         revision = store_pack(app_id)
         package = stored_pack(app_id, revision)
         files = [{"path": path, "size": len(content), "sha256": hashlib.sha256(content).hexdigest(),
                   "text": content.decode("utf-8") if buildpack.is_text(path) else None}
                  for path, content in buildpack.read(package).items()]
-        return render_template("preview.html", item=get_app(app_id), revision=revision, files=files,
-                               size=len(package), sha256=hashlib.sha256(package).hexdigest())
+        return {"revision": revision, "files": files, "size": len(package),
+                "sha256": hashlib.sha256(package).hexdigest()}
+
+    @app.get("/apps/<int:app_id>/build-pack/preview")
+    def preview_pack(app_id):
+        return render_template("preview.html", item=get_app(app_id), pack=pack_view(app_id))
 
     @app.get("/apps/<int:app_id>/briefs/<revision>")
     def download_brief(app_id, revision):
@@ -874,6 +878,8 @@ def create_app(target):
                          as_attachment=True, download_name=f"demo-{item['app_id']}-{item['version']}.zip")
 
     registry.register(app, db)
+    builds_web.register(app, db, get_app, pack_view, target,
+                        dev_worker=not trust_proxy and os.environ.get("TWINLAB2_DEV_WORKER", "1") != "0")
     return app
 
 

@@ -1,0 +1,21 @@
+{# The exact contents of a stored build pack: pack = {revision, files, size, sha256}. #}
+<p>This is exactly what the pack contains: {{ pack.files | length }} file{{ "s" if pack.files | length != 1 }},
+  {{ pack.size }} bytes, archive SHA-256 <code id="archive-sha256">{{ pack.sha256 }}</code>.
+  Revision <code>{{ pack.revision }}</code>.</p>
+<p><a href="{{ url_for('download_brief', app_id=item.id, revision=pack.revision) }}">Download this build pack</a></p>
+<table class="flow">
+  <thead><tr><th>File</th><th>Bytes</th><th>SHA-256</th></tr></thead>
+  <tbody>{% for file in pack.files %}
+    <tr><td><a href="#file-{{ loop.index }}">{{ file.path }}</a></td><td>{{ file.size }}</td><td><code>{{ file.sha256 }}</code></td></tr>
+  {% endfor %}</tbody>
+</table>
+{% for file in pack.files %}
+<details id="file-{{ loop.index }}" class="pack-file" {% if open_files %}open{% endif %}>
+  <summary><code>{{ file.path }}</code> <span class="muted">{{ file.size }} bytes</span></summary>
+  {% if file.text is not none %}
+    <pre class="file" data-path="{{ file.path }}">{{ file.text }}</pre>
+  {% else %}
+    <p class="muted">Binary file, shown by size and SHA-256 only.</p>
+  {% endif %}
+</details>
+{% endfor %}

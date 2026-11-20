@@ -39,5 +39,12 @@ services:
     # no OAuth proxy here: listen on the container's interface and sign in with the password
     command: ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "portal:wsgi()"]
     ports: ["127.0.0.1:8766:8080"]
+  worker:
+    build: {context: .., dockerfile: Dockerfile}
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DATABASE_URL: postgresql://twinlab2:twinlab2@postgres:5432/twinlab2
+    command: ["python", "worker.py"]
 volumes:
   postgres:

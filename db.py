@@ -306,7 +306,7 @@ def connect(target=None):
         raw = psycopg.connect(target, autocommit=False)
         return Connection(raw, "postgresql", target)
     path = sqlite_path(target)
-    raw = sqlite3.connect(path)
+    raw = sqlite3.connect(path, timeout=30)  # the worker and the portal share the file
     raw.execute("PRAGMA foreign_keys = ON")
     if sqlite3.sqlite_version_info < (3, 44, 0):
         raw.create_aggregate("string_agg", 2, _StringAgg)

@@ -51,6 +51,16 @@ items:
               resources:
                 requests: {cpu: 50m, memory: 128Mi}
                 limits: {memory: 512Mi}
+            # the build worker (worker.py): works the job queue in the same database
+            - name: worker
+              image: REGISTRY/twinlab2-portal:TAG
+              command: ["python", "worker.py"]
+              env:
+                - name: DATABASE_URL
+                  valueFrom: {secretKeyRef: {name: twinlab2, key: database-url}}
+              resources:
+                requests: {cpu: 20m, memory: 96Mi}
+                limits: {memory: 256Mi}
             - name: oauth-proxy
               image: registry.redhat.io/openshift4/ose-oauth-proxy:latest
               args:

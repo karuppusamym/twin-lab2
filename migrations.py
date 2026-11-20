@@ -190,12 +190,58 @@ RELEASE_VERIFICATION = [
 ]
 
 
+# -- 3: durable build jobs, Devin builds bound to a frozen pack ---------------------------------------
+
+BUILD_JOBS = [
+    """CREATE TABLE IF NOT EXISTS jobs (
+        id TEXT PRIMARY KEY, type TEXT NOT NULL, state TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0, lease_until TEXT, lease_owner TEXT,
+        payload TEXT NOT NULL, result TEXT, error TEXT, dedupe_key TEXT UNIQUE,
+        run_after TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS jobs_claimable ON jobs (state, run_after)",
+    """CREATE TABLE IF NOT EXISTS workers (
+        id TEXT PRIMARY KEY, host TEXT NOT NULL, pid INTEGER NOT NULL,
+        started_at TEXT NOT NULL, seen_at TEXT NOT NULL, current_job TEXT, stopped_at TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS github_repos (
+        repo TEXT PRIMARY KEY, default_branch TEXT NOT NULL, private INTEGER NOT NULL DEFAULT 0,
+        connected_by TEXT NOT NULL, connected_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS frozen_packs (
+        revision TEXT PRIMARY KEY REFERENCES briefs(revision), app_id INTEGER NOT NULL REFERENCES apps(id),
+        sha256 TEXT NOT NULL, frozen_by TEXT NOT NULL, frozen_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS builds (
+        id {id}, app_id INTEGER NOT NULL REFERENCES apps(id),
+        revision TEXT NOT NULL REFERENCES frozen_packs(revision), pack_sha256 TEXT NOT NULL,
+        repo TEXT NOT NULL, base_branch TEXT NOT NULL, base_sha TEXT NOT NULL, attempt INTEGER NOT NULL,
+        previous_build INTEGER REFERENCES builds(id), previous_revision TEXT, change_summary TEXT NOT NULL,
+        acu_budget INTEGER NOT NULL, state TEXT NOT NULL, active_app INTEGER UNIQUE,
+        idempotency_tag TEXT NOT NULL UNIQUE, create_token TEXT, create_calls INTEGER NOT NULL DEFAULT 0,
+        reconcile_checks INTEGER NOT NULL DEFAULT 0, attachment_url TEXT,
+        devin_session_id TEXT, devin_url TEXT, devin_status TEXT, devin_status_detail TEXT, acus_consumed REAL,
+        pr_number INTEGER, pr_url TEXT, head_sha TEXT, questions TEXT NOT NULL DEFAULT '[]',
+        error TEXT, note TEXT, requested_by TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS build_messages (
+        id {id}, build_id INTEGER NOT NULL REFERENCES builds(id), author TEXT NOT NULL,
+        body TEXT NOT NULL, state TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )""",
+]
+
+
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
 MIGRATIONS = [
     (1, "baseline", [*BASELINE_TABLES, add_columns(BASELINE_COLUMNS)]),
     (2, "release verification", RELEASE_VERIFICATION),
+    (3, "build jobs", BUILD_JOBS),
 ]
 
 
@@ -286,7 +332,8 @@ def copy(source, dest, batch=500, out=print):
                 types = _types(dst, table)
                 names = ", ".join(f'"{c}"' for c in columns)
                 insert = f'INSERT INTO "{table}" ({names}) VALUES ({", ".join("?" for _ in columns)})'
-                rows = src.execute(f'SELECT {names} FROM "{table}"').fetchall()
+                order = " ORDER BY rowid" if src.engine == "sqlite" else ""
+                rows = src.execute(f'SELECT {names} FROM "{table}"{order}').fetchall()
                 for start in range(0, len(rows), batch):
                     dst.executemany(insert, [[_coerce(value, types.get(column))
                                               for column, value in zip(columns, row)]
