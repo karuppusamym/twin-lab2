@@ -19,6 +19,7 @@ from unittest import mock
 from zipfile import ZipFile
 
 from agent import twinlab
+from support import freeze as freeze_package
 import builds
 import jobqueue
 from portal import create_app
@@ -88,10 +89,11 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(self.post(f"/apps/{app_id}/scenarios", name="Show the order screen.").status_code, 302)
         if connect:
             self.post("/setup/builds/repos", repo=REPO)
-        revision = self.revision(app_id)
-        if freeze:
-            self.assertEqual(self.post(f"/apps/{app_id}/build/freeze", revision=revision).status_code, 302)
-        return app_id, revision
+        if not freeze:  # the draft an owner has not approved
+            page = self.page(f"/apps/{app_id}/build-pack/preview")
+            return app_id, re.search(r"Revision <code>([0-9a-f]{64})</code>", page).group(1)
+        self.assertEqual(freeze_package(self.client, self.token, f"/apps/{app_id}").status_code, 200)
+        return app_id, self.revision(app_id)
 
     def revision(self, app_id):
         return re.search(r'name="revision" value="([0-9a-f]{64})"', self.page(f"/apps/{app_id}/build")).group(1)
@@ -115,10 +117,10 @@ class BuildTest(unittest.TestCase):
 
     def test_a_pack_that_is_not_frozen_is_not_built(self):
         app_id, revision = self.ready_app(freeze=False)
-        self.assertIn("Freeze this pack", self.page(f"/apps/{app_id}/build"))
+        self.assertIn("No builder-approved package yet", self.client.get(f"/apps/{app_id}/build").data.decode())
         response = self.request_build(app_id, revision)
         self.assertEqual(response.status_code, 302)
-        self.assertIn("Freeze the build pack before building", self.page(f"/apps/{app_id}/build"))
+        self.assertIn("Freeze the build pack before building", self.client.get(f"/apps/{app_id}/build").data.decode())
         self.assertEqual(self.db().execute("SELECT COUNT(*) FROM builds").fetchone()[0], 0)
         self.assertEqual(self.devin.requests, [])
 
@@ -366,9 +368,9 @@ class BuildTest(unittest.TestCase):
         self.github.add_pull(REPO, 3, HEAD)
         self.run_worker()
         self.post(f"/apps/{app_id}/scenarios", name="Print the invoice.")
+        freeze_package(self.client, self.token, f"/apps/{app_id}")
         second = self.revision(app_id)
         self.assertNotEqual(first, second)
-        self.post(f"/apps/{app_id}/build/freeze", revision=second)
         self.request_build(app_id, second)
         self.assertIn("Say what changed since the previous build", self.page(f"/apps/{app_id}/build"))
         self.request_build(app_id, second, change_summary="Added the invoice scenario.")
@@ -382,12 +384,12 @@ class BuildTest(unittest.TestCase):
         self.assertIn("pull request #3", prompt)
         self.assertIn("changed evidence.json", prompt)
 
-    def test_every_build_route_names_its_role(self):
+    def test_every_build_route_requires_a_role(self):
         source = (PROJECT / "builds_web.py").read_text(encoding="utf-8")
-        routes = re.findall(r"@app\.(?:get|post|route)\([^\n]*\n\s+def \w+\([^)]*\):([^\n]*)", source)
+        routes = re.findall(r"@app\.(?:get|post|route)\([^\n]*\n\s+(@[^\n]*)\n\s+def \w+", source)
         self.assertGreater(len(routes), 10)
-        for comment in routes:
-            self.assertRegex(comment, r"# ROLE: (owner|builder)")
+        for decorator in routes:
+            self.assertRegex(decorator, r"@require_role\(")
 
 
 class JobQueueTest(unittest.TestCase):

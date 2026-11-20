@@ -11,11 +11,14 @@ import unittest
 from zipfile import ZipFile
 
 import migrations
+import migrations
 import portal
+from support import freeze
 from portal import create_app
 import registry
 from support import connect, new_database
 from test_registry import CV, DESK, WEB, by_number, eid, numbers, references
+from support import connect, new_database
 
 RECORDING = "ws-20261119T100000Z-0a1b2c3d"
 
@@ -95,7 +98,7 @@ class ResendTest(Base):
         self.assertIn("1 new, not yet reviewed", self.client.get("/apps/1").data.decode())
         # the build pack has only the reviewed selection
         self.post("/apps/1/scenarios", name="Find a case")
-        with ZipFile(io.BytesIO(self.client.get("/apps/1/build-pack").data)) as pack:
+        with ZipFile(io.BytesIO(freeze(self.client, self.token, "/apps/1").data)) as pack:
             evidence = json.loads(pack.read("evidence.json"))["evidence"]
         self.assertEqual([e["seq"] for e in evidence[0]["events"]], [1])
         # the owner reviews the suggestion
@@ -123,10 +126,12 @@ class MergeTest(Base):
 
     def test_a_merge_keeps_historical_briefs_and_their_packages(self):
         self.post("/apps/2/scenarios", name="Save a case")
-        package = self.client.get("/apps/2/build-pack")
-        self.assertEqual(package.status_code, 200)
-        with closing(connect(self.database)) as db:
-            revision = db.execute("SELECT revision FROM briefs WHERE app_id = 2").fetchone()[0]
+        # a brief stored before builder packages were frozen (the portal stored one per export)
+        package = b"PK legacy brief"
+        revision = "ab" * 32
+        with closing(connect(self.database)) as db, db:
+            db.execute("INSERT INTO briefs VALUES (?, 2, '{}')", (revision,))
+            db.execute("INSERT INTO brief_packages(revision, archive) VALUES (?, ?)", (revision, package))
         # the repro: the merge deleted the brief while its package still referred to it
         page, done = self.merge(2, 3)
         self.assertIn(revision[:12], page)
@@ -136,9 +141,15 @@ class MergeTest(Base):
         self.assertEqual(self.client.get("/apps/2").status_code, 404)
         again = self.client.get(f"/apps/3/briefs/{revision}")
         self.assertEqual(again.status_code, 200)
-        self.assertEqual(again.data, package.data)
+        self.assertEqual(again.data, package)
         self.assertEqual(self.link(3)["selection"], [5])
         self.assertIn(WEB, self.client.get("/apps/3/setup").data.decode())
+
+    def test_a_frozen_builder_package_blocks_a_merge(self):
+        self.post("/apps/2/scenarios", name="Save a case")
+        self.assertEqual(freeze(self.client, self.token, "/apps/2").status_code, 200)
+        page = self.client.get("/apps/2/merge?into=3").data.decode()
+        self.assertIn("1 builder packages", page)
 
     def test_overlapping_reviewed_links_are_combined_not_dropped(self):
         self.assign(1, [1], notes="Search for the case")

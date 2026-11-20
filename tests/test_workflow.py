@@ -10,6 +10,7 @@ from zipfile import ZipFile
 
 from capture import recover
 from openshift import resources
+from support import freeze
 from portal import add_release, create_app
 from support import new_database
 from test_registry import eid
@@ -47,7 +48,7 @@ class WorkflowTest(unittest.TestCase):
         return path
 
     def pack(self, path):
-        response = self.client.get(path + "/build-pack")
+        response = freeze(self.client, self.token, path)
         self.assertEqual(response.status_code, 200)
         with ZipFile(io.BytesIO(response.data)) as archive:
             manifest = archive.read("evidence.json")
@@ -86,7 +87,7 @@ class WorkflowTest(unittest.TestCase):
 
     def test_build_revision_git_release_and_deployment(self):
         path = self.demo("Billing")
-        attachments = {"title": "API contract", "kind": "API", "reviewed": "yes"}
+        attachments = {"title": "API contract", "kind": "API", "share": "reviewed"}
         response = self.post(path + "/attachments", **attachments,
                              file=(io.BytesIO(b'{"endpoint":"/invoice"}'), "contract.json"))
         self.assertEqual(response.status_code, 302)

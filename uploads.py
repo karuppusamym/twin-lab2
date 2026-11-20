@@ -30,6 +30,7 @@ import secrets
 from flask import abort, jsonify, request
 
 import artifacts
+import auth
 import recorder_contract as contract
 import registry
 
@@ -163,6 +164,7 @@ def register(app, db):  # noqa: C901 - one place for the upload routes
     # -- init -----------------------------------------------------------------------------------
 
     @app.post("/api/uploads")
+    @auth.agent_token  # the machine token, then the upload's own token
     def upload_init():
         machine = agent_machine()
         doc = request.get_json(silent=True)
@@ -225,6 +227,7 @@ def register(app, db):  # noqa: C901 - one place for the upload routes
     # -- progress, chunks, parts -----------------------------------------------------------------
 
     @app.get("/api/uploads/<upload_id>")
+    @auth.agent_token  # the machine token, then the upload's own token
     def upload_status(upload_id):
         row = get_upload(upload_id)
         body = status_of(row)
@@ -235,6 +238,7 @@ def register(app, db):  # noqa: C901 - one place for the upload routes
         return response
 
     @app.put("/api/uploads/<upload_id>")
+    @auth.agent_token  # the machine token, then the upload's own token
     def upload_chunk(upload_id):
         row = get_upload(upload_id)
         if row["state"] != "receiving":
@@ -265,6 +269,7 @@ def register(app, db):  # noqa: C901 - one place for the upload routes
         return response
 
     @app.post("/api/uploads/<upload_id>/parts")
+    @auth.agent_token  # the machine token, then the upload's own token
     def upload_parts(upload_id):
         row = get_upload(upload_id)
         if row["mode"] != "direct" or row["state"] != "receiving":
@@ -282,6 +287,7 @@ def register(app, db):  # noqa: C901 - one place for the upload routes
     # -- finish ---------------------------------------------------------------------------------
 
     @app.post("/api/uploads/<upload_id>/complete")
+    @auth.agent_token  # the machine token, then the upload's own token
     def upload_complete(upload_id):
         row = get_upload(upload_id)
         if row["state"] == "confirmed":
@@ -340,7 +346,14 @@ def register(app, db):  # noqa: C901 - one place for the upload routes
     # -- what the Recording details page reads ----------------------------------------------------
 
     @app.get("/api/recordings/<recording_id>/upload")
+    @auth.signed_in
     def recording_upload(recording_id):
+        known = db().execute("SELECT 1 FROM recordings WHERE id = ? UNION SELECT 1 FROM uploads WHERE recording_id = ?",
+                             (recording_id, recording_id)).fetchone()
+        if known is None:
+            abort(404)
+        if not app.extensions["twinlab_reviewer_of_recording"](recording_id):
+            abort(403, "Recordings are restricted evidence.")
         row = db().execute("SELECT * FROM uploads WHERE recording_id = ? ORDER BY created_at DESC LIMIT 1", (recording_id,)).fetchone()
         if row is None:
             if db().execute("SELECT 1 FROM recordings WHERE id = ?", (recording_id,)).fetchone() is None:

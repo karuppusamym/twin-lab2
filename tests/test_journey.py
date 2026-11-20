@@ -41,7 +41,7 @@ class JourneyTest(unittest.TestCase):
 
     def test_build_then_verify_then_open_follow_the_release_state(self):
         self.assertEqual(app_journey(1, **facts(behaviour=False)).stage, "Review required behaviour")
-        self.assertEqual(app_journey(1, **facts(briefs=0)).next.action, "Download build pack")
+        self.assertEqual(app_journey(1, **facts(briefs=0)).next.action, "Freeze builder package")
         self.assertEqual(app_journey(1, **facts()).next.action, "Register a release")
         built = app_journey(1, **facts(releases=[{"id": 7, "version": "1.0.0"}]))
         self.assertEqual(built.stage, "Verify")  # no release state yet: not verified
@@ -94,7 +94,7 @@ class JourneyPagesTest(unittest.TestCase):
         self.assertIn("Ops team", page)
         self.assertIn("Show the order screen.", page)
         self.assertNotIn("git.example.test", page)  # Git details are in Setup / Advanced
-        self.assertIn("Download build pack", page)
+        self.assertIn("Preview and approve a builder package", page)
 
     def test_identity_and_machines_live_in_setup(self):
         self.post("/apps", name="Orders")

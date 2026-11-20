@@ -270,6 +270,69 @@ ARTIFACTS = [
 ]
 
 
+# -- 6: roles, audit history, frozen builder packages, evidence sharing ---------------------------------
+
+
+def append_only(table, message):
+    """A step refusing UPDATE and DELETE on `table`: SQLite triggers, or a PostgreSQL trigger."""
+    def step(connection):
+        if connection.engine == "sqlite":
+            for event in ("UPDATE", "DELETE"):
+                connection.ddl(f"""CREATE TRIGGER IF NOT EXISTS {table}_no_{event.lower()} BEFORE {event} ON {table}
+                                   BEGIN SELECT RAISE(ABORT, '{message}'); END""")
+        else:
+            connection.ddl(f"""CREATE OR REPLACE FUNCTION {table}_refuse() RETURNS trigger LANGUAGE plpgsql AS
+                               $$ BEGIN RAISE EXCEPTION '{message}' USING ERRCODE = 'integrity_constraint_violation';
+                               END $$""")
+            connection.ddl(f"DROP TRIGGER IF EXISTS {table}_append_only ON {table}")
+            connection.ddl(f"""CREATE TRIGGER {table}_append_only BEFORE UPDATE OR DELETE ON {table}
+                               FOR EACH ROW EXECUTE FUNCTION {table}_refuse()""")
+    return step
+
+
+def drop_sqlite_trigger(name):
+    def step(connection):
+        if connection.engine == "sqlite":
+            connection.ddl(f"DROP TRIGGER IF EXISTS {name}")
+    return step
+
+
+ROLES_AUDIT = [
+    """CREATE TABLE IF NOT EXISTS users (
+        name TEXT PRIMARY KEY, password_hash TEXT NOT NULL DEFAULT '', is_admin INTEGER NOT NULL DEFAULT 0,
+        created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT ''
+    )""",
+    """CREATE TABLE IF NOT EXISTS app_roles (
+        app_id INTEGER NOT NULL REFERENCES apps(id), user_name TEXT NOT NULL, role TEXT NOT NULL,
+        granted_by TEXT NOT NULL, granted_at TEXT NOT NULL,
+        PRIMARY KEY (app_id, user_name)
+    )""",
+    # app_id is a plain column, not a foreign key: an application's history outlives a merge
+    """CREATE TABLE IF NOT EXISTS audit_log (
+        id {id}, at TEXT NOT NULL, actor TEXT NOT NULL, app_id INTEGER,
+        action TEXT NOT NULL, object_type TEXT NOT NULL, object_id TEXT NOT NULL, details TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS audit_log_app ON audit_log(app_id, id)",
+    append_only("audit_log", "audit_log is append-only"),
+    """CREATE TABLE IF NOT EXISTS builder_packages (
+        id {id}, app_id INTEGER NOT NULL REFERENCES apps(id), rev INTEGER NOT NULL,
+        revision TEXT NOT NULL REFERENCES briefs(revision), sha256 TEXT NOT NULL, size INTEGER NOT NULL,
+        storage_ref TEXT NOT NULL, approved_by TEXT NOT NULL, approved_at TEXT NOT NULL,
+        summary TEXT NOT NULL, diff TEXT NOT NULL, report TEXT NOT NULL,
+        UNIQUE (app_id, rev)
+    )""",
+    drop_sqlite_trigger("brief_packages_no_update"),  # an earlier draft guarded brief_packages
+    append_only("builder_packages", "a frozen builder package is immutable"),
+    """CREATE TABLE IF NOT EXISTS recording_uploads (
+        recording_id TEXT PRIMARY KEY REFERENCES recordings(id), added_by TEXT NOT NULL, added_at TEXT NOT NULL
+    )""",
+    # uploaded evidence is restricted until the owner marks it reviewed or synthetic; files
+    # attached before this column existed are restricted too: uploading never meant sharing
+    add_columns([("attachments", "share", "TEXT NOT NULL DEFAULT 'restricted'"),
+                 ("attachments", "added_by", "TEXT NOT NULL DEFAULT ''")]),
+]
+
+
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
@@ -279,6 +342,7 @@ MIGRATIONS = [
     (3, "build jobs", BUILD_JOBS),
     (4, "recording details", RECORDING_DETAILS),
     (5, "artifacts and uploads", ARTIFACTS),
+    (6, "roles and audit", ROLES_AUDIT),
 ]
 
 

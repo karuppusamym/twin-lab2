@@ -153,7 +153,9 @@ def is_frozen(db, app_id, revision):
 
 
 def freeze(db, app_id, revision, user):
-    """Freeze a stored pack: from now on builds of it send exactly these bytes."""
+    """Record a frozen pack: from now on builds of it send exactly these bytes. Only
+    `packages.freeze` calls this, after the owner approved the package's SHA-256 on the preview
+    (packages.py); `frozen_packs` is the index builds reference."""
     archive = stored_archive(db, app_id, revision)
     if archive is None:
         raise BuildError("That build pack revision is not stored for this application.")

@@ -16,6 +16,7 @@ import event_ids
 import journey
 import portal
 from portal import create_app
+from support import freeze
 import registry
 import scenarios
 from test_registry import (DESK, EVENT_1, EVENT_2, EVENT_5, WEB, CV, completeness_report, eid, references,
@@ -71,7 +72,7 @@ class Base(unittest.TestCase):
         return json.loads(row[0]), json.loads(row[1])
 
     def pack(self, app_id):
-        response = self.client.get(f"/apps/{app_id}/build-pack")
+        response = freeze(self.client, self.token, f"/apps/{app_id}")
         self.assertEqual(response.status_code, 200, response.data)
         with ZipFile(io.BytesIO(response.data)) as archive:
             return json.loads(archive.read("evidence.json")), archive.read("BUILD_TASK.md").decode()
@@ -183,7 +184,9 @@ class MigrationTest(unittest.TestCase):
             # the migrated links still make a build pack with the same event
             client = app.test_client()
             client.get("/")
-            with ZipFile(io.BytesIO(client.get("/apps/1/build-pack").data)) as archive:
+            with client.session_transaction() as session:
+                token = session["form_token"]
+            with ZipFile(io.BytesIO(freeze(client, token, "/apps/1").data)) as archive:
                 manifest = json.loads(archive.read("evidence.json"))
             self.assertEqual(manifest["scenarios"][0]["events"][0]["label"], "txtSearch")
             self.assertEqual(manifest["scenarios"][0]["events"][0]["event_id"], one)

@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from zipfile import ZipFile
 
+from support import freeze
 from portal import create_app
 import scenarios
 from support import connect, new_database
@@ -77,7 +78,7 @@ class BuildPackTest(unittest.TestCase):
         self.assertEqual(response.status_code, 302, response.data)
 
     def download(self, app_id):
-        response = self.client.get(f"/apps/{app_id}/build-pack")
+        response = freeze(self.client, self.token, f"/apps/{app_id}")
         self.assertEqual(response.status_code, 200, response.data)
         with ZipFile(io.BytesIO(response.data)) as archive:
             return response.data, {name: archive.read(name) for name in archive.namelist()}
@@ -139,7 +140,7 @@ class BuildPackTest(unittest.TestCase):
         for path, content in files.items():
             self.assertEqual(shown[path], content.decode("utf-8"), path)
             self.assertIn(hashlib.sha256(content).hexdigest(), text)
-        revision = re.search(r"/briefs/([0-9a-f]{64})", text).group(1)
+        revision = re.search(r"Revision <code>([0-9a-f]{64})</code>", text).group(1)
         self.assertEqual(self.client.get(f"/apps/{desk}/briefs/{revision}").data, package)
         # a second export of the same state is byte-identical
         self.assertEqual(self.download(desk)[0], package)
@@ -171,7 +172,7 @@ class BuildPackTest(unittest.TestCase):
         self.assertEqual(self.post(f"/apps/{desk}/scenarios", name="").status_code, 400)
         self.assertEqual(self.post(f"/apps/{desk}/scenarios/999", name="X").status_code, 404)
         self.assertEqual(self.post(f"/apps/{desk}/scenarios/{saved['id']}/remove").status_code, 302)
-        self.assertEqual(self.client.get(f"/apps/{desk}/build-pack").status_code, 400)
+        self.assertEqual(self.client.get(f"/apps/{desk}/build-pack/preview").status_code, 400)
 
     def test_existing_requirements_move_into_a_scenario(self):
         with closing(connect(self.database)) as db, db:

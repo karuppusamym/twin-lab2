@@ -16,7 +16,9 @@
       <a href="{{ url_for('recordings') }}">Recordings</a>
       <a href="{{ url_for('sessions') }}">Request a recording</a>
       <a href="{{ url_for('setup') }}">Setup / Advanced</a>
-      <span class="who">{{ current_user() }}</span>
+      {% if is_admin() %}<a href="{{ url_for('admin_users') }}">Users</a>{% endif %}
+      <span class="who">{{ current_user() }}{% if is_admin() %} (admin){% endif %}</span>
+      {% if login_available() and session.user %}<form class="inline" method="post" action="{{ url_for('logout') }}"><input type="hidden" name="token" value="{{ session.form_token }}"><button class="secondary">Sign out</button></form>{% endif %}
     </nav>
     {% endif %}
   </header>
