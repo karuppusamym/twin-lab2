@@ -139,6 +139,10 @@ class RoleRefusalTest(Base):
                        (self.app_id, revision, "a" * 40, b"zip", hashlib.sha256(b"zip").hexdigest()))
             db.execute("INSERT INTO deployments(release_id, environment, url, username, secret_ref) "
                        "VALUES (1, 'Demo', 'http://127.0.0.1:9/', '', '')")
+            db.execute("""INSERT INTO builds(id, app_id, revision, pack_sha256, repo, base_branch, base_sha, attempt,
+                          change_summary, acu_budget, state, idempotency_tag, requested_by, created_at, updated_at)
+                          VALUES (1, ?, ?, '', 'octo/billing', 'main', '', 1, '', 5, 'failed', 'tag-1', 'bob', '', '')""",
+                       (self.app_id, revision))
 
     def routes(self):
         a, r = self.app_id, self.recording
@@ -152,6 +156,13 @@ class RoleRefusalTest(Base):
             ("builder", "GET", "/releases/1/download", {}),
             ("builder", "POST", "/releases/1/deployments/check", {"environment": "Demo"}),
             ("builder", "GET", "/releases/1/reports/1", {}),
+            ("builder", "GET", f"/apps/{a}/build", {}),
+            ("builder", "POST", f"/apps/{a}/build", {}),
+            ("builder", "GET", "/builds/1", {}),
+            ("builder", "POST", "/builds/1/answer", {"answer": ""}),
+            ("builder*", "POST", "/builds/1/cancel", {}),
+            ("builder*", "POST", "/builds/1/retry", {}),
+            ("owner", "POST", f"/apps/{a}/build/freeze", {}),
             ("owner", "POST", "/releases/1/checks", {}),
             ("owner*", "POST", "/releases/1/verify", {}),  # * refusals only: admitting it runs Twin Lab
             ("owner", "POST", f"/apps/{a}/verify-commit", {"repo": "octo/billing", "sha": "not-a-sha"}),
@@ -220,6 +231,12 @@ class RoleRefusalTest(Base):
         self.assertEqual(self.get(f"/apps/{self.app_id}", "root").status_code, 200)
         self.assertEqual(self.get("/admin/users", "root").status_code, 200)
         self.assertEqual(self.get("/admin/users", "alice").status_code, 403)
+        for path in ("/setup/builds",):
+            self.assertEqual(self.get(path, "alice").status_code, 403)
+            self.assertEqual(self.get(path, "root").status_code, 200)
+        for path in ("/setup/builds/settings", "/setup/builds/check", "/setup/builds/repos",
+                     "/setup/builds/repos/remove", "/setup/builds/worker"):
+            self.assertEqual(self.post(path, "alice").status_code, 403, path)
         self.assertEqual(self.post("/admin/users", "alice", name="x").status_code, 403)
         self.assertEqual(self.get(f"/apps/{self.app_id}/history", "root").status_code, 200)
         for path in (f"/recordings/{self.recording}", f"/apps/{self.app_id}/build-pack/preview",

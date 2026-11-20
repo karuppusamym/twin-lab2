@@ -23,6 +23,8 @@ from auth import require_role
 import buildpack
 import independent
 import journey
+import builds
+import builds_web
 import packages
 import redact
 import registry
@@ -456,6 +458,7 @@ def create_app(database):
         commit_checks.migrate(db())
         registry.migrate(db())
         scenarios.migrate(db())
+        builds.migrate(db())
         columns = {row[1] for row in db().execute("PRAGMA table_info(apps)")}
         for column in ("owner", "purpose"):
             if column not in columns:
@@ -1006,6 +1009,20 @@ def create_app(database):
         return send_file(io.BytesIO(stored["archive"]), mimetype="application/zip", as_attachment=True,
                          download_name=f"{slug}-{revision[:12]}.zip")
 
+    def pack_view(app_id):
+        """What a builder builds: the latest builder-approved (frozen) package, every file with its
+        size and SHA-256, text in full. 400 before an owner has approved one."""
+        row = packages.latest(db(), app_id)
+        if row is None:
+            abort(400, "No builder-approved package yet: an owner previews the package, checks its "
+                       "pre-freeze report and approves it.")
+        package = packages.open_package(db(), row["storage_ref"])
+        files = [{"path": path, "size": len(content), "sha256": hashlib.sha256(content).hexdigest(),
+                  "text": content.decode("utf-8") if buildpack.is_text(path) else None}
+                 for path, content in buildpack.read(package).items()]
+        return {"revision": row["revision"], "rev": row["rev"], "files": files, "size": len(package),
+                "sha256": row["sha256"], "approved_by": row["approved_by"], "approved_at": row["approved_at"]}
+
     def get_release(release_id):
         item = db().execute(
             "SELECT id, app_id, version, revision, commit_sha, archive_sha, state, published_at, repository, "
@@ -1190,6 +1207,8 @@ def create_app(database):
                          as_attachment=True, download_name=f"demo-{item['app_id']}-{item['version']}.zip")
 
     registry.register(app, db)
+    builds_web.register(app, db, get_app, pack_view, database,
+                        dev_worker=not auth.Settings.from_env().trust_proxy and os.environ.get("TWINLAB2_DEV_WORKER", "1") != "0")
     return app
 
 

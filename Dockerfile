@@ -8,7 +8,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt "gunicorn>=23,<24"
-COPY portal.py registry.py openshift.py buildpack.py scenarios.py ./
+COPY portal.py registry.py openshift.py buildpack.py scenarios.py journey.py recorder_contract.py      builds.py builds_web.py devin.py github.py jobqueue.py worker.py twinlab.lock.json ./
+COPY contract contract
+COPY agent/__init__.py agent/twinlab.py agent/
+# The Devin client is Twin Lab's, from the pinned commit, checked against the lock's digest.
+RUN python -m agent.twinlab fetch
 COPY templates templates
 COPY static static
 RUN mkdir -p /data && chgrp -R 0 /data /app && chmod -R g=u /data /app
@@ -17,4 +21,5 @@ USER 1001
 EXPOSE 8080
 # Bound to the pod's loopback: only the OAuth proxy in the same pod reaches it, so the user it
 # names (X-Forwarded-User) can be trusted. The agent API (/api/agent/) has its own token.
+# The build worker runs as a second container from this image: ["python", "worker.py"].
 CMD ["gunicorn", "--bind", "127.0.0.1:8080", "--workers", "1", "--threads", "8", "portal:wsgi()"]
