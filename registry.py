@@ -77,7 +77,8 @@ CODE_MINUTES = 10
 FAILURES_PER_10_MIN = 20
 STATUSES = ("known", "discovered", "not_replicated")
 LEVELS = ("full", "steps")
-KEY = re.compile(r"^(desktop:[^\x00-\x1f]{1,200}|exe:[\w .()+-]{1,80}\.exe|web:https?://[\w.\-\[\]:]{1,200})$",
+KEY = re.compile(r"^(desktop:[^\x00-\x1f]{1,200}|exe:[\w .()+-]{1,80}\.exe|web:https?://[\w.\-\[\]:]{1,200}"
+                 r"|mainframe:[\w.\-\[\]:]{1,200}:\d{1,5})$",
                  re.I)  # fmt: skip
 SESSION_KEY = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$")
 FLOW_FIELDS = {"n": int, "action": str, "control": str, "label": str, "screen": str, "key": str}
@@ -109,6 +110,11 @@ def normalise_key(text):
         return None
     if text.lower().startswith(("http://", "https://")):
         text = "web:" + text
+    if text.lower().startswith(("tn3270://", "tn3270s://")):
+        text = "mainframe:" + text.split("://", 1)[1].rstrip("/")
+    if text.startswith("mainframe:"):
+        rest = text[10:].lower()
+        text = "mainframe:" + (rest if re.search(r":\d{1,5}$", rest) else rest + ":23")
     if text.lower().endswith(".exe") and ":" not in text:
         text = "exe:" + text
     if text.startswith("web:"):
@@ -130,6 +136,8 @@ def target_of(key, level, app_id, name):
         target["origin"] = key[4:]
     elif key.startswith("exe:"):
         target["exe"] = key[4:]
+    elif key.startswith("mainframe:"):
+        target["tn3270"] = key[10:]
     else:
         target["key"] = key
     return target
@@ -172,7 +180,8 @@ def clean_references(doc):
             raise ValueError("app key")
         if a.get("level") not in LEVELS:
             raise ValueError("app level")
-        item = {"key": key, "level": a["level"], "surface": "web" if key.startswith("web:") else "desktop"}
+        surface = key.split(":", 1)[0] if key.startswith(("web:", "mainframe:")) else "desktop"
+        item = {"key": key, "level": a["level"], "surface": surface}
         for k, limit in (("display", 120), ("exe", 120), ("company", 120), ("product", 120),
                          ("version", 40), ("toolkit", 40)):  # fmt: skip
             value = a.get(k)
@@ -189,7 +198,9 @@ def clean_references(doc):
         if nkey not in keys or not isinstance(steps, list):
             continue
         clean = []
-        for step in steps[:5000]:
+        if len(steps) > 50000:
+            raise ValueError("flow longer than 50000 steps")
+        for step in steps:
             if not isinstance(step, dict) or not isinstance(step.get("n"), int):
                 raise ValueError("flow step")
             row = {}
@@ -541,11 +552,12 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
             abort(404)
         key = normalise_key(request.form.get("key"))
         if key is None:
-            abort(400, "Enter an executable name (CaseDesk.exe), a web address, or desktop:Company/Product.")
+            abort(400, "Enter an executable name (CaseDesk.exe), a web address, a mainframe host "
+                       "(tn3270://host:port), or desktop:Company/Product.")
         other = db().execute("SELECT app_id FROM app_identities WHERE key = ?", (key,)).fetchone()
         if other is not None and other["app_id"] != app_id:
             abort(409, "Another application already has this identity: merge them instead.")
-        surface = "web" if key.startswith("web:") else "desktop"
+        surface = key.split(":", 1)[0] if key.startswith(("web:", "mainframe:")) else "desktop"
         with db():
             db().execute("INSERT OR IGNORE INTO app_identities VALUES (?, ?, ?, '{}')", (key, app_id, surface))
             db().execute("UPDATE apps SET surface = ? WHERE id = ? AND surface = ''", (surface, app_id))

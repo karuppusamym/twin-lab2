@@ -46,7 +46,7 @@ def main() -> int:
             "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}  # fmt: skip
     (HERE / "_build.json").write_text(json.dumps(info, indent=1), encoding="utf-8")
     work = PROJECT / "build"
-    dist = PROJECT / "dist"
+    dist = Path(os.environ.get("TWINLAB_DIST") or PROJECT / "dist")
     shutil.rmtree(dist / "TwinLabRecorder", ignore_errors=True)
     args = [
         sys.executable, "-m", "PyInstaller", str(HERE / "main.py"), "--name", "TwinLabRecorder",

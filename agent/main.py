@@ -5,6 +5,8 @@
     TwinLabRecorder sessions             sessions the portal offers this machine
     TwinLabRecorder record --session 3   record an offered session (Ctrl+C or Stop ends it)
     TwinLabRecorder record --exe CaseDesk.exe --origin https://billing.example.test
+    TwinLabRecorder record --tn3270 mainframe.example.test:23 --keep-browser-profile ...
+    TwinLabRecorder browser              open the kept browser profile (install UiPath's extension)
     TwinLabRecorder show <session-id>    the references that would be sent
     TwinLabRecorder send <session-id>    send them (asks first; --yes to skip the question)
     TwinLabRecorder recover              finalise sessions an earlier run left unfinished
@@ -72,15 +74,35 @@ def _portal(cfg: st.Settings, ca_bundle: str | None) -> Portal:
 
 
 def session_config(targets: list[dict], deny_keys: list[str], name: str, portal_session_id=None,
-                   automation_id=None, minutes: float = 240) -> dict:  # fmt: skip
+                   automation_id=None, minutes: float = 240, keep_browser_profile: bool = False,
+                   cdp: str | None = None, browser: str | None = None, pictures: bool = False,
+                   robot: bool = True) -> dict:  # fmt: skip
     from labctl.workstation.session import new_id
 
     return {"id": new_id(), "name": name, "targets": targets, "deny_keys": deny_keys,
             "portal_session_id": portal_session_id, "automation_id": automation_id,
-            "minutes": minutes}  # fmt: skip
+            "minutes": minutes, "keep_browser_profile": keep_browser_profile, "cdp": cdp,
+            "browser": browser, "pictures": pictures, "robot": robot}  # fmt: skip
 
 
-def run_session(cfg: st.Settings, conf: dict, script=None) -> Path:
+def browser_profile(cfg: st.Settings) -> Path:
+    """The kept profile of the recorder's browser: an extension installed in it once (UiPath's)
+    is there in every session that keeps it."""
+    return cfg.folder / "browser-profile"
+
+
+def mainframe_addresses(conf: dict) -> list[str]:
+    """Where each mainframe target's terminal connects (127.0.0.1:23270, 23271...)."""
+    out, i = [], 0
+    for t in conf.get("targets") or []:
+        if t.get("tn3270"):
+            port = t["listen"] if isinstance(t.get("listen"), int) else 23270 + i
+            out.append(f"{t.get('name') or t['tn3270']}: point the terminal at 127.0.0.1:{port}")
+            i += 1
+    return out
+
+
+def run_session(cfg: st.Settings, conf: dict, script=None, parent_pid: int | None = None) -> Path:
     """Record one session in this process (the calling thread runs the desktop recorder)."""
     _labctl()
     from labctl.workstation.levels import Targets
@@ -95,7 +117,11 @@ def run_session(cfg: st.Settings, conf: dict, script=None) -> Path:
                 portal_session_id=conf.get("portal_session_id"),
                 automation_id=conf.get("automation_id"),
                 max_seconds=float(conf.get("minutes") or 240) * 60,
-                recorder=f"{st.APP} {st.VERSION}")  # fmt: skip
+                recorder=f"{st.APP} {st.VERSION}",
+                browser_profile=browser_profile(cfg) if conf.get("keep_browser_profile") else None,
+                cdp=conf.get("cdp") or None, browser=conf.get("browser") or None,
+                pictures=bool(conf.get("pictures")), robot=conf.get("robot", True) is not False,
+                parent_pid=parent_pid)  # fmt: skip
     return s.run(script=script)
 
 
@@ -116,14 +142,33 @@ def send(cfg: st.Settings, session_id: str, ca_bundle: str | None = None) -> dic
     return result
 
 
-def describe(box: dict) -> str:
+def describe(box: dict, notes: list[str] | None = None) -> str:
     lines = [f"Session {box['session'].get('name')} ({box['session']['id']})"]
     for a in box["apps"]:
         lines.append(f"  {a['level']:6} {a.get('display') or a['key']}  [{a['key']}]  "
                      f"{len(box['flows'].get(a['key'], []))} steps")  # fmt: skip
     presence = sum(r["steps"] for r in box["timeline"] if r["app"] == "presence")
     lines.append(f"  other applications: used {presence} time(s), not named")
+    if not box["apps"]:
+        lines.append("  NO TARGET APPLICATION WAS RECORDED: see the notes below")
+    for note in notes or []:
+        lines.append(f"  note: {note}")
     return "\n".join(lines)
+
+
+def session_notes(cfg: st.Settings, session_id: str) -> list[str]:
+    try:
+        meta = json.loads((cfg.recordings / session_id / "session.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    notes = list(meta.get("notes") or [])
+    for part in sorted((cfg.recordings / session_id).glob("*/*.json")):
+        if part.name in ("desktop.json", "mainframe.json"):
+            try:
+                notes += [f"{part.parent.name}: {n}" for n in json.loads(part.read_text(encoding="utf-8")).get("notes") or []]
+            except (OSError, ValueError):
+                pass
+    return notes
 
 
 def sessions_list(cfg: st.Settings) -> list[dict]:
@@ -154,7 +199,12 @@ def _hide_own_console() -> None:
     kernel32 = ctypes.windll.kernel32
     procs = (ctypes.c_uint * 4)()
     if kernel32.GetConsoleProcessList(procs, 4) == 1:
-        ctypes.windll.user32.ShowWindow(kernel32.GetConsoleWindow(), 0)
+        # Detached, the console (or the Windows Terminal tab around it) closes, and closing it
+        # can no longer end the recorder.
+        window = kernel32.GetConsoleWindow()
+        kernel32.FreeConsole()
+        if window:
+            ctypes.windll.user32.ShowWindow(window, 0)
 
 
 def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one window
@@ -201,11 +251,34 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
     own_frame = ttk.Frame(tab_own)
     own_frame.pack(fill="both", expand=True)
     own_vars: list[tuple[tk.BooleanVar, dict]] = []
-    ttk.Label(tab_own, text="Or by executable name or web address, one per line:").pack(anchor="w")
+    ttk.Label(tab_own, text="Or one per line: an executable (CaseDesk.exe), a web address "
+              "(https://...), a mainframe host (tn3270://host:port):").pack(anchor="w")  # fmt: skip
     extra = tk.Text(tab_own, height=3)
     extra.pack(fill="x")
     start_own = ttk.Button(tab_own, text="Start my session")
     start_own.pack(anchor="w", pady=4)
+
+    opts = ttk.LabelFrame(root, text="Browser", padding=6)
+    opts.pack(fill="x", padx=10, pady=(6, 0))
+    keep_var = tk.BooleanVar(value=bool(cfg.values.get("keep_browser_profile")))
+    ttk.Checkbutton(opts, text="Keep the recorder's browser profile (needed for UiPath's browser "
+                    "extension)", variable=keep_var).pack(anchor="w")  # fmt: skip
+    cdp_row = ttk.Frame(opts)
+    cdp_row.pack(fill="x")
+    ttk.Label(cdp_row, text="Or attach to a running browser at (DevTools address):").pack(side="left")
+    cdp_var = tk.StringVar(value=cfg.values.get("cdp") or "")
+    ttk.Entry(cdp_row, textvariable=cdp_var, width=28).pack(side="left", padx=4)
+    profile_btn = ttk.Button(cdp_row, text="Open the kept profile…")
+    profile_btn.pack(side="right")
+    more = ttk.Frame(opts)
+    more.pack(fill="x")
+    ttk.Label(more, text="Browser:").pack(side="left")
+    browser_var = tk.StringVar(value=cfg.values.get("browser") or "edge")
+    ttk.Combobox(more, textvariable=browser_var, values=["edge", "chrome"], width=8,
+                 state="readonly").pack(side="left", padx=4)  # fmt: skip
+    pictures_var = tk.BooleanVar(value=bool(cfg.values.get("pictures")))
+    ttk.Checkbutton(more, text="Pictures of desktop windows (uses much memory on long runs)",
+                    variable=pictures_var).pack(side="left", padx=8)  # fmt: skip
 
     done_list = tk.Listbox(tab_done, height=8)
     done_list.pack(fill="both", expand=True)
@@ -247,7 +320,7 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
         except SystemExit as exc:
             review.insert("end", str(exc))
             return
-        review.insert("end", describe(box) + "\n\n" + json.dumps(box, indent=1))
+        review.insert("end", describe(box, session_notes(cfg, s["id"])) + "\n\n" + json.dumps(box, indent=1))
 
     def poll_portal():
         def work():
@@ -281,16 +354,38 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
                 ttk.Checkbutton(own_frame, text=a["name"], variable=var).pack(anchor="w")
                 own_vars.append((var, a))
 
+    def options() -> dict:
+        cdp = cdp_var.get().strip()
+        if cdp and not cdp.startswith(("http://127.0.0.1:", "http://localhost:")):
+            raise ValueError("attach only to a browser on this PC, for example http://127.0.0.1:9222")
+        cfg.values.update(keep_browser_profile=keep_var.get(), cdp=cdp, browser=browser_var.get(),
+                          pictures=pictures_var.get())  # fmt: skip
+        cfg.save()
+        return {"keep_browser_profile": keep_var.get(), "cdp": cdp or None,
+                "browser": browser_var.get(), "pictures": pictures_var.get()}  # fmt: skip
+
     def start(conf):
         if state["proc"] is not None:
+            return
+        try:
+            conf.update(options())
+        except ValueError as exc:
+            messagebox.showerror("TwinLab Recorder", str(exc))
             return
         cfg_path = cfg.folder / "next-session.json"
         cfg_path.write_text(json.dumps(conf), encoding="utf-8")
         cmd = [sys.executable] + ([] if getattr(sys, "frozen", False) else [str(Path(__file__).resolve())])
-        cmd += ["run-session", "--config", str(cfg_path)] + (["--portable-data"] if cfg.portable else [])
-        state["proc"] = subprocess.Popen(cmd, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        cmd += ["run-session", "--config", str(cfg_path), "--parent", str(os.getpid())]
+        cmd += ["--portable-data"] if cfg.portable else []
+        (cfg.folder / "logs").mkdir(exist_ok=True)
+        state["log"] = cfg.folder / "logs" / f"{conf['id']}.log"
+        log = state["log"].open("w", encoding="utf-8")
+        state["proc"] = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
+                                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # fmt: skip
+        log.close()
         state["session"] = conf["id"]
-        rec_status.set(f"Recording {conf['name']}…")
+        lines = mainframe_addresses(conf)
+        rec_status.set(f"Recording {conf['name']}…" + ("\n" + "\n".join(lines) if lines else ""))
         stop_btn.configure(state="normal")
         for b in (start_offered, start_own):
             b.configure(state="disabled")
@@ -304,7 +399,13 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
             root.after(1000, watch)
             return
         state["proc"] = None
-        rec_status.set("Recording saved on this PC. Review it before sending.")
+        if proc.returncode != 0:
+            rec_status.set(f"The recording ended with an error (see {state.get('log')}). What was "
+                           "recorded until then is kept.")  # fmt: skip
+            messagebox.showerror("TwinLab Recorder", f"The recording ended with an error. The log is "
+                                 f"{state.get('log')}")  # fmt: skip
+        else:
+            rec_status.set("Recording saved on this PC. Review it before sending.")
         stop_btn.configure(state="disabled")
         for b in (start_offered, start_own):
             b.configure(state="normal")
@@ -338,6 +439,8 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
                 targets.append({"origin": line, "level": "full"})
             elif line.lower().endswith(".exe"):
                 targets.append({"exe": line, "level": "full"})
+            elif line.lower().startswith(("tn3270://", "tn3270s://")):
+                targets.append({"tn3270": line})
         if not targets:
             messagebox.showinfo("TwinLab Recorder", "Choose at least one target application.")
             return
@@ -378,6 +481,24 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
         refresh_status()
         poll_portal()
 
+    def on_profile():
+        if state["proc"] is not None:
+            messagebox.showinfo("TwinLab Recorder", "Stop the recording first.")
+            return
+        _labctl()
+        from labctl.workstation.session import open_profile
+
+        try:
+            open_profile(browser_profile(cfg), url="https://microsoftedge.microsoft.com/addons/search/uipath")
+        except RuntimeError as exc:
+            messagebox.showerror("TwinLab Recorder", str(exc))
+            return
+        keep_var.set(True)
+        messagebox.showinfo("TwinLab Recorder", "The recorder's browser opened with its kept profile. "
+                            "Install UiPath's extension there (or sign in to the applications), "
+                            "then close that browser before you start recording.")  # fmt: skip
+
+    profile_btn.configure(command=on_profile)
     pair_btn.configure(command=on_pair)
     stop_btn.configure(command=on_stop)
     start_offered.configure(command=on_start_offered)
@@ -423,17 +544,28 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--exe", action="append", default=[])
     r.add_argument("--origin", action="append", default=[])
     r.add_argument("--steps-exe", action="append", default=[])
+    r.add_argument("--tn3270", action="append", default=[], help="a mainframe host:port")
+    r.add_argument("--tn3270-listen", type=int, help="the port the terminal connects to (23270)")
+    r.add_argument("--keep-browser-profile", action="store_true",
+                   help="use the kept browser profile (UiPath's extension installed once)")
+    r.add_argument("--cdp", help="attach to a running browser at this DevTools address")
+    r.add_argument("--browser", choices=["edge", "chrome"], help="the browser the session starts")
+    r.add_argument("--pictures", action="store_true", help="pictures of desktop windows (memory)")
+    r.add_argument("--no-robot", action="store_true",
+                   help="ignore values set without the keyboard focus (a person, not a robot)")
     r.add_argument("--name", default="")
     r.add_argument("--minutes", type=float, default=240)
     r.add_argument("--send", action="store_true", help="send the references at the end without asking")
     rs = sub.add_parser("run-session")
     rs.add_argument("--config", required=True)
+    rs.add_argument("--parent", type=int)
     sh = sub.add_parser("show")
     sh.add_argument("session_id")
     sd = sub.add_parser("send")
     sd.add_argument("session_id")
     sd.add_argument("--yes", action="store_true")
     sub.add_parser("recover")
+    sub.add_parser("browser", help="open the kept browser profile to install an extension")
     sub.add_parser("gui")
     sub.add_parser("version")
     args = parser.parse_args(argv)
@@ -462,6 +594,11 @@ def main(argv: list[str] | None = None) -> int:
             deny: list[str] = []
             targets = [{"exe": e} for e in args.exe] + [{"origin": o} for o in args.origin]
             targets += [{"exe": e, "level": "steps"} for e in args.steps_exe]
+            for i, m in enumerate(args.tn3270):
+                t = {"tn3270": m}
+                if args.tn3270_listen is not None:
+                    t["listen"] = args.tn3270_listen + i
+                targets.append(t)
             portal_id = automation_id = None
             name = args.name
             if args.session is not None:
@@ -474,25 +611,29 @@ def main(argv: list[str] | None = None) -> int:
                 name = name or offered["name"]
             if not targets:
                 raise SystemExit("name a session (--session) or targets (--exe, --origin)")
-            conf = session_config(targets, deny, name or "session", portal_id, automation_id, args.minutes)
+            conf = session_config(targets, deny, name or "session", portal_id, automation_id, args.minutes,
+                                  args.keep_browser_profile, args.cdp, args.browser, args.pictures,
+                                  not args.no_robot)  # fmt: skip
             print(f"recording session {conf['id']}: Ctrl+C, or a file 'stop' in "
                   f"{cfg.recordings / conf['id']}, ends it")  # fmt: skip
+            for line in mainframe_addresses(conf):
+                print(line)
             try:
                 folder = run_session(cfg, conf)
             except KeyboardInterrupt:
                 folder = cfg.recordings / conf["id"]
             box = outbox(cfg, folder.name)
-            print(describe(box))
+            print(describe(box, session_notes(cfg, folder.name)))
             if args.send:
                 print(json.dumps(send(cfg, folder.name, args.ca_bundle)))
             else:
                 print(f"kept on this PC. Review with `show {folder.name}`, send with `send {folder.name}`")
         elif args.command == "run-session":
             conf = json.loads(Path(args.config).read_text(encoding="utf-8"))
-            run_session(cfg, conf)
+            run_session(cfg, conf, parent_pid=args.parent)
         elif args.command == "show":
             box = outbox(cfg, args.session_id)
-            print(describe(box))
+            print(describe(box, session_notes(cfg, args.session_id)))
             print(json.dumps(box, indent=1))
         elif args.command == "send":
             box = outbox(cfg, args.session_id)
@@ -501,6 +642,13 @@ def main(argv: list[str] | None = None) -> int:
                 print("not sent")
                 return 1
             print(json.dumps(send(cfg, args.session_id, args.ca_bundle)))
+        elif args.command == "browser":
+            _labctl()
+            from labctl.workstation.session import open_profile
+
+            open_profile(browser_profile(cfg), url="https://microsoftedge.microsoft.com/addons/search/uipath")
+            print(f"opened the kept profile {browser_profile(cfg)}: install UiPath's extension, close "
+                  "the browser, then record with --keep-browser-profile")  # fmt: skip
         elif args.command == "recover":
             _labctl()
             from labctl.workstation.session import recover_all

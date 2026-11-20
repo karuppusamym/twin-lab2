@@ -108,12 +108,12 @@ def clean_targets(items) -> list[dict]:
         if not isinstance(t, dict):
             continue
         item = {"level": t.get("level") if t.get("level") in ("full", "steps") else "full"}
-        for k in ("key", "exe", "origin", "name"):
+        for k in ("key", "exe", "origin", "name", "tn3270"):
             if isinstance(t.get(k), str) and 0 < len(t[k]) <= 200:
                 item[k] = t[k]
         if isinstance(t.get("app_id"), int):
             item["app_id"] = t["app_id"]
-        if any(k in item for k in ("key", "exe", "origin")):
+        if any(k in item for k in ("key", "exe", "origin", "tn3270")):
             out.append(item)
     return out
 

@@ -15,7 +15,7 @@
     {% endfor %}
     <form method="post" action="{{ url_for('add_identity', app_id=item.id) }}">
       <input type="hidden" name="token" value="{{ session.form_token }}">
-      <label>Executable name or web address <input name="key" required placeholder="CaseDesk.exe or https://billing.example.test"></label>
+      <label>Executable name, web address or mainframe host <input name="key" required placeholder="CaseDesk.exe, https://billing.example.test or tn3270://mainframe.example.test:23"></label>
       <button>Add identity</button>
     </form>
     <form method="post" action="{{ url_for('set_status', app_id=item.id) }}">
