@@ -11,6 +11,12 @@ from zipfile import ZipFile
 from capture import recover
 from openshift import resources
 from portal import add_release, create_app
+from test_registry import eid
+
+
+def ev(path, n):
+    """Event n of the recording at `path`: by its event id."""
+    return eid(path.rsplit("/", 1)[1], n)
 
 
 class WorkflowTest(unittest.TestCase):
@@ -60,7 +66,7 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(recover(channels), 1)
         first = (channels / "steps.jsonl").read_bytes()
         shared = self.recording("Order handoff", first)
-        self.assertEqual(self.post(shared, app_id="1", event="1", notes="Order saved").status_code, 302)
+        self.assertEqual(self.post(shared, app_id="1", event=ev(shared, 1), notes="Order saved").status_code, 302)
         (channels / "desktop/steps.jsonl").write_bytes(
             b'{"seq":1,"action":"submit","surface":"desktop","process":"Billing.exe"}\n'
         )
@@ -68,12 +74,12 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(self.recording("Recovered", (channels / "steps.jsonl").read_bytes()), shared)
         self.assertEqual(self.recording("Older partial copy", first), shared)
         self.assertIn(b"Billing.exe", self.client.get(shared + "?app_id=2").data)
-        self.assertEqual(self.post(shared, app_id="2", event="1000000001").status_code, 302)
+        self.assertEqual(self.post(shared, app_id="2", event=ev(shared, 1000000001)).status_code, 302)
         other = self.recording("Invalid amount", b'{"seq":4,"action":"submit"}\n')
-        self.assertEqual(self.post(other, app_id="2", event="4").status_code, 302)
+        self.assertEqual(self.post(other, app_id="2", event=ev(other, 4)).status_code, 302)
         _, orders_pack, _ = self.pack(orders)
         _, billing_pack, _ = self.pack(billing)
-        self.assertEqual(orders_pack["evidence"][0]["events"], [{"seq": 1, "action": "click"}])
+        self.assertEqual(orders_pack["evidence"][0]["events"], [{"event_id": ev(shared, 1), "seq": 1, "action": "click"}])
         self.assertEqual(len(billing_pack["evidence"]), 2)
         self.assertNotIn("orders.local", str(orders_pack))
 
