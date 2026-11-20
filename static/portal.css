@@ -88,6 +88,11 @@ a.button.secondary { background: #e6eef6; color: #14548e; }
 .scenario-events label { align-items: flex-start; gap: .35rem; }
 .pack-file { margin-top: 1rem; }
 pre.file { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f7fa; border: 1px solid #d9e3ec; border-radius: .35rem; padding: .75rem; font-size: .85rem; max-height: 40rem; overflow-y: auto; }
+.notice { color: #14532d; font-weight: 600; }
+blockquote.question { border-left: 4px solid #b45309; margin: 0.5rem 0; padding: 0.25rem 0.75rem; white-space: pre-wrap; }
+.badge.ready_for_verification, .badge.running, .badge.starting, .badge.queued { background: #e0ecff; color: #1e3a8a; }
+.badge.checking_started, .badge.waiting_for_answer { background: #fef3c7; color: #92400e; }
+.badge.failed, .badge.cancelled { background: #fde2e2; color: #9b1c1c; }
 .warning { background: #fff7e6; border-left: 4px solid #d48a00; padding: .5rem .75rem; border-radius: .25rem; }
 .lanes { margin: .75rem 0; }
 .lane { display: grid; grid-template-columns: 6.5rem 1fr minmax(8rem, auto); gap: .5rem; align-items: center; margin: .25rem 0; }
