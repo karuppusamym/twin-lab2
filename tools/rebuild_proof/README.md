@@ -26,7 +26,14 @@ python tools\rebuild_proof\audit.py           # did each builder stay in its fol
 python tools\rebuild_proof\replay.py control-web a     # positive control: the judge against the reference app
 python tools\rebuild_proof\replay.py web a             # the rebuilt app, strict (case c: two apps behind one host)
 python tools\rebuild_proof\replay.py tn3270 b          # mainframe (control-tn3270 for the control)
+python tools\rebuild_proof\replay.py control-visual a  # visual: the reference against its own pictures
+python tools\rebuild_proof\replay.py visual a          # visual: the rebuild (portal's visual.py, via visual_run.py)
+python tools\rebuild_proof\probes.py web a             # non-happy path: reference vs rebuild (tn3270 b|c too)
 ```
+
+- **visual_run.py**: the portal's `visual.py` at the recorded pictures' size (attach-mode pictures are not
+  1280x720). **probes.py**: probes off the recorded path (invalid input, empty results, permission), with
+  the reference app as the oracle.
 
 - **record.py**: the recorder's own command line (`pair`, `record --session N --cdp …`, `send`, `upload`)
   against a headless Chromium with a DevTools port, and Twin Lab's scripted 3270 terminal against the
