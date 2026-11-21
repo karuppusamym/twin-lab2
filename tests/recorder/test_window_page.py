@@ -290,6 +290,8 @@ class WindowPageTest(unittest.TestCase):
         self.assertEqual(page.locator("tbody tr").count(), 3)
         self.assertIn("Recording", page.inner_text("tbody tr:nth-child(1)"))
         self.check_a11y("recording")
+        box = page.locator("button[data-act=stop]").bounding_box()
+        self.assertGreater(box["width"], box["height"] * 2)  # a button on one line, not an icon
         self.shot("05-recording")
         for w, h, dark in ((600, 460, False), (1040, 700, True)):
             page.set_viewport_size({"width": w, "height": h})

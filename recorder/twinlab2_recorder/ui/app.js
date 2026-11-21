@@ -141,7 +141,7 @@ function recordingView(s) {
   if (r.mode === "checking") sub = "Checking that each application can be recorded…";
   if (r.mode === "stopping") sub = `${esc(r.name)} · finishing… ${r.stop_waited || 0} s${r.stop_limit ? ` of ${r.stop_limit} s before the window closes` : ""}`;
   const icon = r.mode === "recording" ? ICON("rec", "") : r.mode === "stopping" ? ICON("stop", "") : '<span class="spin" style="width:26px;height:26px;border-width:3px" aria-hidden="true"></span>';
-  let html = `<div class="page"><div class="hero ${r.mode}"><div class="big">${icon}</div>
+  let html = `<div class="page"><div class="hero ${r.mode}"><div class="badge">${icon}</div>
     <div><h1 class="kicker">${kicker}</h1>${r.elapsed ? `<div class="timer" aria-label="Elapsed ${esc(r.elapsed)}">${esc(r.elapsed)}</div>` : ""}<div class="small muted">${sub}</div></div>
     <div class="acts">${r.mode === "recording" ? `<button class="btn stop big" data-act="stop"${dis(s.can.stop)}>${ICON("stop")}Stop and save</button>` : ""}</div></div>`;
   if (r.mode === "recording") {
