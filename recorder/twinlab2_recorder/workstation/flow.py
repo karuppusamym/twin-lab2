@@ -152,6 +152,15 @@ def route_word(seg: str) -> bool:
     return bool(ROUTE_WORD.fullmatch(seg))
 
 
+# The keys a flow step names by `key`: keyboard keys that are no data, and every 3270 attention
+# key (an AID: Enter, PF1-PF24, PA1-PA3, Clear), so a mainframe step that sent PF3 or Clear keeps
+# it in the flow, the transitions and the package (gap 20).
+KEYS = frozenset(
+    {"Enter", "Tab", "Esc", "Escape", "Delete", "Backspace", "Clear", "PA1", "PA2", "PA3"}
+    | {f"F{n}" for n in range(1, 25)} | {f"PF{n}" for n in range(1, 25)}
+)
+
+
 def desktop_step(step: dict, app: dict | None = None) -> dict:
     target = step.get("target") or {}
     props = dict(target.get("props") or {})
@@ -236,9 +245,6 @@ def label_step(step: dict, n: int, app: dict | None = None, prefixes: Iterable[s
     else:
         facts = web_step(step, prefixes)
     out.update({k: v for k, v in facts.items() if v})
-    if step.get("key") and str(step["key"]) in {
-        "Enter", "Tab", "Esc", "Escape", "Delete", "Backspace", "F1", "F2", "F3", "F4", "F5",
-        "F6", "F7", "F8", "F9", "F10", "F11", "F12",
-    }:  # fmt: skip
+    if step.get("key") and str(step["key"]) in KEYS:
         out["key"] = str(step["key"])
     return out

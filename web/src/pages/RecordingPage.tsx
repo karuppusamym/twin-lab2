@@ -32,6 +32,11 @@ function RecordingView({ rec }: { rec: Schemas["RecordingDetail"] }) {
       <Crumbs><Link to="/recordings">Recordings</Link></Crumbs>
       <h1>{rec.name}</h1>
       <p id="completeness"><Badge kind={c && c.overall === "complete" ? "recorded" : c ? "discovered" : "packaged"}>{status.label}</Badge> {status.summary}.</p>
+      {c?.local_exclusions && c.local_exclusions.count > 0 && (
+        <p className="muted" id="excluded-on-pc"><b>Excluded on this PC:</b> {plural(c.local_exclusions.count, "application")}
+          {c.local_exclusions.names.length > 0 && ` (${c.local_exclusions.names.join(", ")})`}
+          {c.local_exclusions.managed ? ", by the office's policy" : ", by the person's own exclude list"}. Nothing about {c.local_exclusions.count === 1 ? "it was" : "them was"} recorded, by design: this is not a gap in the recording.</p>
+      )}
       {c?.recovered && (
         <p className="warning" id="recovered"><b>Recovered after the recorder stopped unexpectedly.</b> The recording was rebuilt from its journal
           {c.loss_window_seconds != null && `: up to ${plural(c.loss_window_seconds, "second")} before the interruption may be lost`}. Check the events around the interruption before relying on them.</p>
