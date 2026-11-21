@@ -14,6 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # the OpenShift manifest against the Kubernetes 1.30 (OpenShift 4.17) schemas, unknown fields
+      # refused; Route (route.openshift.io) has no published schema: tests/server/test_deploy_manifests.py
+      - name: Schema-check deploy/openshift-portal.yaml (kubeconform, pinned by digest)
+        run: |
+          docker run --rm -v "$PWD/deploy:/deploy:ro"             ghcr.io/yannh/kubeconform:v0.6.7@sha256:0925177fb05b44ce18574076141b5c3d83235e1904d3f952182ac99ddc45762c             -strict -summary -kubernetes-version 1.30.0 -skip Route /deploy/openshift-portal.yaml
       - name: Build deploy/Dockerfile (web app stage, then the portal)
         run: docker build -f deploy/Dockerfile -t twinlab2-portal:ci .
       - name: Run it as an arbitrary non-root UID, as OpenShift does
@@ -22,7 +27,26 @@ jobs:
             -e TWINLAB2_HOSTS=localhost,127.0.0.1 -e TWINLAB2_SECRET_KEY=ci-only \
             -e TWINLAB2_TRUSTED_PROXIES=0.0.0.0/0 \
             twinlab2-portal:ci gunicorn --bind 0.0.0.0:8080 "twinlab2.app:asgi()"
-          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/livez && break; sleep 1; done
+      - name: The probes, as a kubelet sends them (Host is the pod's IP), and inside the container
+        run: |
+          set -e
+          for path in /livez /readyz /healthz; do
+            test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: 10.1.2.3:8080' "http://127.0.0.1:8080$path")" = 200
+          done
+          curl -fsS -H 'Host: 10.1.2.3:8080' http://127.0.0.1:8080/readyz | tee readyz.json
+          grep -q '"database":"ok"' readyz.json && grep -q '"artifacts":"ok"' readyz.json
+          # everything else still checks the Host
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: 10.1.2.3:8080' http://127.0.0.1:8080/api/v1/session)" = 400
+          curl -fsS -D headers.txt -o /dev/null http://127.0.0.1:8080/api/v1/session
+          grep -qi '^request-id: ' headers.txt
+          # the exec probes of the manifest (the portal is bound to the pod's loopback there)
+          docker exec portal python -m twinlab2.probe http http://127.0.0.1:8080/livez
+          docker exec portal python -m twinlab2.probe http http://127.0.0.1:8080/readyz
+          # the worker, from the same image as the same arbitrary UID, and its liveness probe
+          docker exec -d portal python -m twinlab2.worker
+          for i in $(seq 1 30); do docker exec portal python -m twinlab2.probe worker && break; sleep 1; done
+          docker exec portal python -m twinlab2.probe worker
       - name: The OAuth proxy's user, the API and the web app
         run: |
           set -e
