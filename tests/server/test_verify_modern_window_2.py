@@ -143,3 +143,18 @@ class ClasslessFramedTrees(unittest.TestCase):
 
     def test_a_caption_differs_only_in_case(self):
         self.assertTrue(desktop.caption({"type": "Text", "name": "log"}, {"type": "Button", "name": "Log"}))
+
+
+class PlaceAcrossUnnamedLayers(unittest.TestCase):
+    def test_an_unnamed_list_under_an_unnamed_xaml_layer_is_found(self):
+        from test_verify_modern_window import FRAMED, WPF, copy as cp
+
+        framed = cp(FRAMED)
+        pad = framed["children"][1]["children"][0]
+        framed["children"][1]["children"] = [{"type": "Group", "cls": "LandmarkTarget", "fw": "XAML",
+                                              "children": [pad, {"type": "List", "cls": "ListView"}]}]
+        live = cp(WPF)
+        live["children"].append({"type": "List", "cls": "ListBox"})
+        self.assertEqual(desktop.compare_trees(desktop.unframe(framed), live), [])
+        live["children"].pop()
+        self.assertEqual([d.check for d in desktop.compare_trees(desktop.unframe(framed), live)], ["missing"])

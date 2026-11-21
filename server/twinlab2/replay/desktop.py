@@ -214,6 +214,17 @@ def caption(node: dict, parent: dict) -> bool:
     return bool(text) and text.casefold() in own.casefold()  # "log" on the key named "Log"
 
 
+def _find(tree: dict, selector: str, path: list[str] | None, framed: bool) -> list[tuple[dict, tuple]]:
+    """locator.find; in a modern app's window a control located by its place (Index) is matched
+    by its named ancestors only: the unnamed XAML layers between them (LandmarkTarget) are not
+    controls a rebuild can know of, as in the parent-path check (`_named`)."""
+    if not framed or not path:
+        return locator.find(tree, selector, path)
+    want = _named(path)
+    return [(n, anc) for n, anc in locator.find(tree, selector, None)
+            if _named([locator.step_of(a, a.get("idx", 0)) for a in anc]) == want]
+
+
 def _named(path: list[str]) -> list[str]:
     """The steps of an ancestor path that name a control (AutomationId or Name). Unnamed
     containers in between (Java's root pane, layered pane and panels; WPF's borders) are left
@@ -334,7 +345,8 @@ def compare_trees(recorded: dict, live: dict, step: int = 0,
     # the message box opened or closed), not the app: enabled states are then not compared; the
     # message box itself is compared as its own window.
     modal = bool(recorded.get("enabled")) != bool(live.get("enabled"))
-    if recorded.get("framed"):  # the window's own class is the frame host's: on neither side
+    framed = bool(recorded.get("framed"))
+    if framed:  # the window's own class is the frame host's: on neither side
         live = {**classless(live), "framed": True}
     for node, ancestors, idx in _controls(recorded):
         loc = locator.build(recorded, node, ancestors, idx)
@@ -343,7 +355,7 @@ def compare_trees(recorded: dict, live: dict, step: int = 0,
     for loc, node, ancestors in expected:
         sel = loc["selector"]
         scoped = "Index=" in sel
-        hits = locator.find(live, sel, loc["path"] if scoped else None)
+        hits = _find(live, sel, loc["path"] if scoped else None, framed)
         if loc.get("ambiguous"):
             # Ambiguous in the real application already (the brief lists it): a difference only
             # when the demo app has another number of matches.
@@ -406,9 +418,7 @@ def compare_trees(recorded: dict, live: dict, step: int = 0,
                                     expected=node["value"], actual=have["value"]))  # fmt: skip
     for node, ancestors, idx in _controls(live):
         loc = locator.build(live, node, ancestors, idx)
-        found = locator.find(
-            recorded, loc["selector"], loc["path"] if "Index=" in loc["selector"] else None
-        )
+        found = _find(recorded, loc["selector"], loc["path"] if "Index=" in loc["selector"] else None, framed)
         if not found:
             if node.get("type") == "MenuItem" and _submenu_closed(recorded, live, ancestors):
                 continue
