@@ -1,0 +1,83 @@
+# Disposable build runners on OpenShift (TWINLAB2_RUNNER_MODE=openshift on the twinlab2-worker).
+# NOT YET RUN ON A CLUSTER: schema-checked by kubeconform in CI. The Jobs themselves are made per
+# runner generation by the worker (server/twinlab2/providers/openshift_job.py); this file holds
+# what they need:
+#
+#   oc apply -f deploy/openshift-builder.yaml
+#   oc set volume deployment/twinlab2-worker --add --name workspaces \
+#     --claim-name twinlab2-build-workspaces --mount-path /workspaces
+#   oc set env deployment/twinlab2-worker TWINLAB2_RUNNER_MODE=openshift \
+#     TWINLAB2_WORKSPACES=/workspaces TWINLAB2_PUBLISH_ROOT=/workspaces/.publish \
+#     TWINLAB2_RUNNER_IMAGE=<the portal image>
+#
+# Set the provider's addresses in the NetworkPolicy's egress ipBlock below (NetworkPolicy has no
+# host names; api.anthropic.com's published ranges, or your egress proxy). The runners need no git
+# host: the portal clones the repository into the session folder and publishes the result itself.
+apiVersion: v1
+kind: List
+items:
+  # the runners' own service account: nothing is bound to it and its token is never mounted
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: twinlab2-build-runner
+    automountServiceAccountToken: false
+  # the session folders, shared by the worker (all of them) and each runner Job (its own, by subPath)
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: twinlab2-build-workspaces
+    spec:
+      accessModes: [ReadWriteMany]
+      resources:
+        requests:
+          storage: 50Gi
+  # what the worker may do: make and remove runner Jobs and their one-key Secrets, nothing else
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: twinlab2-build-launcher
+    rules:
+      - apiGroups: [batch]
+        resources: [jobs]
+        verbs: [create, get, list, delete]
+      - apiGroups: [""]
+        resources: [secrets]
+        verbs: [create, delete]
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: twinlab2-build-launcher
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: twinlab2-build-launcher
+    subjects:
+      - kind: ServiceAccount
+        name: twinlab2
+  # no ingress; egress only to the cluster DNS and the provider
+  - apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: twinlab2-build-runner
+    spec:
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/component: build-runner
+      policyTypes: [Ingress, Egress]
+      ingress: []
+      egress:
+        - to:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: openshift-dns
+          ports:
+            - {protocol: UDP, port: 5353}
+            - {protocol: TCP, port: 5353}
+            - {protocol: UDP, port: 53}
+            - {protocol: TCP, port: 53}
+        - to:
+            - ipBlock:
+                cidr: 160.79.104.0/23  # the provider's published API range: replace with yours
+          ports:
+            - {protocol: TCP, port: 443}

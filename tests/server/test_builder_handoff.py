@@ -67,7 +67,7 @@ def test_extraction_limit_is_checked_before_writing(tmp_path):
     assert not list(tmp_path.glob("approved-input-*"))
 
 
-@pytest.mark.parametrize("phase", [None, "implement", "publish"])
+@pytest.mark.parametrize("phase", [None, "implement", "commit"])
 def test_corrupt_pack_fails_before_any_provider_or_git_operation(tmp_path, phase):
     digest = archive(tmp_path)
     (tmp_path / "spec.json").write_text(json.dumps({"tag": "test", "pack_sha256": digest}))
@@ -75,13 +75,13 @@ def test_corrupt_pack_fails_before_any_provider_or_git_operation(tmp_path, phase
     session.save(phase=phase)
     (tmp_path / "pack.zip").write_bytes(b"corrupt")
     with mock.patch.object(runner, "setup") as setup, mock.patch.object(runner, "implement") as implement, \
-            mock.patch.object(runner, "publish") as publish:
+            mock.patch.object(runner, "commit") as commit:
         asyncio.run(runner.run(session, "copilot"))
     assert session.state["phase"] == "failed"
     assert "checksum" in session.state["error"]
     setup.assert_not_called()
     implement.assert_not_called()
-    publish.assert_not_called()
+    commit.assert_not_called()
 
 
 def test_tool_access_scopes_relative_paths_and_inputs(tmp_path):
@@ -89,7 +89,7 @@ def test_tool_access_scopes_relative_paths_and_inputs(tmp_path):
     inputs = tmp_path / "inputs"
     repo.mkdir()
     inputs.mkdir()
-    session = SimpleNamespace(repo=repo, input_dir=inputs)
+    session = SimpleNamespace(repo=repo, input_dir=inputs, fence=lambda: None)
     allows = lambda tool, args: runner.Session.allows(session, tool, args)
     assert allows("Write", {"file_path": "src/app.py"})
     assert allows("Read", {"file_path": str(inputs / "BUILD_TASK.md")})
@@ -111,12 +111,15 @@ def test_package_summary_uses_event_identity_not_display_order():
     assert "1 recorded event removed" in summary
 
 
-def test_git_credentials_are_not_in_process_arguments(tmp_path):
-    session = SimpleNamespace(repo=tmp_path, secrets={"github_token": "private-github-token"},
+def test_runner_git_carries_no_credentials(tmp_path):
+    """The runner holds no GitHub credential: the portal clones and publishes."""
+    session = SimpleNamespace(repo=tmp_path, folder=tmp_path, secrets={"github_token": "private-github-token"},
                               spec={"remote": "https://github.com/example/repo.git"})
-    with mock.patch.object(runner.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="ok", stderr="")) as call:
-        assert runner._git(session, "fetch") == "ok"
+    with mock.patch.dict(runner.os.environ, {"ANTHROPIC_API_KEY": "k", "COPILOT_GITHUB_TOKEN": "t"}),             mock.patch.object(runner.subprocess, "run",
+                              return_value=SimpleNamespace(returncode=0, stdout="ok", stderr="")) as call:
+        assert runner._git(session, "status") == "ok"
     args, kwargs = call.call_args
-    assert args[0] == ["git", "fetch"]
-    assert kwargs["env"]["GIT_CONFIG_COUNT"] == "1"
-    assert kwargs["env"]["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic ")
+    assert "private-github-token" not in " ".join(args[0])
+    assert "credential.helper=" in args[0]
+    assert not any("private-github-token" in str(v) for v in kwargs["env"].values())
+    assert "ANTHROPIC_API_KEY" not in kwargs["env"] and "COPILOT_GITHUB_TOKEN" not in kwargs["env"]

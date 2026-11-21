@@ -8,18 +8,28 @@ knows is in its session folder:
 
     spec.json      what to build (written by the adapter; the package checksum, repo, starting commit, branch …)
     pack.zip       the owner-approved package bytes (checked against spec.json before use)
-    repo/          the git working tree: a clone of the repository at the starting commit, on the session's branch
-    state.json     written here: phase, heartbeat, agent session id, cost, results
-    events.jsonl   written here, append only: what the provider said and did (the adapter reads it)
+    lease.json     written by the adapter: the runner generation that holds the session now
+    repo/          the git working tree, cloned by the portal (no remote, no credentials) at the starting commit
+    state.json     written here: generation, phase, heartbeat, agent session id, cost, results
+    events.jsonl   written here, append only, each line stamped with its generation (the adapter reads it)
+    out/           written here: g<generation>.bundle, the session's commits (the portal publishes them)
     inbox/         written by the adapter: <message id>.json replies and tool decisions, `interrupt`, `cancel`
 
-The agent works in repo/ and reads verified evidence from approved-input-*/. Automatic
-file access is scoped to these directories; other tools require a decision in the session chat.
-This permission policy is not an operating-system sandbox. Secrets come on stdin, never in argv or in
-the session folder; the GitHub token is used only by this process (clone, push, pull request),
-never put in the agent's environment.
+The agent sees only repo/ (its working directory); tools that are not reads or edits inside it
+are asked for (a tool approval in the session chat). Secrets come on stdin (or, in an OpenShift
+Job, a mounted file), never in argv; the runner holds no GitHub credential at all: the portal
+clones the repository before it starts and publishes the branch and pull request from its bundle
+after checking it (providers/local_runner.py). The provider key reaches the agent's environment
+only for the implement phase (sandbox.PHASE_CREDENTIALS).
+The agent may also read the verified evidence in approved-input-*/ (read-only).
 
-Phases: setup -> clarify (Claude: the Messages API) -> implement (the agent) -> publish -> done;
+Every runner process holds one *generation* of the session's lease (`--generation`). It checks
+lease.json before each write and stops, writing nothing, once a newer generation holds it (its
+heartbeat stopped and the portal started another one): a paused process that wakes up after a
+restart cannot overwrite the new one's state, and whatever it still manages to write carries its
+old generation, which the adapter rejects.
+
+Phases: setup -> clarify (Claude: the Messages API) -> implement (the agent) -> commit -> done;
 or failed / cancelled. A restarted runner (`--resume`) continues from state.json; a reply is
 acknowledged once it was handed to the model, and one whose call got no answer is reported
 uncertain, never resent.
@@ -29,7 +39,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 from dataclasses import dataclass, field
 import importlib
 import json
@@ -40,11 +49,10 @@ import sys
 import threading
 import time
 import traceback
-import urllib.error
-import urllib.request
+import hashlib
 
 PROJECT = Path(__file__).resolve().parents[2]  # server/
-HEARTBEAT_SECONDS = 2.0
+HEARTBEAT_SECONDS = float(os.environ.get("TWINLAB2_RUNNER_HEARTBEAT_SECONDS", 2.0))
 WAIT_STEP = 0.2
 READ_ONLY_TOOLS = {"Read", "Glob", "Grep", "LS", "TodoWrite", "NotebookRead"}
 EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
@@ -52,6 +60,23 @@ EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
 class Cancelled(Exception):
     pass
+
+
+class Superseded(Exception):
+    """A newer runner generation holds the session's lease: this one stops without writing."""
+
+
+def lease_generation(folder):
+    """The generation lease.json names (1 for a session started before leases)."""
+    path = Path(folder) / "lease.json"
+    for _ in range(50):
+        try:
+            return int(json.loads(path.read_text(encoding="utf-8"))["generation"])
+        except FileNotFoundError:
+            return 1
+        except (OSError, ValueError, KeyError, TypeError):
+            time.sleep(0.02)  # being replaced
+    return None
 
 
 @dataclass
@@ -68,8 +93,10 @@ class AgentResult:
 class Session:
     """The session folder, seen from the runner."""
 
-    def __init__(self, folder: Path, secrets: dict, restarted=False):
+    def __init__(self, folder: Path, secrets: dict, restarted=False, generation=1):
         self.restarted = restarted
+        self.generation = int(generation)
+        self.superseded = False
         self.folder = Path(folder)
         self.spec = json.loads((self.folder / "spec.json").read_text(encoding="utf-8"))
         self.secrets = secrets
@@ -82,6 +109,7 @@ class Session:
         self.state.setdefault("tag", self.spec["tag"])
         self.state.setdefault("handled", [])
         self.state["pid"] = os.getpid()
+        self.state["generation"] = self.generation
         self.events = self.folder / "events.jsonl"
         self._next = sum(1 for _ in self.events.open(encoding="utf-8")) if self.events.exists() else 0
         self.interrupted = threading.Event()
@@ -89,17 +117,28 @@ class Session:
 
     # -- files ---------------------------------------------------------------------------------
 
+    def fence(self):
+        """Superseded once lease.json names another generation."""
+        if self.superseded or lease_generation(self.folder) != self.generation:
+            self.superseded = True
+            raise Superseded(f"generation {self.generation} no longer holds the session")
+
     def save(self, **updates):
         with self.lock:
+            self.fence()
             self.state.update(updates)
+            self.state["generation"] = self.generation
             self.state["heartbeat"] = time.time()
-            tmp = self.folder / "state.json.tmp"
+            tmp = self.folder / f"state.json.g{self.generation}.tmp"
             tmp.write_text(json.dumps(self.state, indent=1, sort_keys=True), encoding="utf-8")
             replace(tmp, self.folder / "state.json")
 
     def emit(self, kind, text="", **data):
         with self.lock:
-            event = {"id": f"e{self._next}", "kind": kind, "text": str(text)[:8000], "data": data, "at": time.time()}
+            self.fence()
+            prefix = "e" if self.generation == 1 else f"g{self.generation}e"
+            event = {"id": f"{prefix}{self._next}", "gen": self.generation, "kind": kind, "text": str(text)[:8000],
+                     "data": data, "at": time.time()}
             self._next += 1
             with self.events.open("a", encoding="utf-8") as out:
                 out.write(json.dumps(event, sort_keys=True) + "\n")
@@ -107,11 +146,17 @@ class Session:
 
     def heartbeat(self, stop):
         while not stop.wait(HEARTBEAT_SECONDS):
-            self.save()
+            try:
+                self.save()
+            except Superseded:
+                # a newer generation runs this session: end the whole process now, mid-agent-call
+                # or not, so nothing more of this one reaches the session folder or the repo
+                os._exit(3)
 
     # -- the inbox -----------------------------------------------------------------------------
 
     def _check_controls(self):
+        self.fence()
         if (self.inbox / "cancel").exists():
             raise Cancelled()
         if (self.inbox / "interrupt").exists():
@@ -168,7 +213,8 @@ class Session:
             self.save(waiting=False, waiting_for="")
 
     def allows(self, tool, tool_input):
-        """Automatic access is scoped; a working directory is not a sandbox."""
+        """True: run without asking (TodoWrite; reads inside repo/ or approved-input-*/; edits inside repo/)."""
+        self.fence()
         if tool == "TodoWrite":
             return True
         if tool in READ_ONLY_TOOLS | EDIT_TOOLS:
@@ -211,19 +257,17 @@ def _short(value, limit=2000):
     return value if len(text) <= limit else text[:limit] + "…"
 
 
-# -- git and GitHub (this process only) ----------------------------------------------------------------
+# -- git (no credentials: the portal clones and publishes) ---------------------------------------------
 
 
-def _git(session, *args, cwd=None, auth=True):
-    command = ["git"]
-    token, remote = session.secrets.get("github_token"), session.spec["remote"]
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("ANTHROPIC_", "GITHUB_", "TWINLAB2_GITHUB"))}
-    if auth and token and remote.startswith("https://"):
-        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-        # Git accepts transient configuration through the child environment. Keep
-        # credentials out of process command lines and out of repository config.
-        env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.extraHeader",
-                   GIT_CONFIG_VALUE_0=f"Authorization: Basic {basic}")
+def _git(session, *args, cwd=None):
+    # hooks off: nothing in the working tree runs as a side effect of the runner's own git calls
+    empty = session.folder / "home" / "no-hooks"
+    empty.mkdir(parents=True, exist_ok=True)
+    command = ["git", "-c", f"core.hooksPath={empty}", "-c", "credential.helper="]
+    env = dict(os.environ)  # the runner's environment is the allowlisted one (sandbox.child_env)
+    for name in ("ANTHROPIC_API_KEY", "COPILOT_GITHUB_TOKEN"):
+        env.pop(name, None)
     env.update(GIT_TERMINAL_PROMPT="0", GIT_AUTHOR_NAME="TwinLab2 build session", GIT_COMMITTER_NAME="TwinLab2 build session",
                GIT_AUTHOR_EMAIL="build-session@twinlab2.invalid", GIT_COMMITTER_EMAIL="build-session@twinlab2.invalid")
     done = subprocess.run(command + list(args), cwd=cwd or session.repo, env=env, capture_output=True, text=True,
@@ -236,49 +280,27 @@ def _git(session, *args, cwd=None, auth=True):
 def setup(session):
     spec = session.spec
     if not (session.repo / ".git").exists():
-        _git(session, "clone", "--no-checkout", "--quiet", spec["remote"], str(session.repo), cwd=session.folder)
+        raise RuntimeError("The session's working tree was not prepared by the portal (repo/ is missing).")
     _git(session, "checkout", "--quiet", "-B", spec["branch"], spec["base_sha"])
     session.emit("status", f"Workspace ready: branch {spec['branch']} from {spec['base_sha'][:12]}.")
 
 
-def github_pull(session, head_sha):
-    """Open (or find) the session's pull request; (number, url) or (None, None) without a token."""
-    spec, token = session.spec, session.secrets.get("github_token")
-    if not token or not spec.get("github_api"):
-        return None, None
-    body = json.dumps({"title": spec["title"], "head": spec["branch"], "base": spec["base_branch"],
-                       "body": f"TwinLab2 build session #{spec['build_id']}, package revision {spec['revision']} "
-                               f"(SHA-256 {spec['pack_sha256']}). Not tested: TwinLab2 verifies commit {head_sha} "
-                               "independently.", "draft": False}).encode()
-    request = urllib.request.Request(f"{spec['github_api']}/repos/{spec['repo']}/pulls", data=body, method="POST", headers={
-        "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "User-Agent": "twinlab2",
-        "Content-Type": "application/json", "X-GitHub-Api-Version": "2022-11-28"})
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            doc = json.loads(response.read() or b"{}")
-    except urllib.error.HTTPError as exc:
-        if exc.code != 422:  # 422: a pull request for this branch exists already
-            raise RuntimeError(f"GitHub refused the pull request ({exc.code}).") from exc
-        query = f"{spec['github_api']}/repos/{spec['repo']}/pulls?head={spec['repo'].split('/')[0]}:{spec['branch']}"
-        with urllib.request.urlopen(urllib.request.Request(query, headers={
-                "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "User-Agent": "twinlab2"}),
-                timeout=30) as response:
-            found = json.loads(response.read() or b"[]")
-        doc = found[0] if found else {}
-    return doc.get("number"), doc.get("html_url")
-
-
-def publish(session):
+def commit(session):
+    """Commit the working tree and write it as a bundle for the portal; the runner pushes nothing."""
+    session.fence()
     _git(session, "add", "-A")
     if _git(session, "status", "--porcelain"):
-        _git(session, "commit", "--quiet", "-m", f"TwinLab2 build session #{session.spec['build_id']}")
+        _git(session, "commit", "--quiet", "--no-verify", "-m", f"TwinLab2 build session #{session.spec['build_id']}")
     head = _git(session, "rev-parse", "HEAD")
     if head == session.spec["base_sha"]:
         raise RuntimeError("The session made no changes to commit.")
-    _git(session, "push", "--quiet", "--force-with-lease", "origin", f"HEAD:refs/heads/{session.spec['branch']}")
-    number, url = github_pull(session, head)
-    session.save(head_sha=head, pr_number=number, pr_url=url)
-    session.emit("status", f"Pushed {head[:12]} to {session.spec['branch']}" + (f"; pull request #{number}." if number else "."))
+    (session.folder / "out").mkdir(exist_ok=True)
+    name = f"out/g{session.generation}.bundle"
+    _git(session, "bundle", "create", str(session.folder / name), session.spec["branch"], "--not",
+         session.spec["base_sha"])
+    digest = hashlib.sha256((session.folder / name).read_bytes()).hexdigest()
+    session.save(head_sha=head, bundle=name, bundle_sha256=digest)
+    session.emit("status", f"Committed {head[:12]}; the portal checks and publishes it.")
 
 
 # -- phases ---------------------------------------------------------------------------------------------
@@ -363,7 +385,17 @@ async def implement(session, backend, clarified):
         context = AgentContext(session, resume)
         if backend == "claude" and context.remaining <= 0:
             raise RuntimeError(f"The budget of {context.budget} USD is used up.")
-        result = await agent(text, context)
+        from twinlab2.providers import sandbox
+
+        keyed = sandbox.with_credentials(dict(os.environ), "implement", session.secrets)
+        added = {k: v for k, v in keyed.items() if os.environ.get(k) != v}
+        os.environ.update(added)
+        try:
+            result = await agent(text, context)
+        finally:
+            for name in added:
+                os.environ.pop(name, None)
+        session.fence()
         if result.session_id:
             resume = result.session_id
             session.save(agent_session_id=resume)
@@ -429,21 +461,37 @@ async def run(session, backend):
             session.save(phase="implement")
         if session.state["phase"] == "implement":
             await implement(session, backend, clarified)
-            session.save(phase="publish")
-        if session.state["phase"] == "publish":
-            publish(session)
+            session.save(phase="commit")
+        if session.state["phase"] in ("commit", "publish"):  # publish: a runner from before the portal published
+            commit(session)
             session.save(phase="done")
-            session.emit("status", "Finished: ready for verification.")
+            session.emit("status", "Finished: committed, waiting for the portal to publish it.")
+    except Superseded:
+        stop.set()
+        print(f"generation {session.generation} superseded: stopping without writing", file=sys.stderr)
+        return
     except Cancelled:
-        session.save(phase="cancelled")
-        session.emit("status", "Cancelled.")
+        _quietly(session, phase="cancelled")
+        _quietly(session, emit="Cancelled.")
     except Exception as exc:  # recorded for the session page; the runner stops
-        session.save(phase="failed", error=f"{type(exc).__name__}: {exc}"[:2000])
-        session.emit("status", f"Failed: {exc}")
+        _quietly(session, phase="failed", error=f"{type(exc).__name__}: {exc}"[:2000])
+        _quietly(session, emit=f"Failed: {exc}")
         traceback.print_exc()
     finally:
         stop.set()
-        session.save(exited=time.time())
+        if not session.superseded:
+            _quietly(session, exited=time.time())
+
+
+def _quietly(session, emit=None, **updates):
+    """A last write, skipped when this generation was superseded meanwhile."""
+    try:
+        if emit is not None:
+            session.emit("status", emit)
+        else:
+            session.save(**updates)
+    except Superseded:
+        pass
 
 
 def main(argv=None):
@@ -451,14 +499,19 @@ def main(argv=None):
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--backend", choices=("claude", "copilot"), required=True)
     parser.add_argument("--resume", action="store_true", help="a restart: continue from state.json")
+    parser.add_argument("--generation", type=int, default=1, help="the lease generation this process holds")
+    parser.add_argument("--secrets-file", help="read the secrets from this file (an OpenShift Job's secret volume)")
     args = parser.parse_args(argv)
-    line = sys.stdin.readline()
-    secrets = json.loads(line) if line.strip() else {}
-    if secrets.get("anthropic_api_key"):  # the agent SDK reads it from the environment
-        os.environ["ANTHROPIC_API_KEY"] = secrets["anthropic_api_key"]
-    for name in ("GITHUB_TOKEN", "GH_TOKEN", "TWINLAB2_GITHUB_TOKEN"):
-        os.environ.pop(name, None)
-    session = Session(Path(args.workspace), secrets, restarted=args.resume)
+    if args.secrets_file:
+        secrets = json.loads(Path(args.secrets_file).read_text(encoding="utf-8") or "{}")
+    else:
+        line = sys.stdin.readline()
+        secrets = json.loads(line) if line.strip() else {}
+    secrets.pop("github_token", None)  # never the runner's: the portal publishes
+    if lease_generation(args.workspace) != args.generation:
+        print(f"generation {args.generation} does not hold the session's lease: not starting", file=sys.stderr)
+        return
+    session = Session(Path(args.workspace), secrets, restarted=args.resume, generation=args.generation)
     asyncio.run(run(session, args.backend))
 
 
