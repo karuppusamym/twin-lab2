@@ -214,6 +214,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/{app_id}/data-backend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** The demo's data backend (SQLite, PostgreSQL, SQL Server), or empty to predict it from the data model */
+        put: operations["setDataBackend"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/{app_id}/verification-settings": {
         parameters: {
             query?: never;
@@ -1748,6 +1767,11 @@ export interface components {
                 git_url: string;
                 /** @enum {string} */
                 url_match: "path" | "host";
+                /**
+                 * @description What the owner chose; empty: predicted
+                 * @enum {string}
+                 */
+                data_backend: "" | "sqlite" | "postgresql" | "sqlserver";
                 required_checks: string;
                 target_platform: string;
                 windows_check_pattern: string;
@@ -1760,6 +1784,29 @@ export interface components {
             github_token_configured: boolean;
             default_windows_pattern: string;
             releases: components["schemas"]["ReleaseSummary"][];
+            data_backends: components["schemas"]["Choice"][];
+            data_backend: components["schemas"]["DataBackend"];
+            /** @description How the demo is deployed, as its build pack describes it. */
+            deployment: {
+                /** @enum {string} */
+                kind: "openshift" | "local";
+                /** @description The files the pack carries for it (deploy/ocp/<name>/...) */
+                files: string[];
+            };
+        };
+        /** @description The backend the build pack names, chosen by the owner or predicted from the data model's dialect. */
+        DataBackend: {
+            /** @enum {string} */
+            engine: "sqlite" | "postgresql" | "sqlserver";
+            /** @enum {string} */
+            source: "chosen" | "predicted";
+            reason: string;
+            /** @description The tables the data model's DDL creates */
+            tables: string[];
+        };
+        DataBackendInput: {
+            /** @enum {string} */
+            data_backend: "" | "sqlite" | "postgresql" | "sqlserver";
         };
         IdentityInput: {
             /** @description CaseDesk.exe, https://host/path, tn3270://host:port or desktop:Company/Product */
@@ -3140,6 +3187,34 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    setDataBackend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DataBackendInput"];
+            };
+        };
+        responses: {
+            /** @description The setup after the change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppSetup"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
         };
     };
     saveVerificationSettings: {

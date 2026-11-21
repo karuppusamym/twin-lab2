@@ -62,6 +62,10 @@ EXPECTED = {
 CATALOG_TAGS = ("billing", "admin", "meter", "invoice", "ledger", "receivable", "payroll")  # ids 1-7
 
 
+def surface_of(app):
+    return app["surface"]
+
+
 def references():
     """The fixture's references as the recorder sends them (stamped and checked by its own code)."""
     return agent_main.contract_references(json.loads(BUILT.read_text(encoding="utf-8")))
@@ -249,7 +253,10 @@ class TenAppRecordingTest(unittest.TestCase):
             self.assertEqual({e["event_id"] for r in evidence["evidence"] for e in r["events"]},
                              {e for e, t in tags.items() if t == tag})
             self.assertEqual(len(evidence["attachments"]), 1)
-            self.assertEqual(set(files), {"BUILD_TASK.md", "evidence.json", evidence["attachments"][0]["path"]})
+            deploy = set(evidence["target"]["deploy"].get("files", []))
+            self.assertEqual(evidence["target"]["deploy"]["kind"], "local" if surface_of(apps[app_id]) == "desktop"
+                             else "openshift", tag)
+            self.assertEqual(set(files), {"BUILD_TASK.md", "evidence.json", evidence["attachments"][0]["path"]} | deploy)
             self.assertTrue(files["BUILD_TASK.md"].decode("utf-8").startswith(f"# Build {apps[app_id]['name']}\n"))
             text = "\n".join(f"{path}\n{content.decode('utf-8')}" for path, content in files.items())
             mine = text.replace(own_data[tag]["name"], "")

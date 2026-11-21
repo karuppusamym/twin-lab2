@@ -204,6 +204,16 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(clash.status_code, 409)
         self.ok(alice.put(f"/api/v1/apps/{self.casedesk}/url-match", json={"url_match": "host"}))
         self.ok(alice.put(f"/api/v1/apps/{self.casedesk}/url-match", json={"url_match": "path"}))
+        self.assertEqual(setup["data_backend"]["source"], "predicted")
+        chosen = self.ok(alice.put(f"/api/v1/apps/{self.billing}/data-backend", json={"data_backend": "postgresql"}))
+        self.assertEqual((chosen["app"]["data_backend"], chosen["data_backend"]),
+                         ("postgresql", {"engine": "postgresql", "source": "chosen",
+                                         "reason": "Chosen by the application's owner.", "tables": []}))
+        self.assertEqual(alice.put(f"/api/v1/apps/{self.billing}/data-backend", json={"data_backend": "oracle"})
+                         .status_code, 400)  # outside the enum
+        self.assertEqual(self.as_("carol").put(f"/api/v1/apps/{self.billing}/data-backend",
+                                               json={"data_backend": ""}).status_code, 403)
+        self.ok(alice.put(f"/api/v1/apps/{self.billing}/data-backend", json={"data_backend": ""}))
         bad = alice.put(f"/api/v1/apps/{self.billing}/verification-settings", json={"required_checks": "",
                                                                                   "target_platform": "mars"})
         self.assertEqual(bad.status_code, 400)
