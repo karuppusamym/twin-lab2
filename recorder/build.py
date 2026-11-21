@@ -117,8 +117,9 @@ def main(argv: list[str] | None = None) -> int:
         "--paths", str(HERE), "--paths", str(PROJECT / "contract"),
         # the collectors are imported lazily (and by name in the collector processes): all of them
         "--collect-submodules", "twinlab2_recorder", "--collect-submodules", "twinlab2_contract",
-        "--collect-data", "twinlab2_contract",  # recorder-contract.schema.json beside its module
-        # ... also when the contract package is not pip-installed (collect-data then finds nothing)
+        # recorder-contract.schema.json beside its module, from THIS checkout only: collect-data
+        # would take it from wherever the contract package is pip-installed (an editable install
+        # of another checkout), and that schema won over this one (bundled_schema_version)
         "--add-data", f"{CONTRACT_SCHEMA}{os.pathsep}twinlab2_contract",
         "--hidden-import", "comtypes.gen.UIAutomationClient", "--collect-submodules", "comtypes.gen",
         "--collect-data", "playwright", "--collect-binaries", "playwright",
@@ -128,6 +129,10 @@ def main(argv: list[str] | None = None) -> int:
         args_pi += ["--exclude-module", name]
     print(" ".join(args_pi))
     subprocess.run(args_pi, check=True, cwd=PROJECT)
+    bundled = bundled_schema_version(folder)
+    if bundled != CONTRACT_VERSION:
+        raise SystemExit(f"the program carries recorder contract schema {bundled}, its code speaks "
+                         f"{CONTRACT_VERSION}: it would refuse to send. Rebuild from one checkout.")
     for cut in DRIVER_CUT:
         target = driver_dir(folder) / cut
         shutil.rmtree(target, ignore_errors=True) if target.is_dir() else target.unlink(missing_ok=True)
@@ -146,6 +151,17 @@ def main(argv: list[str] | None = None) -> int:
 
         return build_msi.main(["--folder", str(folder), "--out", str(dist)])
     return 0
+
+
+def bundled_schema_version(folder: Path) -> str | None:
+    """The `x-contract-version` of the recorder contract schema a built program carries."""
+    found = sorted(Path(folder).rglob("recorder-contract.schema.json"))
+    if len(found) != 1:
+        return None
+    try:
+        return json.loads(found[0].read_text(encoding="utf-8")).get("x-contract-version")
+    except (OSError, ValueError):
+        return None
 
 
 if __name__ == "__main__":
