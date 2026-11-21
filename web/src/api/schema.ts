@@ -3182,6 +3182,11 @@ export interface components {
             /** @description The evidence of a present item: documented (written only), observed (in the recording), owner-confirmed, replay-tested (after Verify); null when missing or not applicable. */
             level: ("documented" | "observed" | "owner-confirmed" | "replay-tested") | null;
             confirmed: boolean;
+            /**
+             * @description Recorder contract 1.8: the linked recordings show this item only partly (or not at all: then it counts as documented).
+             * @enum {string}
+             */
+            capture?: "partial" | "none" | "unknown";
         };
         EvidenceLevels: {
             missing: number;
@@ -3287,6 +3292,8 @@ export interface components {
             levels?: components["schemas"]["EvidenceLevels"];
             /** @description Every item of the spec for this surface, with its evidence level. */
             items?: components["schemas"]["CompletenessItem"][];
+            /** @description Recorder contract 1.8: the linked recordings' completeness dimensions, the weakest recording's status per dimension. Absent when no linked recording reported completeness. */
+            capture?: components["schemas"]["CompletenessDimension"][];
         };
         KnownGap: {
             item: string;
@@ -3543,6 +3550,17 @@ export interface components {
             };
             local_exclusions?: components["schemas"]["LocalExclusions"];
             paused?: components["schemas"]["PausedPeriods"];
+            /** @description Recorder contract 1.8: what the recorder reported per dimension (channels, event_detail, screen_coverage, network_evidence). */
+            dimensions?: {
+                [key: string]: components["schemas"]["RecorderDimension"];
+            };
+        };
+        RecorderDimension: {
+            /** @enum {string} */
+            status: "complete" | "partial" | "none" | "not_applicable" | "unknown";
+            detail: string;
+            have?: number;
+            of?: number;
         };
         /** @description Recorder contract 1.7: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap. */
         PausedPeriods: {
@@ -3590,6 +3608,18 @@ export interface components {
             workstation: boolean;
             completeness: components["schemas"]["Completeness"] | null;
             preflight: components["schemas"]["Preflight"] | null;
+            /** @description Completeness in separate dimensions, always these five in this order: channels, event_detail, screen_coverage, network_evidence (the recorder's, contract 1.8; derived or unknown for an older recorder) and owner_scope (the portal's). */
+            dimensions: components["schemas"]["CompletenessDimension"][];
+        };
+        CompletenessDimension: {
+            /** @enum {string} */
+            id: "channels" | "event_detail" | "screen_coverage" | "network_evidence" | "owner_scope";
+            title: string;
+            /** @enum {string} */
+            status: "complete" | "partial" | "none" | "not_applicable" | "unknown";
+            detail: string;
+            have?: number;
+            of?: number;
         };
         RecordingSummary: {
             id: string;

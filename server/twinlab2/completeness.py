@@ -18,11 +18,20 @@ this PC" so that the missing activity is not taken for a failure.
 A 1.7 recorder may say that the person paused the recording (`paused`: how many times, for how
 long, and each period). Nothing was captured meanwhile, by their choice: not a gap either, and
 the pages say "Paused twice, for 3 min 21 s in all".
+
+A 1.8 recorder reports completeness in separate dimensions (`dimensions`,
+twinlab2_contract.dimensions): channel availability, event detail, screen/state coverage and
+network evidence. The portal adds the fifth, owner-reviewed scope (`owner_scope`), from the
+scope decisions of the recording's applications and the owner's acceptance. For an older
+recorder `dimension_list` derives channels and network evidence from what it sent and shows the
+other two as unknown.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
+
+from twinlab2_contract import dimensions as dims
 
 CHANNELS = ("web", "desktop", "mainframe", "network")
 OVERALL = ("complete", "partial", "failed")
@@ -66,7 +75,34 @@ def clean(doc) -> dict | None:
     paused = clean_paused(doc.get("paused"))
     if paused is not None:
         out["paused"] = paused
+    sent = dims.clean(doc.get("dimensions"))
+    if sent is not None:
+        out["dimensions"] = sent
     return out
+
+
+def owner_scope(statuses, accepted=False) -> dict:
+    """Owner-reviewed scope: `statuses` are the scope statuses (known, discovered, not_replicated)
+    of the applications the recording holds; an owner who accepted the recording as it is
+    reviewed its scope too."""
+    statuses = list(statuses)
+    decided = sum(1 for s in statuses if s != "discovered")
+    if not statuses:
+        return dims.item("complete" if accepted else "unknown",
+                         "accepted as it is by its owner" if accepted else "no application is linked to this recording")
+    detail = f"{decided} of {len(statuses)} applications have a scope decision"
+    status = dims.ratio(decided, len(statuses))
+    if accepted and status != "complete":
+        status, detail = "complete", detail + "; the owner accepted the recording as it is"
+    return dims.item(status, detail, decided, len(statuses))
+
+
+def dimension_list(data, scope: dict | None = None) -> list[dict]:
+    """The five dimensions as the pages show them: [{"id", "title", "status", "detail", "have"?,
+    "of"?}], the recorder's four (derived for an older recorder) then the owner-reviewed scope."""
+    found = dims.derive(data)
+    found["owner_scope"] = scope or dims.item("unknown", "the scope review is not known")
+    return [{"id": key, "title": dims.TITLES[key], **found[key]} for key in dims.KEYS]
 
 
 def _seconds(value) -> float | None:

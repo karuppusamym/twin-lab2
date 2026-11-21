@@ -48,7 +48,7 @@ if __package__ in (None, ""):  # run as a script: python recorder/twinlab2_recor
 
 from twinlab2_recorder import settings as st  # noqa: E402
 from twinlab2_recorder.client import Portal, PortalError, check_portal  # noqa: E402
-from twinlab2_recorder.upload_queue import UploadQueue, describe as describe_upload  # noqa: E402
+from twinlab2_recorder.upload_queue import UploadQueue, describe as describe_upload, destination_of  # noqa: E402
 from twinlab2_recorder import updater  # noqa: E402
 from twinlab2_contract import recorder_contract as contract  # noqa: E402
 from twinlab2_contract.upstream import UPSTREAM_COMMIT  # noqa: E402
@@ -646,7 +646,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print(json.dumps(send(cfg, args.session_id, args.ca_bundle)))
         elif args.command in ("upload", "uploads"):
-            queue = UploadQueue(cfg.folder)
+            queue = UploadQueue(cfg.folder, destination=lambda: destination_of(cfg.values))
             only = None
             if args.command == "upload":
                 folder = cfg.recordings / args.session_id

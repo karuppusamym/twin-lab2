@@ -95,12 +95,14 @@ def app_choices(shown: list[dict], apps: list[dict]) -> str:
 
 
 def upload_row(job: dict, now: float, active: str | None = None) -> dict:
-    """One job as the window shows it: state is queued, sending, retrying, done or failed."""
+    """One job as the window shows it: state is queued, sending, retrying, held, done or failed."""
     size = max(1, int(job.get("size") or 0))
     got = min(size, int(job.get("received_bytes") or 0))
     percent = 100 if job.get("state") == "confirmed" else int(got * 100 / size)
     if job.get("state") == "confirmed":
         state, detail = "done", f"confirmed {job.get('confirmed_at') or ''}".strip()
+    elif job.get("held"):
+        state, detail = "held", job["held"]
     elif job.get("state") == "failed":
         state, detail = "failed", job.get("last_error") or "failed"
     elif job.get("id") == active:
@@ -112,7 +114,9 @@ def upload_row(job: dict, now: float, active: str | None = None) -> dict:
     else:
         state, detail = "queued", f"{_size(got)} of {_size(size)}" if got else "waiting to send"
     return {"id": job.get("id"), "session": job.get("session_id"), "state": state, "percent": percent,
-            "detail": detail, "can_retry": state in ("failed", "retrying", "queued")}  # fmt: skip
+            "detail": detail, "can_retry": state in ("failed", "retrying", "queued"),
+            "can_transfer": state == "held", "destination": job.get("destination"),
+            "transfers": len(job.get("transfers") or [])}  # fmt: skip
 
 
 def _size(n: int) -> str:
@@ -153,6 +157,10 @@ class UploadWorker:
     def retry(self, job_id: str) -> None:
         self.requests.put(("retry", job_id))
 
+    def transfer(self, job_id: str) -> None:
+        """A person decided: the held job goes to the current destination (audited by the queue)."""
+        self.requests.put(("transfer", job_id))
+
     def kick(self, force: bool = False) -> None:
         self.requests.put(("run", force))
 
@@ -168,7 +176,8 @@ class UploadWorker:
         self._publish()
 
     def _next_wait(self) -> float:
-        due = [j.get("next_try") or 0 for j in self.queue.jobs() if j["state"] not in ("confirmed", "failed")]
+        due = [j.get("next_try") or 0 for j in self.queue.jobs()
+               if j["state"] not in ("confirmed", "failed") and not j.get("held")]  # fmt: skip
         if not due:
             return self.idle
         return max(0.5, min(self.idle, min(due) - self.clock()))
@@ -176,7 +185,8 @@ class UploadWorker:
     def _run(self, force: bool, only: str | None = None) -> None:
         from twinlab2_recorder.client import PortalError
 
-        if not any(j["state"] not in ("confirmed", "failed") for j in self.queue.jobs()):
+        self.queue.check_holds()
+        if not any(j["state"] not in ("confirmed", "failed") and not j.get("held") for j in self.queue.jobs()):
             self._publish()
             return
         try:
@@ -202,6 +212,13 @@ class UploadWorker:
             self._run(force=True, only=job["id"])
         elif kind == "retry":
             self.queue.retry(request[1])
+            self._run(force=True, only=request[1])
+        elif kind == "transfer":
+            try:
+                self.queue.transfer(request[1])
+            except ValueError as exc:
+                self._publish(f"not transferred: {exc}")
+                return
             self._run(force=True, only=request[1])
         elif kind == "run":
             self._run(force=bool(request[1]))
@@ -271,6 +288,10 @@ def review_summary(box: dict, notes: list[str] | None = None, portal: str | None
         bad = [f"{k} {v.get('status')}" for k, v in (comp.get("channels") or {}).items()
                if isinstance(v, dict) and v.get("status") not in ("complete", "not_requested")]  # fmt: skip
         lines.append(f"  • completeness: {comp.get('overall')}" + (f" ({', '.join(bad)})" if bad else ""))
+        from twinlab2_contract import dimensions as dims
+
+        for key, d in dims.derive(comp).items():  # contract 1.8: each dimension on its own
+            lines.append(f"      {dims.TITLES[key]}: {d['status'].replace('_', ' ')} ({d['detail']})")
     rb = box.get("robot")
     if isinstance(rb, dict):
         lines.append(f"  • robot log: {rb.get('activities')} activities, {rb.get('covered')} of "

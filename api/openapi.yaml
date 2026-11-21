@@ -4150,6 +4150,7 @@ components:
           description: "The evidence of a present item: documented (written only), observed (in the recording), owner-confirmed, replay-tested (after Verify); null when missing or not applicable."
           oneOf: [{ type: string, enum: [documented, observed, owner-confirmed, replay-tested] }, { type: "null" }]
         confirmed: { type: boolean }
+        capture: { type: string, enum: [partial, none, unknown], description: "Recorder contract 1.8: the linked recordings show this item only partly (or not at all: then it counts as documented)." }
     EvidenceLevels:
       type: object
       required: [missing, documented, observed, owner-confirmed, replay-tested]
@@ -4261,6 +4262,10 @@ components:
         coverage: { type: integer, minimum: 0, maximum: 100, description: "Applicable items at evidence level observed or above, weighted by severity: documented-only items do not count. Kept apart from `score` (presence)." }
         levels: { $ref: "#/components/schemas/EvidenceLevels" }
         items: { type: array, items: { $ref: "#/components/schemas/CompletenessItem" }, description: "Every item of the spec for this surface, with its evidence level." }
+        capture:
+          type: array
+          description: "Recorder contract 1.8: the linked recordings' completeness dimensions, the weakest recording's status per dimension. Absent when no linked recording reported completeness."
+          items: { $ref: "#/components/schemas/CompletenessDimension" }
     KnownGap:
       type: object
       required: [item, title]
@@ -4566,6 +4571,18 @@ components:
         channels: { type: object, additionalProperties: { $ref: "#/components/schemas/Channel" } }
         local_exclusions: { $ref: "#/components/schemas/LocalExclusions" }
         paused: { $ref: "#/components/schemas/PausedPeriods" }
+        dimensions:
+          type: object
+          description: "Recorder contract 1.8: what the recorder reported per dimension (channels, event_detail, screen_coverage, network_evidence)."
+          additionalProperties: { $ref: "#/components/schemas/RecorderDimension" }
+    RecorderDimension:
+      type: object
+      required: [status, detail]
+      properties:
+        status: { type: string, enum: [complete, partial, none, not_applicable, unknown] }
+        detail: { type: string }
+        have: { type: integer, minimum: 0 }
+        of: { type: integer, minimum: 0 }
     PausedPeriods:
       type: object
       description: "Recorder contract 1.7: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap."
@@ -4608,7 +4625,7 @@ components:
               detail: { type: [string, "null"] }
     RecordingStatus:
       type: object
-      required: [label, summary, attention, accepted, accepted_by, accepted_at, workstation, completeness, preflight]
+      required: [label, summary, attention, accepted, accepted_by, accepted_at, workstation, completeness, preflight, dimensions]
       properties:
         label: { type: string }
         summary: { type: string }
@@ -4619,6 +4636,20 @@ components:
         workstation: { type: boolean, description: "Sent by a recorder (not an imported event log)." }
         completeness: { oneOf: [{ $ref: "#/components/schemas/Completeness" }, { type: "null" }] }
         preflight: { oneOf: [{ $ref: "#/components/schemas/Preflight" }, { type: "null" }] }
+        dimensions:
+          type: array
+          description: "Completeness in separate dimensions, always these five in this order: channels, event_detail, screen_coverage, network_evidence (the recorder's, contract 1.8; derived or unknown for an older recorder) and owner_scope (the portal's)."
+          items: { $ref: "#/components/schemas/CompletenessDimension" }
+    CompletenessDimension:
+      type: object
+      required: [id, title, status, detail]
+      properties:
+        id: { type: string, enum: [channels, event_detail, screen_coverage, network_evidence, owner_scope] }
+        title: { type: string }
+        status: { type: string, enum: [complete, partial, none, not_applicable, unknown] }
+        detail: { type: string }
+        have: { type: integer, minimum: 0 }
+        of: { type: integer, minimum: 0 }
     RecordingSummary:
       type: object
       required: [id, name, machine, received_at, automation, apps, apps_list, status]
@@ -6545,6 +6576,12 @@ components:
         preflight:
           ready: true
           checks: [{ name: Recorder can see the target application, ok: true, detail: null }]
+        dimensions:
+          - { id: channels, title: Channel availability, status: complete, detail: "2 of 2 requested channels captured the whole session", have: 2, of: 2 }
+          - { id: event_detail, title: Event detail, status: complete, detail: "12 of 12 recorded events kept their detail", have: 12, of: 12 }
+          - { id: screen_coverage, title: Screen and state coverage, status: partial, detail: "9 of 12 steps of fully recorded applications belong to a screen state (4 screen(s))", have: 9, of: 12 }
+          - { id: network_evidence, title: Network evidence, status: complete, detail: the network journal covers the whole web recording }
+          - { id: owner_scope, title: Owner-reviewed scope, status: partial, detail: "1 of 2 applications have a scope decision", have: 1, of: 2 }
     RecordingList:
       value:
         page: { total: 1, limit: 50, offset: 0, next_offset: null }

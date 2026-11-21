@@ -73,7 +73,8 @@ def event(item, completeness=None, in_gap=None):
 
 def recording_status(status):
     return {key: status.get(key) for key in ("label", "summary", "attention", "accepted", "accepted_by",
-                                              "accepted_at", "workstation", "completeness", "preflight")}
+                                              "accepted_at", "workstation", "completeness", "preflight",
+                                              "dimensions")}
 
 
 def build(row, outstanding=0):

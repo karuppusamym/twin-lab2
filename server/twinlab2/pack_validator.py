@@ -19,12 +19,21 @@ the pack's files) and returns the result: a score per section, every gap (item, 
 and the page and action that fix it), what is present, and `passed` (no critical gap). It is pure:
 no database, no web framework, no clock. Keys the pack adds after validation (`completeness`,
 `known_gaps`) are ignored.
+
+Recording completeness (recorder contract 1.8, twinlab2_contract.dimensions): each linked
+recording in `evidence` may carry `capture`, its dimension statuses. An item the recording shows
+(BASIS "recording") is observed only as far as the recordings behind it are: when the matching
+dimension (`CAPTURE_OF`) is `none` for every linked recording, the item is only documented (not
+counted as covered); `partial` or `unknown` keeps it observed and says so on the item
+(`capture`). The result's `capture` lists the dimensions over all linked recordings.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+
+from twinlab2_contract import dimensions as capture_dims
 
 SPEC_VERSION = 2  # 2: bindings, per-state baselines, interfaces, Twin App label, evidence levels
 LEVELS = ("documented", "observed", "owner-confirmed", "replay-tested")
@@ -320,6 +329,12 @@ BASIS = {
     "deploy.version": "setting", "deploy.repository": "setting", "deploy.twin_label": "setting",
     "interfaces.identifiers": "recording", "interfaces.order": "recording", "interfaces.schemas": "recording",
 }
+# which recording dimension an item the recording shows depends on (the rest: channels)
+CAPTURE_OF = {
+    "scenario.events": "event_detail", "scenario.links_current": "event_detail",
+    "interfaces.identifiers": "event_detail", "interfaces.order": "event_detail", "interfaces.schemas": "event_detail",
+}
+SCREEN_PREFIXES = ("screens.", "navigation.", "web.", "desktop.", "mainframe.")
 START = {"recording": "observed", "prose": "documented", "setting": "owner-confirmed", "approval": "owner-confirmed"}
 # what a passed verification dimension tests of a present item (twinlab2.independent.dimensions)
 TESTED_BY = {
@@ -967,7 +982,41 @@ def validate(data: dict, files: dict | None = None) -> dict:
     result = {"spec_version": SPEC_VERSION, "surface": checker.surface, "passed": counts["critical"] == 0,
               "score": round(100 * total_have / total_all) if total_all else 100, "sections": sections,
               "dimensions": dimensions, "gaps": gaps, "counts": counts, "items": items}
+    captured = capture_of(data or {})
+    if captured:
+        result["capture"] = [{"id": k, "title": capture_dims.TITLES[k], **v} for k, v in captured.items()]
+        for i in items:
+            dim = capture_dimension(i["item"])
+            got = (captured.get(dim) or {}).get("status")
+            if i["status"] != "present" or BASIS.get(i["item"]) != "recording" or got in (None, "complete",
+                                                                                          "not_applicable"):
+                continue
+            i["capture"] = got
+            if got == "none" and i["level"] == "observed" and i["item"] not in checker.levels:
+                i["level"] = "documented"  # the recordings do not show it: written, not observed
     return _levels(result)
+
+
+def capture_dimension(item_id: str) -> str:
+    """The recording dimension an item that the recording shows depends on."""
+    if item_id in CAPTURE_OF:
+        return CAPTURE_OF[item_id]
+    return "screen_coverage" if item_id.startswith(SCREEN_PREFIXES) else "channels"
+
+
+def capture_of(data: dict) -> dict:
+    """{dimension: {status, detail}} over the linked recordings' `capture` (the worse wins), or
+    {} when no recording says (a package of recordings older than contract 1.8 is judged as before)."""
+    per = [e.get("capture") for e in data.get("evidence") or [] if isinstance(e, dict) and isinstance(e.get("capture"), dict)]
+    if not per:
+        return {}
+    out = {}
+    for key in capture_dims.KEYS:
+        items = [capture_dims.item(c[key], f"{key.replace('_', ' ')} {c[key].replace('_', ' ')}")
+                 for c in per if c.get(key) in capture_dims.STATUSES]
+        if items:
+            out[key] = capture_dims.worst(items)
+    return out
 
 
 def _levels(result):
@@ -1038,6 +1087,12 @@ def markdown(result, known_gaps=None) -> list[str]:
             out.append(f"- missing ({g['severity']}): {g['title']}. {g['why']}")
             out += [f"  - {d}" for d in g["details"][:5]]
         out.append("")
+    if result.get("capture"):
+        out += ["## Recording completeness", "",
+                "How complete the recordings behind this package are, per dimension (the weakest recording). An item "
+                "the recordings show only partly is marked so above; one they do not show at all counts as documented.",
+                ""]
+        out += [f"- {c['title']}: {c['status'].replace('_', ' ')}" for c in result["capture"]] + [""]
     if known_gaps:
         out += ["## Known gaps", "",
                 "The owner froze this package with critical items missing, for this reason:", "",
@@ -1053,5 +1108,6 @@ def summary(result) -> dict:
             "evidence": {i["item"]: i["level"] for i in result.get("items") or [] if i["level"]},
             "sections": {s["id"]: s["score"] for s in result["sections"]},
             "dimensions": {d["id"]: d["score"] for d in result["dimensions"]},
+            **({"capture": {c["id"]: c["status"] for c in result["capture"]}} if result.get("capture") else {}),
             "missing": [{"item": g["item"], "severity": g["severity"], "details": g["details"]}
                         for g in result["gaps"]]}

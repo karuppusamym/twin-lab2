@@ -31,7 +31,8 @@ step at `/finance/billing-archive` checks that a prefix matches whole segments o
 screen structure), kept as it was sent for the portal's 1.2 tests. `../references-ten-apps-1.3.json`
 and `../references-ten-apps-1.4.json` are the 1.3 and 1.4 recorders' (the 1.4 one is what this
 script wrote before contract 1.5), and `../references-ten-apps-1.5.json` the 1.5 recorder's (before
-1.6), kept to check that older minors are still accepted.
+1.6), `../references-ten-apps-1.6.json` the 1.6 one and `../references-ten-apps-1.7.json` the 1.7 one (before
+completeness dimensions), kept to check that older minors are still accepted.
 """
 
 from __future__ import annotations

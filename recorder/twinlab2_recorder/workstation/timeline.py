@@ -42,7 +42,7 @@ from twinlab2_recorder.workstation.levels import FULL, PRESENCE, STEPS, denied_p
 
 FORMAT = "twinlab-workstation-session/1"
 # The recorder contract the references follow (twin-lab2 RECORDER-CONTRACT.md).
-CONTRACT_VERSION = "1.7.0"
+CONTRACT_VERSION = "1.8.0"
 EVENT_FIELDS = ("event_id", "channel", "captured_at")
 
 
@@ -220,6 +220,7 @@ def build(folder: Path) -> dict:
         box["screens"] = screens
 
     box["completeness"] = completeness.manifest(folder, meta)
+    box["completeness"]["dimensions"] = completeness.dimensions(box["completeness"], out, screens, full)
     pre = completeness.preflight(meta)
     if pre is not None:
         box["preflight"] = pre

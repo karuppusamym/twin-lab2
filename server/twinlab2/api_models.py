@@ -867,6 +867,7 @@ class CompletenessItem(Model):
     status: Literal['present', 'missing', 'not_applicable']
     level: Literal['documented', 'observed', 'owner-confirmed', 'replay-tested'] | Any
     confirmed: bool
+    capture: Literal['partial', 'none', 'unknown'] | None = None
 
 
 class EvidenceLevels(Model):
@@ -923,6 +924,15 @@ class CompletenessCounts(Model):
     nice: int
 
 
+class CompletenessDimension(Model):
+    id: Literal['channels', 'event_detail', 'screen_coverage', 'network_evidence', 'owner_scope']
+    title: str
+    status: Literal['complete', 'partial', 'none', 'not_applicable', 'unknown']
+    detail: str
+    have: int | None = None
+    of: int | None = None
+
+
 class PackageCompleteness(Model):
     """A package checked against the package completeness spec (server/twinlab2/pack_validator.py)."""
     spec_version: int
@@ -936,6 +946,7 @@ class PackageCompleteness(Model):
     coverage: int | None = None
     levels: EvidenceLevels | None = None
     items: list[CompletenessItem] | None = None
+    capture: list[CompletenessDimension] | None = None
 
 
 class KnownGap(Model):
@@ -1209,6 +1220,13 @@ class PausedPeriods(Model):
     periods: list[PausedPeriods_PeriodsItem]
 
 
+class RecorderDimension(Model):
+    status: Literal['complete', 'partial', 'none', 'not_applicable', 'unknown']
+    detail: str
+    have: int | None = None
+    of: int | None = None
+
+
 class Completeness(Model):
     overall: str
     recovered: bool | None = None
@@ -1217,6 +1235,7 @@ class Completeness(Model):
     channels: dict[str, Channel]
     local_exclusions: LocalExclusions | None = None
     paused: PausedPeriods | None = None
+    dimensions: dict[str, RecorderDimension] | None = None
 
 
 class Preflight_ChecksItem(Model):
@@ -1240,6 +1259,7 @@ class RecordingStatus(Model):
     workstation: bool
     completeness: Completeness | Any
     preflight: Preflight | Any
+    dimensions: list[CompletenessDimension]
 
 
 class RecordingSummary_AppsListItem(Model):
@@ -2097,6 +2117,7 @@ CompareInput.model_rebuild()
 Comparison.model_rebuild()
 Completeness.model_rebuild()
 CompletenessCounts.model_rebuild()
+CompletenessDimension.model_rebuild()
 CompletenessFix.model_rebuild()
 CompletenessGap.model_rebuild()
 CompletenessItem.model_rebuild()
@@ -2168,6 +2189,7 @@ PurgeResult.model_rebuild()
 ReadyToBuild.model_rebuild()
 RecordedApp.model_rebuild()
 RecordedFlow.model_rebuild()
+RecorderDimension.model_rebuild()
 RecorderRelease.model_rebuild()
 RecorderUpdate.model_rebuild()
 RecordingDeletion.model_rebuild()

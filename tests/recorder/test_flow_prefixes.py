@@ -177,7 +177,7 @@ class TargetPathTest(unittest.TestCase):
                 {"app": "web:https://k", "surface": "web", "level": "full", "global_seq": 2,
                  "_step": {"surface": "web", "url": "https://k/finance/billing/9", "action": "click"}}]
         box = timeline.outbox(meta, rows)
-        self.assertEqual(box["contract_version"], "1.7.0")
+        self.assertEqual(box["contract_version"], "1.8.0")
         self.assertEqual(box["flows"]["web:https://h"][0]["screen"], "https://h/finance/billing/{id}")
         self.assertEqual(box["flows"]["web:https://k"][0]["screen"], "https://k/finance/billing/{id}")
         self.assertEqual([t.get("path") for t in box["session"]["targets"]], ["/finance/billing", "/x"])

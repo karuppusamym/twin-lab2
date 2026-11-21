@@ -40,7 +40,7 @@ from twinlab2_recorder.uithread import (
     on_ui_thread,
     wait_process,
 )
-from twinlab2_recorder.upload_queue import UploadQueue
+from twinlab2_recorder.upload_queue import UploadQueue, destination_of, where
 
 STOP_WAIT_S = 120  # how long closing the window waits for a recording to finish
 UPDATE_EVERY_S = 6 * 3600  # how often the window asks the portal for a newer version
@@ -188,7 +188,8 @@ class RecorderApp:
         self._ids = itertools.count(1)
         self.version = 0
         self.jobs = Jobs(loop.dispatcher, self._show_job)
-        self.upload_worker = ui.UploadWorker(lambda on_change: UploadQueue(cfg.folder, on_change=on_change),
+        self.upload_worker = ui.UploadWorker(lambda on_change: UploadQueue(cfg.folder, on_change=on_change,
+                                                                       destination=lambda: destination_of(cfg.values)),
                                              lambda: self.make_portal(), loop.dispatcher.post,
                                              self.show_uploads)  # fmt: skip
 
@@ -1061,6 +1062,10 @@ class RecorderApp:
             rows.append(r)
         self.upload_rows = rows
         busy = sum(r["state"] in ("sending", "queued", "retrying") for r in rows)
+        held = sum(r["state"] == "held" for r in rows)
+        if held and not error:
+            error = (f"{held} upload(s) are held: they were queued for another portal or machine than this "
+                     "recorder is paired with now. Pair back, or transfer each one to the current portal.")  # fmt: skip
         self.upload_error = error
         self.upload_note = (f"{busy} upload(s) waiting or in progress; they continue in the background and "
                             "resume after a restart." if busy else "Nothing waiting to upload.")  # fmt: skip
@@ -1086,6 +1091,19 @@ class RecorderApp:
 
     def on_retry_all(self) -> None:
         self.upload_worker.kick(force=True)
+
+    def on_transfer(self, job_id: str) -> None:
+        """Send a held upload to the portal this recorder is paired with now: asked, then audited
+        (upload_queue.UploadQueue.transfer)."""
+        row = next((r for r in self.upload_rows if r["id"] == job_id), None)
+        current = destination_of(self.cfg.values)
+        if row is None or row["state"] != "held" or current is None:
+            return
+        self.ask("Send this upload to a different portal?",
+                 f"The recording {row['name']} was queued for {where(row.get('destination'))}. This recorder is "
+                 f"now paired with {where(current)}. Transfer it there? The recording is uploaded again from "
+                 "the start to the new portal, and the transfer is written to this PC's upload audit log.",
+                 lambda *_: self.upload_worker.transfer(job_id), yes="Transfer", tone="warn")  # fmt: skip
 
     # -- other buttons --------------------------------------------------------------------------------
 

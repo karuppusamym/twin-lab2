@@ -150,6 +150,24 @@ shown per item and counted per application, apart from the presence `score`:
 documented-only items never count as covered. `evidence.json` carries the levels in
 `completeness.evidence`, `coverage` and `levels`.
 
+### Recording completeness (recorder contract 1.8)
+
+Each linked recording in `evidence.json` carries `capture`: its completeness dimensions as
+statuses (`channels`, `event_detail`, `screen_coverage`, `network_evidence`, and the portal's
+`owner_scope`; see docs/RECORDER-CONTRACT.md, *Contract 1.8*). An item the recording shows
+(observed) is only as observed as the recordings behind it: the validator takes the weakest
+linked recording per dimension (`capture` in the result) and, for each present recording-based
+item, the dimension it depends on (scenario events and the interface contract: event detail;
+screens, navigation and the surface's own items: screen coverage; the rest: channels):
+
+- `none`: the recordings do not show it at all, so the item is only **documented** (not covered);
+- `partial` or `unknown`: it stays observed and the item says `capture: partial` (or `unknown`);
+- `complete` or `not_applicable`: nothing changes.
+
+A package whose recordings come from a recorder before 1.8 is judged on what that recorder sent
+(channels and network evidence derived, the rest unknown); one with no recording completeness at
+all is judged as before. BUILD_TASK.md lists the dimensions under "Recording completeness".
+
 ## Package format 3
 
 `evidence.json` format 3 (twinlab2_contract.package, contract 0.3.0; format 2 stays readable) adds:

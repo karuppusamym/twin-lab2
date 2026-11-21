@@ -1,5 +1,5 @@
 {
- "contract_version": "1.7.0",
+ "contract_version": "1.8.0",
  "format": "twinlab-references/1",
  "session": {
   "id": "20261120T140000Z-10a9b8c7",
@@ -2791,7 +2791,31 @@
   },
   "network_evidence": "complete",
   "recovered": false,
-  "loss_window_seconds": 2.0
+  "loss_window_seconds": 2.0,
+  "dimensions": {
+   "channels": {
+    "status": "complete",
+    "detail": "3 of 3 requested channels captured the whole session",
+    "have": 3,
+    "of": 3
+   },
+   "event_detail": {
+    "status": "complete",
+    "detail": "31 of 31 recorded events kept their detail",
+    "have": 31,
+    "of": 31
+   },
+   "screen_coverage": {
+    "status": "complete",
+    "detail": "28 of 28 steps of fully recorded applications belong to a screen state (22 screen(s))",
+    "have": 28,
+    "of": 28
+   },
+   "network_evidence": {
+    "status": "complete",
+    "detail": "the network journal covers the whole web recording"
+   }
+  }
  },
  "preflight": {
   "checks": [
