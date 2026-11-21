@@ -54,7 +54,9 @@ class ApiTest(unittest.TestCase):
         cls.env = mock.patch.dict(os.environ, {
             "TWINLAB2_TRUST_PROXY_USER": "1", "TWINLAB2_ADMINS": "root",
             "TWINLAB2_GITHUB_TOKEN": cls.builds_github.token, "TWINLAB2_GITHUB_API": cls.builds_github.url,
-            "TWINLAB2_WORKSPACES": os.path.join(cls.work.name, "workspaces"), "TWINLAB2_DEV_WORKER": "0"})
+            "TWINLAB2_WORKSPACES": os.path.join(cls.work.name, "workspaces"), "TWINLAB2_DEV_WORKER": "0",
+            # the fake provider is a stand-in offered only on a demo portal
+            "TWINLAB2_DEMO": "1"})
         cls.env.start()
         for name in ("TWINLAB2_PASSWORD",):
             os.environ.pop(name, None)
@@ -459,6 +461,26 @@ class ApiTest(unittest.TestCase):
         self.assertTrue(self.ok(vera.get(f"/api/v1/releases/{self.release}"))["can_download"])
         catalog = self.ok(vera.get("/api/v1/apps"))
         self.assertEqual(catalog["apps"][0]["tested_release"]["state"], "published")
+
+    def test_workboard_triage_home_and_releases(self):
+        """The overviews (routes_workboard; test_workboard has the details on the demo portal)."""
+        alice, bob, vera = self.as_("alice"), self.as_("bob"), self.as_("vera")
+        board = self.ok(alice.get(f"/api/v1/recordings/{RECORDING}/workboard"))
+        self.assertIn(self.billing, [r["app_id"] for r in board["apps"]])
+        self.assertTrue(all(r["action"] for r in board["apps"]))
+        self.assertEqual(vera.get(f"/api/v1/recordings/{RECORDING}/workboard").status_code, 403)
+        triage = self.ok(alice.get("/api/v1/triage", params={"recording_id": RECORDING, "status": "all"}))
+        self.assertIn(self.billing, [c["app_id"] for c in triage["apps"]])
+        decided = self.ok(alice.post("/api/v1/triage/decisions", json={"decisions": [
+            {"app_id": self.billing, "decision": "replicate"}]}))
+        self.assertEqual(decided["apps"][0]["status"], "known")
+        self.assertEqual(vera.post("/api/v1/triage/decisions", json={"decisions": [
+            {"app_id": self.billing, "decision": "not_replicated"}]}).status_code, 403)
+        self.assertEqual(self.ok(vera.get("/api/v1/home"))["role"], "viewer")
+        self.assertEqual(self.ok(bob.get("/api/v1/home"))["ready_to_build"][0]["app_id"], self.billing)
+        registered = self.ok(bob.post(f"/api/v1/apps/{self.billing}/releases", json={"sha": SHA}), 201)
+        self.assertEqual(registered["release"]["commit_sha"], SHA)
+        self.assertEqual(vera.post(f"/api/v1/apps/{self.billing}/releases", json={"sha": SHA}).status_code, 403)
 
     def test_build_setup_and_users(self):
         root = self.as_("root")

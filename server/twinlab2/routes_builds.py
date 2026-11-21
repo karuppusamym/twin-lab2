@@ -12,6 +12,7 @@ scope changes go to the audit history.
 from __future__ import annotations
 
 import json
+import os
 
 from fastapi import Query, Response
 from pydantic import BaseModel
@@ -52,8 +53,15 @@ def record(action, build, **details):
                      revision=build["revision"], provider=build["provider"], **details)
 
 
-def provider_choices():
-    """Every enabled provider: whether it is ready (None, or why not), its budget and model."""
+def demo_mode() -> bool:
+    """TWINLAB2_DEMO=1: a demo portal (tools/demo_portal.py), where stand-in providers are offered."""
+    return os.environ.get("TWINLAB2_DEMO", "") == "1"
+
+
+def provider_choices(everything=False):
+    """The providers to offer: whether each is ready (None, or why not), its budget and model.
+    A provider that is not ready is listed only for a portal admin (who can set it up), and a
+    stand-in provider (`demo_only`) only on a demo portal; `everything` lists them all."""
     out = []
     stored = builds.stored_settings(db())
     for name in providers.names():
@@ -77,6 +85,9 @@ def provider_choices():
                     "budget_unit": providers.BUDGET_UNITS.get(name, ""), "budget": builds.default_budget(db(), name),
                     "model": (cls.configured_model(stored) if cls and hasattr(cls, "configured_model") else "") or "",
                     "status_label": getattr(cls, "status_label", "") or ""})
+        if not everything and (getattr(cls, "demo_only", False) and not demo_mode()
+                               or out[-1]["ready"] and not g.get("is_admin", False)):
+            out.pop()
     return out
 
 
@@ -346,7 +357,7 @@ def build_setup_view():
         "github": {"token_set": bool(gh.get("token")), "source": gh.get("source"), "api": gh.get("api") or ""},
         "saved": {key: bool(stored.get(key)) for key in builds.SECRET_KEYS},
         "settings": {key: stored.get(key) for key in builds.SETTING_KEYS if key not in builds.SECRET_KEYS},
-        "repos": [repo_view(r) for r in builds.repos(db())], "providers": provider_choices(),
+        "repos": [repo_view(r) for r in builds.repos(db())], "providers": provider_choices(everything=True),
         "workers": [{"id": str(w["id"]), "started_at": w["started_at"], "seen_at": w["seen_at"],
                      "current_job": w["current_job"], "stopped_at": w["stopped_at"], "state": worker_state(w)}
                     for w in jobqueue.workers(db())],

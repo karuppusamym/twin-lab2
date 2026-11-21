@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, data, newRequestKey, type Schemas } from "../api/client";
 import { ActionButton, Badge, Crumbs, ErrorText, Notice, QueryView, useAction, useTitle } from "../components/ui";
@@ -115,6 +115,33 @@ function SessionView({ detail }: { detail: Schemas["BuildDetail"] }) {
   );
 }
 
+/**
+ * Announces (aria-live) a question or tool approval that arrived since the page was opened, so a
+ * screen reader user hears it without reading the whole conversation again; the polling refresh
+ * otherwise changes the list silently.
+ */
+export function WaitingAnnouncer({ outstanding, messages, who }: {
+  outstanding: Schemas["BuildDetail"]["outstanding"]; messages: Schemas["BuildDetail"]["messages"]; who: string;
+}) {
+  const seen = useRef<Set<number> | null>(null);
+  const [text, setText] = useState("");
+  useEffect(() => {
+    const ids = outstanding.map((m) => m.id);
+    if (seen.current === null) {
+      seen.current = new Set(ids);
+      return;
+    }
+    const fresh = outstanding.filter((m) => !seen.current?.has(m.id));
+    ids.forEach((id) => seen.current?.add(id));
+    const last = fresh[fresh.length - 1];
+    if (last) {
+      const body = messages.find((m) => m.id === last.id)?.body ?? "";
+      setText(last.kind === "tool_approval" ? `${who} asks you to approve a tool.` : `${who} asks: ${body}`);
+    }
+  }, [outstanding, messages, who]);
+  return <p className="visually-hidden" aria-live="polite" role="status" id="chat-announcer">{text}</p>;
+}
+
 function Chat({ detail, who, owner }: { detail: Schemas["BuildDetail"]; who: string; owner: boolean }) {
   const { build, app } = detail;
   const [answer, setAnswer] = useState("");
@@ -153,6 +180,7 @@ function Chat({ detail, who, owner }: { detail: Schemas["BuildDetail"]; who: str
         ))}
       </ol>
       {detail.outstanding.length === 0 && detail.questions.map((q) => <blockquote key={q} className="question">{q}</blockquote>)}
+      <WaitingAnnouncer outstanding={detail.outstanding} messages={detail.messages} who={who} />
       {!build.final && (
         <>
           <form id="answer-form" aria-label="Answer" onSubmit={submit}>

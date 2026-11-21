@@ -195,6 +195,10 @@ LOCAL_DEV, INDIVIDUAL, TRUSTED_PROXY = "local-dev", "individual", "trusted-proxy
 MODES = (LOCAL_DEV, INDIVIDUAL, TRUSTED_PROXY)
 SHARED_USER = "demo"
 SESSION_HOURS = 12.0
+# Who may add an application (TWINLAB2_APP_CREATORS): `owners` (default: a portal admin, or anyone
+# who owns an application already), `admins` (portal admins only) or `anyone` signed in. Whoever
+# adds an application becomes its owner, so `anyone` lets a viewer make themselves an owner.
+APP_CREATORS = ("owners", "admins", "anyone")
 
 
 class ConfigError(RuntimeError):
@@ -223,6 +227,7 @@ class Settings:
     trusted_proxies: list = field(default_factory=lambda: _networks("127.0.0.1,::1"))
     force_local_dev: bool = False
     session_hours: float = SESSION_HOURS
+    app_creators: str = "owners"
 
     @classmethod
     def from_env(cls):
@@ -236,6 +241,9 @@ class Settings:
             raise ConfigError("TWINLAB2_SESSION_HOURS must be a number of hours.") from None
         if not 0 < hours <= 24 * 30:
             raise ConfigError("TWINLAB2_SESSION_HOURS must be more than 0 and at most 720.")
+        creators = (env("TWINLAB2_APP_CREATORS", "") or "owners").strip().lower()
+        if creators not in APP_CREATORS:
+            raise ConfigError(f"TWINLAB2_APP_CREATORS must be one of {', '.join(APP_CREATORS)}, not {creators!r}.")
         return cls(
             mode=mode,
             trust_proxy=env("TWINLAB2_TRUST_PROXY_USER") == "1",
@@ -246,6 +254,7 @@ class Settings:
             trusted_proxies=_networks(env("TWINLAB2_TRUSTED_PROXIES", "") or "127.0.0.1,::1"),
             force_local_dev=env("TWINLAB2_LOCAL_DEV_FORCE") == "1",
             session_hours=hours,
+            app_creators=creators,
         )
 
     @property
@@ -492,6 +501,31 @@ def access_hint(app_id):
 
 def can(*roles, app_id=None):
     return allowed(roles, app_id)
+
+
+def may_create_apps(user=None, admin=None) -> bool:
+    """Whether the current user may add an application (Settings.app_creators)."""
+    user = g.user if user is None else user
+    admin = g.get("is_admin", False) if admin is None else admin
+    if user is None:
+        return False
+    rule = getattr(_settings(), "app_creators", "owners")
+    if admin or rule == "anyone":
+        return True
+    if rule == "admins":
+        return False
+    return _db().execute("SELECT 1 FROM app_roles WHERE user_name = ? AND role = 'owner' LIMIT 1",
+                         (user,)).fetchone() is not None
+
+
+def home_role(user=None, admin=None) -> str:
+    """The highest role the user holds anywhere: admin, owner, builder, viewer, or none."""
+    user = g.user if user is None else user
+    admin = g.get("is_admin", False) if admin is None else admin
+    if admin:
+        return ADMIN
+    held = [row[0] for row in _db().execute("SELECT role FROM app_roles WHERE user_name = ?", (user,))]
+    return max(held, key=lambda r: RANK.get(r, 0)) if held else "none"
 
 
 class Policy:

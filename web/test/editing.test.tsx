@@ -68,7 +68,7 @@ describe("a draft", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const { user, form } = await openAssignment();
     await user.type(within(form).getByLabelText("Outcome and build notes"), " More.");
-    await user.click(screen.getByRole("link", { name: "CaseDesk" }));
+    await user.click(screen.getAllByRole("link", { name: "CaseDesk" })[0] as HTMLElement);
     expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/unsaved changes/));
     expect(screen.getByRole("form", { name: "Assignment" })).toBeInTheDocument();
     expect(window.location.pathname).toBe(RECORDING);
@@ -208,7 +208,7 @@ describe("the applications page", () => {
       queries.push(new URL(request.url).searchParams);
       return HttpResponse.json({ ...example<object>("listApps"), page: { total: 120, limit: 50, offset: Number(new URL(request.url).searchParams.get("offset") ?? 0), next_offset: 50 } } as never);
     }));
-    const { user } = renderApp("/", "owner");
+    const { user } = renderApp("/apps", "owner");
     await screen.findByRole("heading", { level: 2, name: /Billing Desk/ });
     const find = within(screen.getByRole("search", { name: "Find applications" }));
     await user.type(find.getByRole("searchbox", { name: "Search" }), "bill");

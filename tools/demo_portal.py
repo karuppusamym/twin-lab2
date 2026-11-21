@@ -240,7 +240,9 @@ def build(state, scale=False):
         "TWINLAB2_WORKSPACES": str(state / "workspaces"), "TWINLAB2_STATE": str(state),
         "TWINLAB2_DEV_WORKER": "0", "TWINLAB2_SECRET_KEY": "demo-only", "TWINLAB2_HOSTS": "localhost,127.0.0.1",
         # everyone signs in with their own password (alice, bob, vera), even on this machine
-        "TWINLAB2_AUTH_MODE": "individual"})
+        "TWINLAB2_AUTH_MODE": "individual",
+        # a demo portal: the stand-in build provider is offered on the Build page
+        "TWINLAB2_DEMO": "1"})
     for name in ("TWINLAB2_TRUST_PROXY_USER", "TWINLAB2_PASSWORD", "DATABASE_URL"):
         os.environ.pop(name, None)
     world = fake_provider.reset()

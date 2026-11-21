@@ -7,7 +7,13 @@ import { renderApp, type Who } from "./render";
 import { server } from "./setup";
 
 const PAGES: [path: string, heading: RegExp, who?: Who][] = [
-  ["/", /^Applications$/],
+  ["/", /^Home$/],
+  ["/", /^Home$/, "builder"],
+  ["/", /^Home$/, "viewer"],
+  ["/", /^Home$/, "admin"],
+  ["/apps", /^Applications$/],
+  ["/triage", /^Scope triage$/],
+  ["/recordings/9f2c4e1a7b3d5f60/triage", /^Scope triage$/],
   ["/apps/1", /Billing Desk/],
   ["/apps/1/setup", /Billing Desk: Setup \/ Advanced/],
   ["/apps/1/history", /Audit history: Billing Desk/],
@@ -25,7 +31,7 @@ const PAGES: [path: string, heading: RegExp, who?: Who][] = [
   ["/machines", /^Machines$/],
   ["/automations", /^Automations$/],
   ["/automations/1", /UiPath order to invoice/],
-  ["/setup", /^Setup \/ Advanced$/],
+  ["/setup", /^Setup$/],
   ["/setup/builds", /Build sessions: Setup/, "admin"],
   ["/admin/users", /Users and portal admins/, "admin"],
   ["/no/such/page", /Not found/],

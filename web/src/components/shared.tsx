@@ -14,23 +14,28 @@ export function JourneyNav({ journey, name }: { journey: Schemas["Journey"]; nam
     <>
       <nav className="progress" aria-label={`Progress of ${name}`}>
         {journey.steps.map((s, i) => (
-          <JourneyLink key={s.id} href={s.href} className={s.state} title={s.hint}>
+          <JourneyLink key={s.id} href={s.href} className={`${s.state}${s.blocked && s.state !== "done" ? " blocked" : ""}`} title={s.blocked && s.state !== "done" ? `${s.hint} Blocked: ${s.blocked}` : s.hint}>
             <span className="tick" aria-hidden="true">{s.state === "done" ? "✓" : i + 1}</span>
             {s.title}
             {s.state === "done" && <span className="visually-hidden"> (done)</span>}
             {s.state === "next" && <span className="visually-hidden"> (next step)</span>}
+            {s.state !== "done" && s.blocked && <span className="visually-hidden"> (blocked: {s.blocked})</span>}
           </JourneyLink>
         ))}
       </nav>
       {journey.out_of_scope ? (
         <div className="nextcard">
           <div className="nexthead">Not replicated</div>
-          <p>Recordings note this application only as having been used. To replicate it, change its scope decision to <em>Confirmed application</em>. <a className="button" href="#choose">Change scope</a></p>
+          <p>Recordings note this application only as having been used. To replicate it, change its scope decision to <em>Replicate</em>. <a className="button" href="#choose">Change scope</a></p>
         </div>
       ) : journey.next ? (
         <div className="nextcard">
           <div className="nexthead">Next step</div>
           <p><b>{journey.next.title}:</b> {journey.next.hint} <JourneyLink className="button" href={journey.next.href}>{journey.next.action}</JourneyLink></p>
+          {journey.next.blocked && <p className="blocked" role="note"><b>Blocked:</b> {journey.next.blocked}</p>}
+          {journey.steps.filter((s) => s.state === "todo" && s.blocked).slice(0, 1).map((s) => (
+            <p key={s.id} className="muted">Later, <b>{s.title}</b>: {s.blocked}</p>
+          ))}
         </div>
       ) : (
         <div className="nextcard">
