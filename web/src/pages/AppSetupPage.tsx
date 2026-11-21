@@ -3,7 +3,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
 import { ConflictView, Crumbs, DirtyNote, ErrorText, QueryView, conflictOf, useAction, useDraft, useField, useLeaveWarning, useTitle } from "../components/ui";
-import { short } from "../lib/format";
+import { releaseName, short } from "../lib/format";
 import { useAppId } from "./AppPage";
 
 export function AppSetupPage() {
@@ -43,7 +43,7 @@ function SetupView({ setup }: { setup: Schemas["AppSetup"] }) {
       <section id="deployments" aria-labelledby="deployments-h">
         <h2 id="deployments-h">Deployment configuration</h2>
         {setup.releases.length ? setup.releases.map((r) => (
-          <p key={r.id}><Link to={`/releases/${r.id}#deployment-setup`}>{r.version}</Link> <code>{short(r.commit_sha)}</code></p>
+          <p key={r.id}><Link to={`/releases/${r.id}#deployment-setup`}>{releaseName(app.name, r)}</Link> <code className="muted">{short(r.commit_sha)}</code></p>
         )) : <p>No release yet.</p>}
       </section>
     </>
@@ -202,7 +202,7 @@ function VerifyCommit({ appId, repo: initialRepo }: { appId: number; repo: strin
   const verify = useAction(async () => data(await api.POST("/api/v1/apps/{app_id}/verify-commit", {
     params: { path: { app_id: appId } },
     body: { repo: repo.trim(), sha: sha.trim().toLowerCase(), pr_number: pr ? Number(pr) : undefined },
-  })), (outcome) => navigate(`/releases/${outcome.release_id}#verification`));
+  })), (verification) => navigate(verification.release_id ? `/releases/${verification.release_id}#verification` : `/verifications/${verification.id}`));
   return (
     <form aria-label="Verify a commit" onSubmit={(e) => { e.preventDefault(); verify.mutate(undefined); }}>
       <label>Repository <input required placeholder="owner/name" value={repo} onChange={(e) => setRepo(e.target.value)} /></label>

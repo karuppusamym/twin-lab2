@@ -8,9 +8,12 @@
 #   3. the owner's part through /api/v1 and a frozen package from the live recording (owner.py e);
 #   4. replays with Twin Lab's desktop verify (labctl.desktop.verify): the reference exe (positive control)
 #      and both blind rebuilds (builds\c-casedesk, builds\d-casedesk), against the live recording and the
-#      earlier spliced one. Reports: <evidence>\e\replay\desktop-summary.json.
+#      earlier spliced one. Reports: <evidence>\e\replay\desktop-summary.json;
+#   5. replays the same with the PORTAL's own desktop Verify (twinlab2.replay.desktop, as Verify's worker
+#      runs it, TWINLAB2_DESKTOP_VERIFY=1), with the judge's values and "each form opens" acceptance cases.
+#      Reports: <evidence>\e\replay\portal-desktop-summary.json.
 #
-# Leave the mouse and keyboard alone while it runs (about 5 minutes): the flow clicks for real, only
+# Leave the mouse and keyboard alone while it runs (about 7 minutes): the flow clicks for real, only
 # while CaseDesk is in the foreground, and refuses to click into another window.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\rebuild_proof\desktop_batch.ps1 -GoDesktop
@@ -26,18 +29,22 @@ $repo = Resolve-Path (Join-Path $here '..\..')
 Set-Location $repo
 $env:PYTHONUTF8 = '1'
 
-Write-Host '1/4 building the reference CaseDesk'
+Write-Host '1/5 building the reference CaseDesk'
 python tools\rebuild_proof\desktop_live.py build-reference
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host '2/4 recording CaseDesk live (windows open now; hands off the mouse and keyboard)'
+Write-Host '2/5 recording CaseDesk live (windows open now; hands off the mouse and keyboard)'
 python tools\rebuild_proof\record.py e --go-desktop
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host '3/4 owner step and package from the live recording'
+Write-Host '3/5 owner step and package from the live recording'
 python tools\rebuild_proof\owner.py e
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host '4/4 desktop replays (reference, c-casedesk, d-casedesk)'
+Write-Host '4/5 desktop replays (reference, c-casedesk, d-casedesk)'
 python tools\rebuild_proof\desktop_live.py replay
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+Write-Host '5/5 the portal desktop Verify (reference, c-casedesk, d-casedesk)'
+python tools\rebuild_proof\desktop_live.py portal-verify
 exit $LASTEXITCODE

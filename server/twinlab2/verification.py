@@ -42,7 +42,7 @@ from twinlab2 import registry
 API = "https://api.github.com"
 SHA = re.compile(r"[0-9a-f]{40}")
 REPO = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
-PLATFORMS = {"": "Not set", "web": "Web", "windows-desktop": "Windows desktop"}
+PLATFORMS = {"": "Not set", "web": "Web", "windows-desktop": "Windows desktop", "mainframe": "Mainframe (3270)"}
 WINDOWS_PATTERN = "*windows*"
 ALL = "*"
 GREEN = "success"

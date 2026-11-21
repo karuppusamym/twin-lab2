@@ -275,7 +275,7 @@ export interface paths {
         put?: never;
         /**
          * Verify this build (a repository's commit, optionally a build session's)
-         * @description Owner. Registers or finds the release of the commit and runs the release checks. Audited as `release.verify`.
+         * @description Owner. Checks the request (a full SHA, a scenario, a frozen package), then queues the verification: 202 with the `Verification` to follow. The worker packages the commit (its release is known then), reads its checks and runs the release checks. Idempotent by `Idempotency-Key` (or its alias `request_key`: one verification per key); without one, a request while a verification of the same commit is queued or running gets that one. Audited as `release.verify`.
          */
         post: operations["verifyCommit"];
         delete?: never;
@@ -885,8 +885,10 @@ export interface paths {
          * A recording's events, paginated and searchable
          * @description A reviewer of the recording. In recording order (`seq`). Paginated (default `limit` 100).
          *     `q` matches the action, key, control, label, screen, source and time (case-insensitive,
-         *     every word must match); `source` is one application (an event's `source`). `sources` counts
-         *     the events per source of the whole recording. With `ids=true` the answer also lists the
+         *     every word must match); `source` is one application (an event's `source`); `screen` is one
+         *     screen (empty: the events with no screen). `sources` counts the events per source of the whole
+         *     recording; `screens` counts the events per screen of the chosen source (or of all), in the order
+         *     the recording first reached each screen. With `ids=true` the answer also lists the
          *     `event_id` of every matching event (all pages), for "select every match".
          */
         get: operations["listRecordingEvents"];
@@ -1380,9 +1382,31 @@ export interface paths {
         put?: never;
         /**
          * Verify this build
-         * @description Owner. Reads the checks, runs the scenario replay, business-outcome and reset checks, stores the report. Audited as `release.verify`.
+         * @description Owner. Queues the verification and answers 202 with it (poll `GET /api/v1/verifications/{id}`): the worker reads the checks, runs the scenario replay on each of the application's surfaces (web, mainframe, desktop), the business-outcome and reset checks, and stores the report. Idempotent by `Idempotency-Key` (or its alias `request_key`: one verification per key); without one, a request while a verification of the release is queued or running gets that one. Audited as `release.verify` (and `release.verified` when it ends).
          */
         post: operations["verifyRelease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/verifications/{verification_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                verification_id: number;
+            };
+            cookie?: never;
+        };
+        /**
+         * One verification (Verify as a job)
+         * @description Viewer of its application. Poll while `state` is queued or running.
+         */
+        get: operations["getVerification"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1957,6 +1981,9 @@ export interface components {
         TestedRelease: {
             id: number;
             version: string;
+            /** @description The readable number (ReleaseSummary.label). */
+            label: string;
+            commit_sha: string;
             state: components["schemas"]["ReleaseState"];
             platform: string;
             counts: {
@@ -2113,7 +2140,7 @@ export interface components {
             /** @description One check name or glob per line; empty means every check reported. */
             required_checks: string;
             /** @enum {string} */
-            target_platform: "" | "web" | "windows-desktop";
+            target_platform: "" | "web" | "windows-desktop" | "mainframe";
             windows_check_pattern?: string;
             lab_url?: string;
             launch?: string;
@@ -2127,12 +2154,73 @@ export interface components {
             ref?: string;
             /** @description The build session the commit is from. */
             build_id?: number;
+            /** @description Names one verification: a repeated request with it gets the same one. */
+            request_key?: string;
+            targets?: components["schemas"]["VerifyTargets"];
         };
-        VerifyOutcome: {
-            release_id: number;
-            tested: boolean;
+        VerifyInput: {
+            /** @description Names one verification: a repeated request with it gets the same one. */
+            request_key?: string;
+            targets?: components["schemas"]["VerifyTargets"];
+        };
+        /** @description Where to replay a surface that the deployment URL does not name. */
+        VerifyTargets: {
+            /** @description The rebuilt TN3270 host, host:port (default: the deployment URL's host and port). */
+            mainframe?: string;
+            /** @description The built executable, relative to the Windows verifier's builds folder (TWINLAB2_DESKTOP_BUILDS). */
+            desktop?: string;
+        };
+        VerificationScenario: {
+            id: string;
+            name: string;
+            /** @description pending, running, then pass, fail or not-run. */
+            state: string;
+            /** @enum {string|null} */
+            result?: "pass" | "fail" | "not-run" | null;
+            why?: string | null;
+            /** @description web, mainframe, desktop (several: comma-separated). */
+            surface?: string | null;
+        };
+        Verification: {
+            id: number;
+            app_id: number;
+            /** @description Known once the commit is packaged (verify-commit). */
+            release_id: number | null;
+            /** @enum {string} */
+            kind: "release" | "commit";
+            /** @enum {string} */
+            state: "queued" | "running" | "passed" | "failed" | "error";
+            commit_sha: string | null;
+            requested_by: string;
+            request_key: string;
+            /** @description How many times a worker started it (a worker that stopped mid-run is taken over). */
+            attempts: number;
+            created_at: string;
+            started_at: string | null;
+            finished_at: string | null;
+            progress: {
+                stage: string;
+                total: number;
+                done: number;
+                scenarios: components["schemas"]["VerificationScenario"][];
+            };
+            tested: boolean | null;
             reasons: string[];
-            report_sha?: string | null;
+            report: {
+                id: number;
+                sha256: string;
+                url: string | null;
+            } | null;
+            /** @description What Tested covers (scenarios, platform, role, commit, deployment). */
+            scope: {
+                [key: string]: unknown;
+            } | null;
+            dimensions: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            } | null;
+            error: string | null;
         };
         MergeSide: {
             id: number;
@@ -2603,6 +2691,8 @@ export interface components {
                 build_id: number;
                 detail: string;
             }[];
+            /** @description The verifications queued for the candidates (POST); their results fill in as they end. */
+            verifications?: components["schemas"]["Verification"][];
         };
         RecordingRef: {
             id: string;
@@ -2680,6 +2770,12 @@ export interface components {
             /** @description The events per source (application) of the whole recording. */
             sources: {
                 source: string;
+                count: number;
+            }[];
+            /** @description The events per screen of the chosen source (or the whole recording), in first-reached order. */
+            screens: {
+                /** @description null: events with no screen. */
+                screen: string | null;
                 count: number;
             }[];
             /** @description With `ids=true`: the event_id of every matching event. */
@@ -2899,7 +2995,14 @@ export interface components {
         };
         ReleaseSummary: {
             id: number;
+            /** @description The release's unique name in its application (the commit, 12 characters). */
             version: string;
+            /**
+             * @description The readable number `<package>.<build>`: the builder package revision the release was built
+             *     from and the count of releases built from it, oldest first (e.g. `1.2`). Shown as
+             *     `<app> <label> (<commit, 7 characters>)`.
+             */
+            label: string;
             revision: string;
             commit_sha: string;
             archive_sha: string;
@@ -2992,8 +3095,15 @@ export interface components {
             reasons: string[];
             reports: {
                 id: number;
+                /** @description 1 for the release's first report. */
+                number: number;
+                latest: boolean;
                 created_at: components["schemas"]["Timestamp"];
                 sha256: string;
+                /** @description The report's outcome: true when it made the release Tested; null when unknown. */
+                tested: boolean | null;
+                /** @description Who started the verification; null for a report stored before verification jobs. */
+                requested_by: string | null;
             }[];
         };
         ReleaseDetail: {
@@ -3018,6 +3128,8 @@ export interface components {
             checks: components["schemas"]["CheckSummary"];
             /** @description The deployment's version path, `.twinlab/version`. */
             version_path: string;
+            /** @description The latest verification of the release. */
+            verification?: components["schemas"]["Verification"] | null;
             notice?: string | null;
         };
         DeploymentInput: {
@@ -3478,6 +3590,15 @@ export interface components {
             };
             content: {
                 "application/json": components["schemas"]["ReleaseDetail"];
+            };
+        };
+        /** @description The verification (queued, running, or ended with its report). */
+        Verification: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Verification"];
             };
         };
         /** @description The agent API's JSON answer (RECORDER-CONTRACT.md). */
@@ -3977,7 +4098,10 @@ export interface operations {
     verifyCommit: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 app_id: components["parameters"]["AppId"];
             };
@@ -3989,15 +4113,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The outcome; the release to open. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VerifyOutcome"];
-                };
-            };
+            202: components["responses"]["Verification"];
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
         };
@@ -4837,6 +4953,7 @@ export interface operations {
                 offset?: components["parameters"]["Offset"];
                 q?: string;
                 source?: string;
+                screen?: string;
                 ids?: boolean;
             };
             header?: never;
@@ -5425,16 +5542,40 @@ export interface operations {
     verifyRelease: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 release_id: components["parameters"]["ReleaseId"];
             };
             cookie?: never;
         };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["VerifyInput"];
+            };
+        };
+        responses: {
+            202: components["responses"]["Verification"];
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getVerification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                verification_id: number;
+            };
+            cookie?: never;
+        };
         requestBody?: never;
         responses: {
-            200: components["responses"]["ReleaseDetail"];
+            200: components["responses"]["Verification"];
             403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     publishRelease: {

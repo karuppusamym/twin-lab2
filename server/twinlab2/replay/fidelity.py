@@ -556,12 +556,13 @@ def _declared(mod, given, rec: Recording):
 
 
 def _viewport(viewport, vspec) -> tuple[dict, str]:
-    from twinlab2.replay.visual import VIEWPORTS
+    from twinlab2.replay.visual import VIEWPORTS, viewport_size
 
     if isinstance(viewport, str):
-        if viewport not in VIEWPORTS:
-            raise ValueError(f"viewport {viewport!r}: one of {', '.join(VIEWPORTS)}")
-        return dict(VIEWPORTS[viewport]), viewport
+        size = viewport_size(viewport)
+        if size is None:
+            raise ValueError(f"viewport {viewport!r}: one of {', '.join(VIEWPORTS)}, or WIDTHxHEIGHT")
+        return size, viewport
     if isinstance(viewport, dict):
         name = next((k for k, v in VIEWPORTS.items() if v == viewport), "custom")
         return dict(viewport), name
@@ -600,22 +601,53 @@ class OriginMap:
 
     Strict (an explicit map or replicas.yaml): a request to a source origin, or to an origin with
     no replica, is refused and reported; an origin the declared scope excludes is refused and
-    counted as excluded. With a base URL only, requests to the source are refused (as before)."""
+    counted as excluded. With a base URL only, requests to the source are refused (as before).
+
+    A source with a path (`http://host/billing=http://127.0.0.1:9002`) maps only the addresses
+    under that path prefix (whole segments; the longest prefix wins): two applications that share
+    one host, told apart by path, each go to their own replica. A replica without a path keeps
+    the address's whole path (the replica serves its prefix itself, as on the shared host); a
+    replica with a path takes the prefix's place (`http://h/demo` for `/billing/x` is `/demo/x`)."""
 
     def __init__(self, mapping: dict[str, str], names: dict[str, str] | None = None,
                  strict: bool = False, as_recorded: bool = False) -> None:  # fmt: skip
         from twinlab2.replay.extracts import normalise_origin
 
-        self.mapping = {normalise_origin(s): normalise_origin(r) for s, r in mapping.items()
-                        if normalise_origin(s) and normalise_origin(r)}  # fmt: skip
-        self.names = {normalise_origin(s): n for s, n in (names or {}).items()}
+        self.mapping: dict[str, str] = {}
+        self.prefixes: list[tuple[str, str, str]] = []  # (source origin, path prefix, replica URL)
+        for src, dst in mapping.items():
+            so, ro = normalise_origin(src), normalise_origin(dst)
+            if not so or not ro:
+                continue
+            path = _prefix_of(src)
+            if path:
+                self.prefixes.append((so, path, ro + _prefix_of(dst)))
+            else:
+                self.mapping[so] = ro
+        self.prefixes.sort(key=lambda p: -len(p[1]))
+        self.names = {}
+        for src, n in (names or {}).items():
+            path = _prefix_of(src)
+            self.names[normalise_origin(src) + path] = n
         self.strict, self.as_recorded = strict, as_recorded
         self.excluded: set[str] = set()
 
     def replica(self, origin: str) -> str | None:
         if self.as_recorded:
             return origin
-        return self.mapping.get(origin)
+        if origin in self.mapping:
+            return self.mapping[origin]
+        return next((normalise_origin_of(r) for o, _p, r in self.prefixes if o == origin), None)
+
+    def _prefix(self, url: str) -> tuple[str, str] | None:
+        """(path prefix, replica URL) of the longest prefix that holds the address."""
+        from twinlab2.replay.extracts import normalise_origin
+
+        origin, path = normalise_origin(url), urlsplit(url).path or "/"
+        for o, prefix, replica in self.prefixes:
+            if o == origin and (path == prefix or path.startswith(prefix + "/")):
+                return prefix, replica
+        return None
 
     def rebase(self, url: str | None) -> str | None:
         """The step's address on its replica; None when its origin has no replica."""
@@ -624,18 +656,58 @@ class OriginMap:
         u = urlsplit(url or "")
         if u.scheme not in ("http", "https"):  # about:blank and the like: no application's
             return url
-        target = self.replica(normalise_origin(url))
-        if target is None:
-            return None
-        b = urlsplit(target)
+        path = u.path
+        hit = self._prefix(url or "") if not self.as_recorded else None
+        if hit is not None:
+            prefix, target = hit
+            b = urlsplit(target)
+            if b.path.rstrip("/"):
+                path = b.path.rstrip("/") + u.path[len(prefix):]
+        else:
+            origin = normalise_origin(url)
+            # an origin whose prefixes do not hold this address: only its own (root) replica
+            target = origin if self.as_recorded else self.mapping.get(origin)
+            if target is None:
+                return None
+            b = urlsplit(target)
         return _keep_empty_fragment(url or "",
-                                    urlunsplit((b.scheme, b.netloc, u.path, u.query, u.fragment)))  # fmt: skip
+                                    urlunsplit((b.scheme, b.netloc, path, u.query, u.fragment)))  # fmt: skip
 
     def name(self, origin: str | None) -> str | None:
         return self.names.get(origin or "") or origin or None
 
+    def name_of(self, url: str | None) -> str | None:
+        """The application a step's address belongs to: its prefix's id, else its origin's."""
+        from twinlab2.replay.extracts import normalise_origin
+
+        hit = self._prefix(url or "") if url else None
+        if hit is not None:
+            key = normalise_origin(url) + hit[0]
+            return self.names.get(key) or key
+        return self.name(normalise_origin(url or "")) if url and normalise_origin(url) else None
+
     def allowed(self) -> set[str]:
-        return set(self.mapping.values())
+        return set(self.mapping.values()) | {normalise_origin_of(r) for _o, _p, r in self.prefixes}
+
+    def sources(self) -> set[str]:
+        return set(self.mapping) | {o for o, _p, _r in self.prefixes}
+
+    def described(self) -> dict[str, str]:
+        """source -> replica as the replay used them (prefixes as origin + path)."""
+        return {**self.mapping, **{o + p: r for o, p, r in self.prefixes}}
+
+
+def _prefix_of(url: str) -> str:
+    """The path of a source or replica address without its trailing slash ('' for none or /)."""
+    import re
+
+    return re.sub(r"/{2,}", "/", urlsplit(str(url)).path or "").rstrip("/")
+
+
+def normalise_origin_of(url: str) -> str:
+    from twinlab2.replay.extracts import normalise_origin
+
+    return normalise_origin(url)
 
 
 def origin_map(rec: Recording, base_url: str | None = None, origins=None,
@@ -1258,7 +1330,7 @@ def replay(
             if omap.as_recorded:
                 return
             allowed = omap.allowed()
-            sources = set(omap.mapping) - allowed
+            sources = omap.sources() - allowed
             # Another application's window, opened by a step of this part (`opens_outside`): its
             # page load is answered with nothing, so the replay never reaches that application.
             outside = {_origin(s.opens_outside.get("url") or "") for s in rec.steps
@@ -1283,7 +1355,7 @@ def replay(
                     r.fulfill(status=200, content_type="text/html", body="")
                     return
                 else:
-                    why = "a source origin" if o in omap.mapping else "an origin with no replica"
+                    why = "a source origin" if o in omap.sources() else "an origin with no replica"
                     # which step was running: a refusal fails a replay whose steps all passed,
                     # so the report says where it came from
                     when = (f"; during step {running['seq']}" if running["seq"] is not None
@@ -1337,8 +1409,7 @@ def replay(
             for step in rec.steps:
                 report = StepReport(seq=step.seq, action=step.action, selector=step.selector,
                                     url=step.url, status="pass",
-                                    app=omap.name(_origin(step.url)) if _origin(step.url)
-                                    else None)  # fmt: skip
+                                    app=omap.name_of(step.url))  # fmt: skip
                 reports.append(report)
                 running["seq"] = step.seq
                 if stopped:
@@ -1458,7 +1529,7 @@ def replay(
         }
     report.visual_setup = visual_setup
     report.artifacts = str(artifacts) if artifacts is not None else None
-    report.origins = dict(omap.mapping) if not omap.as_recorded else {}
+    report.origins = omap.described() if not omap.as_recorded else {}
     report.blocked_requests = blocked_requests[:200]
     report.baseline = {**(base.summary() if base is not None else {"file": None, "empty": True}),
                        **notes, "source_requests_blocked": len(blocked_requests)}  # fmt: skip

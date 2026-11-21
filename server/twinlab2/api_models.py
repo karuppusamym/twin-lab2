@@ -152,6 +152,8 @@ class TestedRelease(Model):
     """An application's latest Tested or Published release."""
     id: int
     version: str
+    label: str
+    commit_sha: str
     state: ReleaseState
     platform: str
     counts: TestedRelease_Counts
@@ -198,6 +200,7 @@ class NewApp(Model):
 class ReleaseSummary(Model):
     id: int
     version: str
+    label: str
     revision: str
     commit_sha: str
     archive_sha: str
@@ -325,11 +328,17 @@ class UrlMatchInput(Model):
 
 class VerificationSettings(Model):
     required_checks: str
-    target_platform: Literal['', 'web', 'windows-desktop']
+    target_platform: Literal['', 'web', 'windows-desktop', 'mainframe']
     windows_check_pattern: str | None = None
     lab_url: str | None = None
     launch: str | None = None
     expected_revision: Revision | None = None
+
+
+class VerifyTargets(Model):
+    """Where to replay a surface that the deployment URL does not name."""
+    mainframe: str | None = None
+    desktop: str | None = None
 
 
 class VerifyCommitInput(Model):
@@ -338,13 +347,57 @@ class VerifyCommitInput(Model):
     pr_number: int | None = None
     ref: str | None = None
     build_id: int | None = None
+    request_key: str | None = None
+    targets: VerifyTargets | None = None
 
 
-class VerifyOutcome(Model):
-    release_id: int
-    tested: bool
+class VerifyInput(Model):
+    request_key: str | None = None
+    targets: VerifyTargets | None = None
+
+
+class VerificationScenario(Model):
+    id: str
+    name: str
+    state: str
+    result: Literal['pass', 'fail', 'not-run'] | None = None
+    why: str | None = None
+    surface: str | None = None
+
+
+class Verification_Progress(Model):
+    stage: str
+    total: int
+    done: int
+    scenarios: list[VerificationScenario]
+
+
+class Verification_Report(Model):
+    id: int
+    sha256: str
+    url: str | None
+
+
+class Verification(Model):
+    id: int
+    app_id: int
+    release_id: int | None
+    kind: Literal['release', 'commit']
+    state: Literal['queued', 'running', 'passed', 'failed', 'error']
+    commit_sha: str | None
+    requested_by: str
+    request_key: str
+    attempts: int
+    created_at: str
+    started_at: str | None
+    finished_at: str | None
+    progress: Verification_Progress
+    tested: bool | None
     reasons: list[str]
-    report_sha: str | None = None
+    report: Verification_Report | Any
+    scope: dict[str, Any] | None
+    dimensions: dict[str, dict[str, Any]] | Any
+    error: str | None
 
 
 class MergeSide(Model):
@@ -801,6 +854,7 @@ class Comparison(Model):
     app: AppRef
     results: list[Candidate]
     errors: list[Comparison_ErrorsItem] | None = None
+    verifications: list[Verification] | None = None
 
 
 class Gap(Model):
@@ -888,10 +942,16 @@ class RecordingEvents_SourcesItem(Model):
     count: int
 
 
+class RecordingEvents_ScreensItem(Model):
+    screen: str | None
+    count: int
+
+
 class RecordingEvents(Model):
     events: list[Event]
     page: Page
     sources: list[RecordingEvents_SourcesItem]
+    screens: list[RecordingEvents_ScreensItem]
     ids: list[str] | None = None
 
 
@@ -1161,9 +1221,14 @@ class CheckSummary_ChecksItem(Model):
 
 
 class CheckSummary_ReportsItem(Model):
+    """Latest first."""
     id: int
+    number: int
+    latest: bool
     created_at: Timestamp
     sha256: str
+    tested: bool | None
+    requested_by: str | None
 
 
 class CheckSummary(Model):
@@ -1202,6 +1267,7 @@ class ReleaseDetail(Model):
     results: list[TestResult]
     checks: CheckSummary
     version_path: str
+    verification: Verification | Any | None = None
     notice: str | None = None
 
 
@@ -1710,10 +1776,13 @@ UploadProgress.model_rebuild()
 UrlMatchInput.model_rebuild()
 UserInput.model_rebuild()
 UserList.model_rebuild()
+Verification.model_rebuild()
+VerificationScenario.model_rebuild()
 VerificationSettings.model_rebuild()
 VerifiedScope.model_rebuild()
 VerifyCommitInput.model_rebuild()
-VerifyOutcome.model_rebuild()
+VerifyInput.model_rebuild()
+VerifyTargets.model_rebuild()
 WaitingQuestion.model_rebuild()
 Workboard.model_rebuild()
 WorkboardLink.model_rebuild()

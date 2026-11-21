@@ -6,7 +6,8 @@
 Run one. Each job is leased; a heartbeat thread extends the lease while the job runs. When this
 process dies mid-job its lease runs out and the next worker (this one restarted, or another)
 takes the job over; build jobs are written so that taking one over never repeats a Devin
-session create (see builds.py). Setup, Build worker shows the workers seen and the queue.
+session create (see builds.py). Verify runs here too (`verify` jobs, verifications.py): a
+verification taken over starts again from the start. Setup, Build worker shows the workers seen and the queue.
 """
 
 from __future__ import annotations
@@ -21,8 +22,9 @@ import traceback
 from twinlab2 import builds
 from twinlab2 import db as database
 from twinlab2 import jobqueue
+from twinlab2 import verifications
 
-TYPES = ("build", "build.cancel", "build.message", "build.interrupt")
+TYPES = ("build", "build.cancel", "build.message", "build.interrupt", verifications.JOB)
 log = logging.getLogger("twinlab2.worker")
 
 
@@ -50,13 +52,19 @@ class Heartbeat(threading.Thread):
 def work_one(db, database, job, owner, lease, ctx):
     if job["attempts"] > jobqueue.MAX_ATTEMPTS:
         error = job.get("error") or "its lease kept running out"
-        builds.give_up(db, job, error)
+        if job["type"] == verifications.JOB:
+            verifications.give_up(db, job, error)
+        else:
+            builds.give_up(db, job, error)
         jobqueue.fail(db, job["id"], owner, f"gave up after {job['attempts'] - 1} attempts: {error}")
         return
     beat = Heartbeat(database, job["id"], owner, lease)
     beat.start()
     try:
-        outcome = builds.handle(db, job, ctx)
+        if job["type"] == verifications.JOB:
+            outcome = verifications.handle(db, job, ctx)
+        else:
+            outcome = builds.handle(db, job, ctx)
     except Exception as exc:  # a bug or an unexpected failure: try later, counted
         log.error("job %s (%s) failed:\n%s", job["id"], job["type"], traceback.format_exc())
         db.rollback()
@@ -79,8 +87,9 @@ def work_one(db, database, job, owner, lease, ctx):
 
 
 def run(database, once=False, lease=jobqueue.LEASE_SECONDS, idle=1.0, ctx=None, stop=None, max_jobs=None,
-        owner=None):
-    """Work jobs until `stop` is set; with once=True, until nothing is due (or max_jobs ran)."""
+        owner=None, types=TYPES):
+    """Work jobs until `stop` is set; with once=True, until nothing is due (or max_jobs ran).
+    `types` limits the job types this worker takes."""
     db = builds.connect(database)
     builds.migrate(db)
     ctx = ctx or builds.Context()
@@ -90,7 +99,7 @@ def run(database, once=False, lease=jobqueue.LEASE_SECONDS, idle=1.0, ctx=None, 
     done = 0
     try:
         while not stop.is_set():
-            job = jobqueue.claim(db, owner, lease, TYPES)
+            job = jobqueue.claim(db, owner, lease, types)
             if job is None:
                 if once:
                     break
@@ -115,11 +124,14 @@ def main(argv=None):
     parser.add_argument("--once", action="store_true", help="work what is due, then exit")
     parser.add_argument("--lease", type=float, default=jobqueue.LEASE_SECONDS, help="lease seconds per job")
     parser.add_argument("--idle", type=float, default=1.0, help="seconds between looks at an empty queue")
+    parser.add_argument("--types", default=",".join(TYPES),
+                        help="job types to take, comma-separated (e.g. verify: a worker for Verify only)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     log.info("worker on %s", database.redacted(args.database))
     try:
-        run(args.database, once=args.once, lease=args.lease, idle=args.idle)
+        types = tuple(t.strip() for t in args.types.split(",") if t.strip()) or TYPES
+        run(args.database, once=args.once, lease=args.lease, idle=args.idle, types=types)
     except KeyboardInterrupt:
         pass
 
