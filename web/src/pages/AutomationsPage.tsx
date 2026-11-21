@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, data, postForm, type Schemas } from "../api/client";
-import { Crumbs, ErrorText, QueryView, useAction, useTitle } from "../components/ui";
+import { Crumbs, Empty, ErrorText, QueryView, useAction, useTitle } from "../components/ui";
 import { when } from "../lib/format";
 
 export function AutomationsPage() {
@@ -21,7 +21,7 @@ export function AutomationsPage() {
                 <div className="row" key={a.id}>
                   <Link to={`/automations/${a.id}`}><strong>{a.name}</strong></Link> <span className="muted">{a.kind}</span> <span>{a.apps || "no application yet"}</span>
                 </div>
-              )) : <p>No automations yet.</p>}
+              )) : <Empty><p>No automations yet.</p></Empty>}
             </section>
             <section aria-labelledby="add-h">
               <h2 id="add-h">Add an automation</h2>

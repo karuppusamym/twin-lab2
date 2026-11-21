@@ -1,6 +1,7 @@
-import { type FormEvent } from "react";
+import { useState, type FormEvent, type KeyboardEvent } from "react";
 import { api, data, type Schemas } from "../api/client";
 import { plural } from "../lib/format";
+import { EventChooser, facets, filterEvents, type ChooserEvent } from "./EventChooser";
 import { ActionButton, ConflictView, DirtyNote, ErrorText, conflictOf, useAction, useDraft, useLeaveWarning } from "./ui";
 
 type Key = "name" | "starting" | "actions" | "expected" | "failures" | "examples" | "questions" | "notes";
@@ -8,14 +9,17 @@ type Key = "name" | "starting" | "actions" | "expected" | "failures" | "examples
 const PLACEHOLDERS: Record<Key, string> = {
   name: "Create an invoice from a saved order",
   starting: "Signed in as a clerk; order 1001 exists and is unpaid.",
-  actions: "Search for the order\nOpen it and press Invoice",
+  actions: "Search for the order",
   expected: "An invoice for order 1001 is shown with status Open.",
   failures: "Unknown order number: 'No order found' and no invoice",
   examples: "Order number: 1001\nCustomer: Example Ltd",
   questions: "Is VAT added before or after the discount?",
   notes: "",
 };
-const ROWS: Record<Key, number> = { name: 1, starting: 2, actions: 4, expected: 2, failures: 3, examples: 3, questions: 2, notes: 2 };
+
+/** The parts the guided form fills: a migrated scenario has none of them, only notes. */
+const GUIDED: Key[] = ["starting", "actions", "expected", "failures"];
+const CHOICES_PAGE = 50;
 
 function blank(): Schemas["ScenarioInput"] {
   return { name: "", starting: "", actions: "", expected: "", failures: "", examples: "", questions: "", notes: "", events: [] };
@@ -27,7 +31,78 @@ function fieldsOf(s: Schemas["Scenario"]): Schemas["ScenarioInput"] {
            examples: s.examples, questions: s.questions, notes: s.notes, events: [...(s.events ?? [])] };
 }
 
-/** One business scenario (or a new one), the old _scenario.html. */
+/** What is saved: the lists without their blank lines. */
+function cleaned(v: Schemas["ScenarioInput"]): Schemas["ScenarioInput"] {
+  const lines = (text: string | undefined) => (text ?? "").split("\n").map((l) => l.trimEnd()).filter((l) => l.trim()).join("\n");
+  return { ...v, name: v.name.trim(), actions: lines(v.actions), failures: lines(v.failures) };
+}
+
+/** A numbered list kept as one line per item (the API's "one per line" text). */
+function LineList({ id, value, onChange, item, add, placeholder, maxLength, of }: {
+  id: string; value: string; onChange: (value: string) => void; item: string; add: string; placeholder: string; maxLength?: number;
+  /** What the list belongs to, in its buttons' names ("of Create an invoice"). */
+  of: string;
+}) {
+  const lines = value ? value.split("\n") : [""];
+  const put = (next: string[]) => onChange(next.join("\n"));
+  const focus = (i: number) => requestAnimationFrame(() => document.getElementById(`${id}-${i}`)?.focus());
+  const insert = (at: number) => { put([...lines.slice(0, at), "", ...lines.slice(at)]); focus(at); };
+  const move = (i: number, by: number) => {
+    const next = [...lines];
+    next.splice(i + by, 0, ...next.splice(i, 1));
+    put(next); focus(i + by);
+  };
+  const remove = (i: number) => { put(lines.length > 1 ? lines.filter((_, j) => j !== i) : [""]); focus(Math.max(0, i - 1)); };
+  const onKey = (i: number) => (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") { e.preventDefault(); insert(i + 1); }
+    else if (e.key === "Backspace" && !lines[i] && lines.length > 1) { e.preventDefault(); remove(i); }
+  };
+  const used = value.length;
+  return (
+    <>
+      <ol className="line-list">
+        {lines.map((line, i) => (
+          <li key={i}>
+            <label htmlFor={`${id}-${i}`} className="visually-hidden">{item} {i + 1}</label>
+            <input id={`${id}-${i}`} value={line} placeholder={i === 0 ? placeholder : undefined} onKeyDown={onKey(i)}
+              maxLength={maxLength ? maxLength - (used - line.length) : undefined}
+              onChange={(e) => put(lines.map((l, j) => (j === i ? e.target.value.replace(/\n/g, " ") : l)))} />
+            <span className="line-tools">
+              <button type="button" className="icon-button" disabled={i === 0} onClick={() => move(i, -1)} aria-label={`Move ${item.toLowerCase()} ${i + 1} of ${of} up`}>↑</button>
+              <button type="button" className="icon-button" disabled={i === lines.length - 1} onClick={() => move(i, 1)} aria-label={`Move ${item.toLowerCase()} ${i + 1} of ${of} down`}>↓</button>
+              <button type="button" className="icon-button" onClick={() => remove(i)} aria-label={`Remove ${item.toLowerCase()} ${i + 1} of ${of}`}>✕</button>
+            </span>
+          </li>
+        ))}
+      </ol>
+      <button type="button" className="secondary" onClick={() => insert(lines.length)} aria-label={`${add} to ${of}`}>{add}</button>
+    </>
+  );
+}
+
+/** The app's recorded events (from every recording assigned to it) in the shared chooser, filtered in memory. */
+function LinkedEvents({ choices, selected, onSelect }: { choices: Schemas["EventChoice"][]; selected: Set<string>; onSelect: (ids: string[], on: boolean) => void }) {
+  const [q, setQ] = useState("");
+  const [flow, setFlow] = useState("");
+  const [screen, setScreen] = useState("");
+  const [offset, setOffset] = useState(0);
+  const all: ChooserEvent[] = choices.map((c) => ({ id: c.ref, seq: c.seq, action: c.action, label: c.label, screen: c.screen, flow: c.recording }));
+  const { byFlow, matching } = filterEvents(all, { q, flow, screen });
+  const page = { total: matching.length, limit: CHOICES_PAGE, offset, next_offset: offset + CHOICES_PAGE < matching.length ? offset + CHOICES_PAGE : null };
+  const recordings = facets(all.map((e) => e.flow), "Unnamed recording");
+  return (
+    <EventChooser
+      legend="Recorded events that show these steps" events={matching.slice(offset, offset + CHOICES_PAGE)} page={page}
+      selected={selected} onSelect={onSelect} q={q} onQ={(v) => { setQ(v); setOffset(0); }}
+      flow={recordings.length > 1 ? { label: "Recording", value: flow, options: recordings, onChange: (v) => { setFlow(v); setScreen(""); setOffset(0); } } : undefined}
+      screen={{ label: "Screen", value: screen, options: facets(byFlow.map((e) => e.screen), "No screen"), onChange: (v) => { setScreen(v); setOffset(0); } }}
+      onSelectMatching={(on) => onSelect(matching.map((e) => e.id), on)} onOffset={setOffset}
+      hint="Link the events of the recordings that show this scenario: the package gives them to the builder as its example."
+    />
+  );
+}
+
+/** One business scenario (or a new one), as a guided form: starting conditions, steps, expected result, failure cases. */
 export function ScenarioForm({ appId, list, scenario }: { appId: number; list: Schemas["ScenarioList"]; scenario?: Schemas["Scenario"] }) {
   // follows the saved scenario until the user edits it; a save names the revision it started from
   const draft = useDraft<Schemas["ScenarioInput"]>(scenario ? fieldsOf(scenario) : blank(), scenario?.revision ?? 0);
@@ -37,52 +112,84 @@ export function ScenarioForm({ appId, list, scenario }: { appId: number; list: S
   const formId = scenario ? `scenario-${scenario.id}` : "scenario-new";
   const families = [["app", appId]];
   const save = useAction(async (revision: number) => {
+    const body = cleaned(values);
     if (scenario) {
-      return data(await api.PUT("/api/v1/apps/{app_id}/scenarios/{scenario_id}", { params: { path: { app_id: appId, scenario_id: scenario.id } }, body: { ...values, expected_revision: revision } }));
+      return data(await api.PUT("/api/v1/apps/{app_id}/scenarios/{scenario_id}", { params: { path: { app_id: appId, scenario_id: scenario.id } }, body: { ...body, expected_revision: revision } }));
     }
-    return data(await api.POST("/api/v1/apps/{app_id}/scenarios", { params: { path: { app_id: appId } }, body: values }));
+    return data(await api.POST("/api/v1/apps/{app_id}/scenarios", { params: { path: { app_id: appId } }, body }));
   }, (saved) => { if (scenario) draft.reset(fieldsOf(saved), saved.revision); else draft.reset(blank(), 0); }, families);
   const theirs = conflictOf<Schemas["Scenario"]>(save.error);
-  const set = (key: Key, value: string) => setValues((v) => ({ ...v, [key]: value }));
+  const set = (key: Key) => (value: string) => setValues((v) => ({ ...v, [key]: value }));
   const events = new Set(values.events ?? []);
-  const toggle = (ref: string) => {
-    const next = new Set(events);
-    if (next.has(ref)) next.delete(ref); else next.add(ref);
-    setValues((v) => ({ ...v, events: [...next] }));
-  };
+  const select = (ids: string[], on: boolean) => setValues((v) => {
+    const next = new Set(v.events ?? []);
+    for (const id of ids) if (on) next.add(id); else next.delete(id);
+    return { ...v, events: [...next] };
+  });
   const submit = (e: FormEvent) => { e.preventDefault(); save.mutate(draft.revision); };
+  const field = (key: Key) => list.fields.find((f) => f.key === key);
+  const label = (key: Key, fallback: string) => field(key)?.label ?? fallback;
+  const max = (key: Key) => field(key)?.max_length;
   const fields = list.fields.filter((f) => f.key in PLACEHOLDERS) as (Schemas["ScenarioField"] & { key: Key })[];
+  // judged on the saved scenario, so the notes do not move while the owner sorts them into steps
+  const migrated = Boolean(scenario?.notes?.trim()) && GUIDED.every((k) => !(scenario?.[k] ?? "").trim());
+  const title = scenario ? `the scenario ${scenario.name}` : "the new scenario";
+  const steps = (values.actions ?? "").split("\n").filter((l) => l.trim()).length;
+  /** A text field; `hidden` when its section's title already names it (the label stays for screen readers). */
+  const area = (key: Key, rows: number, hint?: string, hidden?: boolean) => (
+    <label>{hidden ? <span className="visually-hidden">{label(key, key)}</span> : label(key, key)}{hint && <span className="field-hint">{hint}</span>}
+      <textarea rows={rows} maxLength={max(key)} value={values[key] ?? ""} placeholder={PLACEHOLDERS[key]} onChange={(e) => set(key)(e.target.value)} />
+    </label>
+  );
+  const notes = (
+    <fieldset className={`guided-part${migrated ? " migrated" : ""}`}>
+      <legend>{migrated ? "Notes carried over from the old requirements" : "Notes"}</legend>
+      {migrated && <p className="field-hint">This scenario was made from the application&apos;s earlier free-text requirements. Move each part into the steps of the guided form; the text stays here until you remove it.</p>}
+      <label><span className="visually-hidden">Notes</span>
+        <textarea rows={values.notes ? Math.min(12, Math.max(4, (values.notes ?? "").split("\n").length + 1)) : 2} maxLength={max("notes")}
+          value={values.notes ?? ""} onChange={(e) => set("notes")(e.target.value)} />
+      </label>
+    </fieldset>
+  );
   return (
     <details id={formId} className="scenario" open={!scenario && list.scenarios.length === 0}>
       <summary>
         {scenario ? (
-          <><strong>{scenario.name}</strong> <span className="muted">{plural((scenario.events ?? []).length, "linked event")}{scenario.expected ? "" : " · expected result missing"}</span></>
+          <><strong>{scenario.name}</strong> <span className="muted">{plural(steps, "step")} · {plural((scenario.events ?? []).length, "linked event")}{scenario.expected ? "" : " · expected result missing"}{migrated ? " · notes to sort into steps" : ""}</span></>
         ) : <strong>Add a scenario</strong>} <DirtyNote dirty={draft.dirty} />
       </summary>
-      <form onSubmit={submit} aria-label={scenario ? `Scenario ${scenario.name}` : "New scenario"}>
-        {fields.map((f) => (
-          <div key={f.key}>
-            <label>
-              {f.label}{" "}
-              {f.key === "name"
-                ? <input required maxLength={f.max_length} value={values.name} placeholder={PLACEHOLDERS.name} onChange={(e) => set("name", e.target.value)} />
-                : <textarea rows={f.key === "notes" && values.notes ? 6 : ROWS[f.key]} maxLength={f.max_length} value={values[f.key] ?? ""} placeholder={PLACEHOLDERS[f.key]} onChange={(e) => set(f.key, e.target.value)} />}
-            </label>
-            {f.key === "actions" && (list.event_choices.length ? (
-              <fieldset>
-                <legend>Recorded events that show these actions</legend>
-                <div className="events scenario-events">
-                  {list.event_choices.map((ev) => (
-                    <label key={ev.ref}>
-                      <input type="checkbox" checked={events.has(ev.ref)} onChange={() => toggle(ev.ref)} />
-                      <span>{ev.seq} · {ev.action}{ev.label && <> · <code>{ev.label}</code></>}{ev.screen && <span className="muted"> on {ev.screen}</span>} <span className="muted">({ev.recording})</span></span>
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-            ) : <p className="muted">Select events on a recording's page to link them to scenario actions.</p>)}
-          </div>
-        ))}
+      <form onSubmit={submit} aria-label={scenario ? `Scenario ${scenario.name}` : "New scenario"} className="guided">
+        <label>{label("name", "Scenario name")}
+          <input required maxLength={max("name")} value={values.name} placeholder={PLACEHOLDERS.name} onChange={(e) => set("name")(e.target.value)} />
+        </label>
+        {migrated && notes}
+        <fieldset className="guided-part">
+          <legend><span className="step-number" aria-hidden="true">1</span> Starting conditions</legend>
+          {area("starting", 2, "What is true before the first step: who is signed in, which records exist.", true)}
+          {area("examples", 3, "Made-up values the steps use, one per line. Never real customer data.")}
+        </fieldset>
+        <fieldset className="guided-part">
+          <legend><span className="step-number" aria-hidden="true">2</span> Steps</legend>
+          <p className="field-hint">What the user does, in order. Enter adds the next step.</p>
+          <LineList id={`${formId}-step`} value={values.actions ?? ""} onChange={set("actions")} item="Step" of={title} add="Add a step" placeholder={PLACEHOLDERS.actions} maxLength={max("actions")} />
+          {list.event_choices.length
+            ? <LinkedEvents choices={list.event_choices} selected={events} onSelect={select} />
+            : <p className="muted">Assign a recording&apos;s events to this application on the recording&apos;s page to link them to these steps.</p>}
+        </fieldset>
+        <fieldset className="guided-part">
+          <legend><span className="step-number" aria-hidden="true">3</span> Expected result</legend>
+          {area("expected", 2, "What the user sees when the scenario succeeds: the business outcome, not the clicks.", true)}
+        </fieldset>
+        <fieldset className="guided-part">
+          <legend><span className="step-number" aria-hidden="true">4</span> Failure cases</legend>
+          <p className="field-hint">Each thing that can go wrong, and what the application does then.</p>
+          <LineList id={`${formId}-failure`} value={values.failures ?? ""} onChange={set("failures")} item="Failure case" of={title} add="Add a failure case" placeholder={PLACEHOLDERS.failures} maxLength={max("failures")} />
+        </fieldset>
+        <fieldset className="guided-part">
+          <legend>Open questions</legend>
+          {area("questions", 2, "What you do not know yet, one per line: the builder asks before guessing.", true)}
+        </fieldset>
+        {!migrated && notes}
         {theirs ? (
           <ConflictView
             busy={save.isPending}
@@ -94,7 +201,7 @@ export function ScenarioForm({ appId, list, scenario }: { appId: number; list: S
         ) : <ErrorText error={save.error} />}
         <button disabled={save.isPending}>{scenario ? "Save scenario" : "Add scenario"}</button>
       </form>
-      {scenario && <ActionButton destructive label="Remove scenario" confirm={`Remove the scenario ${scenario.name}?`} invalidate={families} run={async () => {
+      {scenario && <ActionButton destructive label="Remove scenario" name={`Remove the scenario ${scenario.name}`} confirm={`Remove the scenario ${scenario.name}?`} invalidate={families} run={async () => {
         await api.DELETE("/api/v1/apps/{app_id}/scenarios/{scenario_id}", { params: { path: { app_id: appId, scenario_id: scenario.id }, query: { expected_revision: scenario.revision } } });
       }} />}
     </details>

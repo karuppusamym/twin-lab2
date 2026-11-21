@@ -1,6 +1,6 @@
 # Provider adapter experiment
 
-> The production version is `twinlab2/providers/` (see the README's *Build sessions*): `twinlab2/providers/clarify.py` is this
+> The production version is `twinlab2/providers/` (see *Build sessions* in docs/design.md): `twinlab2/providers/clarify.py` is this
 > probe on the official `anthropic` SDK, and Claude sessions run the Agent SDK in `twinlab2/providers/runner.py`.
 > This folder is kept as the record of the experiment.
 

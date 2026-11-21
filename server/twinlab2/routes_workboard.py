@@ -570,5 +570,5 @@ def register_release(app_id: int, body: m.ReleaseInput):
         fail(400, str(error))
     row = db().execute("SELECT id, version, revision, commit_sha, archive_sha, state FROM releases WHERE id = ?",
                        (release_id,)).fetchone()
-    return {"release": shapes.release_summary(row), "created": before is None, "href": f"/releases/{release_id}",
+    return {"release": shapes.release_summary(row, registry.release_labels(db(), app_id)[release_id]), "created": before is None, "href": f"/releases/{release_id}",
             "next": "Verify the release: replay the recorded examples against its deployment."}

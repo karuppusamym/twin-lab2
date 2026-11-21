@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
-import { ActionButton, Badge, ErrorText, QueryView, useAction, useTitle } from "../components/ui";
+import { ActionButton, Badge, Empty, ErrorText, QueryView, useAction, useTitle } from "../components/ui";
 
 /** Request a recording (the old /sessions page). */
 export function CapturePage() {
@@ -35,7 +35,7 @@ export function CapturePage() {
                     <ActionButton secondary label="Withdraw" run={async () => data(await api.POST("/api/v1/capture-sessions/{session_id}/withdraw", { params: { path: { session_id: s.id } } }))} />
                   )}
                 </div>
-              )) : <p>No recording requested yet.</p>}
+              )) : <Empty><p>No recording requested yet.</p></Empty>}
             </section>
           </div>
         )}

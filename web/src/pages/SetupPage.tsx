@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, data } from "../api/client";
-import { QueryView, useTitle } from "../components/ui";
+import { Empty, QueryView, useTitle } from "../components/ui";
 import { useCan } from "../session";
 
 export function SetupPage() {
@@ -37,7 +37,7 @@ export function SetupPage() {
             <section aria-labelledby="apps-h">
               <h2 id="apps-h">Applications</h2>
               <p className="muted">Identities, Git repository and deployment configuration of each application.</p>
-              {s.apps.length ? s.apps.map((a) => <p key={a.id}><Link to={`/apps/${a.id}/setup`}>{a.name}</Link></p>) : <p>No applications yet.</p>}
+              {s.apps.length ? s.apps.map((a) => <p key={a.id}><Link to={`/apps/${a.id}/setup`}>{a.name}</Link></p>) : <Empty><p>No applications yet.</p></Empty>}
             </section>
           </div>
         )}

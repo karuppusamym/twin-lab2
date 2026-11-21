@@ -42,8 +42,9 @@ def deployment(row, label, reason):
             "checked_at": row.get("checked_at") or None}
 
 
-def release_summary(row):
-    return {"id": row["id"], "version": row["version"], "revision": row["revision"],
+def release_summary(row, label):
+    """`label` is the release's readable number (registry.release_labels)."""
+    return {"id": row["id"], "version": row["version"], "label": label, "revision": row["revision"],
             "commit_sha": row["commit_sha"], "archive_sha": row["archive_sha"] or "", "state": row["state"]}
 
 

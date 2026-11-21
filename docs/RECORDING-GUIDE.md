@@ -1,6 +1,6 @@
 # Recording a UiPath process across web, desktop and mainframe
 
-Status (labels as in the README's *What works today*): the recorder is **Locally tested** on one developer PC with an unsigned build, real Edge, CaseDesk, Windows Calculator and a synthetic mainframe. It is not **Externally validated**: no live managed-PC trial, no real UiPath robot, no real mainframe or emulator. The UiPath steps below (targets from a project, the robot's log) are **Implemented**.
+Status (labels as in *What works today* in [design.md](design.md)): the recorder is **Locally tested** on one developer PC with an unsigned build, real Edge, CaseDesk, Windows Calculator and a synthetic mainframe. It is not **Externally validated**: no live managed-PC trial, no real UiPath robot, no real mainframe or emulator. The UiPath steps below (targets from a project, the robot's log) are **Implemented**.
 
 One session records everything the process does on this PC. The session's target applications are recorded in full. Any other application is recorded only as having been used. The recording stays on the PC; the portal, when you use one, receives only references.
 

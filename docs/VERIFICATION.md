@@ -1,6 +1,6 @@
 # Local verification
 
-Every result below is **Locally tested** (on the developer's Windows PC) unless it says otherwise; labels as in the README's *What works today*. **Nothing here is externally validated**: there has been no recorder trial on a live managed PC and no OpenShift deployment. The Orders-to-Billing milestone (next section) did a fresh blind rebuild from exported packs and a clean-container install, all on the same PC; the older Orders/Billing release replay below used previously built fixture apps.
+Every result below is **Locally tested** (on the developer's Windows PC) unless it says otherwise; labels as in *What works today* in [design.md](design.md). **Nothing here is externally validated**: there has been no recorder trial on a live managed PC and no OpenShift deployment. The Orders-to-Billing milestone (next section) did a fresh blind rebuild from exported packs and a clean-container install, all on the same PC; the older Orders/Billing release replay below used previously built fixture apps.
 
 ## Screen structure in the package: recorder contract 1.3 (2026-11-21)
 

@@ -23,7 +23,7 @@ const PAGES: [path: string, heading: RegExp, who?: Who][] = [
   ["/apps/1/build", /Build sessions: Billing Desk/],
   ["/apps/1/sessions/compare", /Compare results: Billing Desk/],
   ["/builds/7", /Build session #7: Billing Desk, Claude/],
-  ["/releases/5", /Billing Desk 1.0.0/],
+  ["/releases/5", /Billing Desk 1\.1/],
   ["/verifications/12", /Verification #12/],
   ["/recordings", /^Recordings$/],
   ["/recordings/9f2c4e1a7b3d5f60", /Order to invoice/],
@@ -48,7 +48,7 @@ describe("every page", () => {
   it("says what a Tested release's evidence covers, and links the pinned release manifest", async () => {
     renderApp("/releases/5", "owner");
     expect(await screen.findByTestId("verified-scope")).toHaveTextContent(/2 of 2 scenarios passed .* \(owner\), against https:\/\/billing-demo/);
-    expect(screen.getByRole("link", { name: "OpenShift manifest (release)" })).toHaveAttribute("href", "/api/v1/releases/5/openshift.yaml");
+    expect(screen.getByRole("link", { name: "OpenShift manifest of Billing Desk 1.1 (3f9a1c2)" })).toHaveAttribute("href", "/api/v1/releases/5/openshift.yaml");
   });
 
   it("shows a running verification's progress on the release page, then its result per dimension", async () => {
@@ -66,7 +66,7 @@ describe("every page", () => {
     await waitFor(() => expect(screen.getByTestId("verification")).toHaveTextContent(/Passed: Tested/), { timeout: 8000 });
     const dims = screen.getByRole("table", { name: "Verification by dimension" });
     expect(dims).toHaveTextContent(/Behavioural.*pass.*Structural.*title line and input fields.*Visual.*not-checked.*Deployment/);
-    expect(screen.getByRole("link", { name: "Verification report" })).toHaveAttribute("href", "/api/v1/releases/5/reports/31");
+    expect(screen.getByRole("link", { name: "Report of this verification" })).toHaveAttribute("href", "/api/v1/releases/5/reports/31");
   }, 15000);
 
   it("shows the portal's auth mode on the Users page", async () => {

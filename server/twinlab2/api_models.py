@@ -152,6 +152,8 @@ class TestedRelease(Model):
     """An application's latest Tested or Published release."""
     id: int
     version: str
+    label: str
+    commit_sha: str
     state: ReleaseState
     platform: str
     counts: TestedRelease_Counts
@@ -211,6 +213,7 @@ class NewApp(Model):
 class ReleaseSummary(Model):
     id: int
     version: str
+    label: str
     revision: str
     commit_sha: str
     archive_sha: str
@@ -952,10 +955,16 @@ class RecordingEvents_SourcesItem(Model):
     count: int
 
 
+class RecordingEvents_ScreensItem(Model):
+    screen: str | None
+    count: int
+
+
 class RecordingEvents(Model):
     events: list[Event]
     page: Page
     sources: list[RecordingEvents_SourcesItem]
+    screens: list[RecordingEvents_ScreensItem]
     ids: list[str] | None = None
 
 
@@ -1225,9 +1234,14 @@ class CheckSummary_ChecksItem(Model):
 
 
 class CheckSummary_ReportsItem(Model):
+    """Latest first."""
     id: int
+    number: int
+    latest: bool
     created_at: Timestamp
     sha256: str
+    tested: bool | None
+    requested_by: str | None
 
 
 class CheckSummary(Model):

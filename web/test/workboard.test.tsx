@@ -86,7 +86,7 @@ describe("the scope triage", () => {
     expect(within(card).getByRole("button", { name: "Outlook: not replicated (used only)" })).toBeInTheDocument();
     // "Same as" is a merge, previewed first; "Needs a scope decision" is never a choice
     const sameAs = within(card).getByRole("form", { name: "Outlook is the same as" });
-    expect(within(sameAs).getAllByRole("option").map((o) => o.textContent)).toEqual(["CaseDesk (suggested)", "Billing Desk"]);
+    expect(within(sameAs).getAllByRole("option", { hidden: true }).map((o) => o.textContent)).toEqual(["CaseDesk (suggested)", "Billing Desk"]);
     expect(within(card).queryByRole("option", { name: SCOPE_LABELS.discovered })).not.toBeInTheDocument();
   });
 

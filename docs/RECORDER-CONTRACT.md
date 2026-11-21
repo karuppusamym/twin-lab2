@@ -30,8 +30,8 @@ MINOR is accepted because the portal ignores fields it does not know.
 A refusal answers with this JSON:
 
 ```json
-{"error": "this recorder speaks contract 2.0.0, newer than this portal's 1.3.0 (supported >=1.0.0 <2.0.0). Update the portal, or use a recorder for contract 1.x.",
- "update": "portal", "contract": {"portal": "1.3.0", "supported": ">=1.0.0 <2.0.0"}}
+{"error": "this recorder speaks contract 2.0.0, newer than this portal's 1.4.0 (supported >=1.0.0 <2.0.0). Update the portal, or use a recorder for contract 1.x.",
+ "update": "portal", "contract": {"portal": "1.4.0", "supported": ">=1.0.0 <2.0.0"}}
 ```
 
 The portal checks the version before anything else. An outdated recorder hears what to update,

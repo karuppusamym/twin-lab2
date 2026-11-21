@@ -21,7 +21,7 @@
 # safe) and keeps no state in the pod: sessions are rows of the database, artifacts (evidence,
 # packs, releases, recordings) go to the S3 bucket below, with credentials from the pod's role or
 # AWS_* variables. So it runs as 2 replicas and rolls one new pod in before an old one goes. To
-# move an existing SQLite catalog in, see "Shared deployment" in the README (python migrations.py
+# move an existing SQLite catalog in, see "Shared deployment" in docs/design.md (python migrations.py
 # copy); a SQLite catalog on a volume allows 1 replica only (and a Recreate rollout).
 #
 # The build worker is its own Deployment (twinlab2-worker): it scales, restarts and is sized apart

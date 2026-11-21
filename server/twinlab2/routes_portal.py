@@ -111,6 +111,11 @@ def releases(app_id):
     ).fetchall()
 
 
+def release_summaries(app_id):
+    labels = registry.release_labels(db(), app_id)
+    return [shapes.release_summary(r, labels[r["id"]]) for r in releases(app_id)]
+
+
 def tested_releases():
     """Per app, its latest Tested or Published release, the results of its test, and the
     deployment to open (a verified one first)."""
@@ -123,13 +128,15 @@ def tested_releases():
     """).fetchall()
     found = {}
     for row in rows:
+        label = registry.release_labels(db(), row["app_id"])[row["id"]]
         results = [item["result"] for item in json.loads(row["results"])]
         deployment = db().execute(
             "SELECT * FROM deployments WHERE release_id = ? ORDER BY verification = 'verified' DESC, environment",
             (row["id"],),
         ).fetchone()
         found[row["app_id"]] = {
-            "id": row["id"], "version": row["version"], "state": row["state"], "platform": row["platform"] or "",
+            "id": row["id"], "version": row["version"], "label": label, "commit_sha": row["commit_sha"],
+            "state": row["state"], "platform": row["platform"] or "",
             "counts": {result: results.count(result) for result in RESULTS},
             "deployment": shapes.deployment(deployment, deployment_label, deployment_reason) if deployment else None,
         }
@@ -161,7 +168,7 @@ def app_detail(app_id):
     item = get_app(app_id)
     builder = auth.can("builder", app_id=app_id)
     return dict(app_summary(item), revision=item["revision"], git_url=item["git_url"] or "", url_match=item["url_match"] or "path",
-                surface=item["surface"] or "", releases=[shapes.release_summary(r) for r in releases(app_id)],
+                surface=item["surface"] or "", releases=release_summaries(app_id),
                 packages=[shapes.package_summary(r) for r in packages.revisions(db(), app_id)] if builder else [],
                 # what an owner may choose: "discovered" is the state before a decision, never a choice
                 statuses=[shapes.choice(s, shapes.status_label(s)) for s in journey.OWNER_CHOICES])
@@ -487,7 +494,7 @@ def app_setup(app_id):
         "github_repo": commit_checks.github_repo(item["git_url"]) or None,
         "github_token_configured": bool(commit_checks.GitHub().token),
         "default_windows_pattern": commit_checks.WINDOWS_PATTERN,
-        "releases": [shapes.release_summary(r) for r in releases(app_id)],
+        "releases": release_summaries(app_id),
         "data_backends": [shapes.choice(value, label) for value, label in demo_target.BACKENDS.items()],
         "data_backend": dict(demo_target.backend(db(), item),
                              tables=demo_target.tables(text for _row, text in demo_target.ddl_texts(db(), app_id))),
@@ -853,6 +860,13 @@ def recording_events(recording_id: str):
         sources[source] = sources.get(source, 0) + 1
     if query.get("source"):
         events = [e for e in events if (e.get("source") or "Unknown source") == query["source"]]
+    # the screens of the chosen source (or all), in the order the recording first reached them
+    screens = {}
+    for e in events:
+        screen = e.get("screen") or ""
+        screens[screen] = screens.get(screen, 0) + 1
+    if "screen" in query:
+        events = [e for e in events if (e.get("screen") or "") == query["screen"]]
     words = (query.get("q") or "").casefold().split()
     if words:
         events = [e for e in events
@@ -861,7 +875,8 @@ def recording_events(recording_id: str):
     page, where = paged(events, limit, offset)
     out = {"events": [dict(shapes.event(e, data, completeness.in_gap), **({"app": e["app"]} if e.get("app") else {}))
                       for e in page], "page": where,
-           "sources": [{"source": k, "count": v} for k, v in sources.items()]}
+           "sources": [{"source": k, "count": v} for k, v in sources.items()],
+           "screens": [{"screen": k or None, "count": v} for k, v in screens.items()]}
     if query.get("ids", "").lower() in ("1", "true"):
         out["ids"] = [e["event_id"] for e in events]
     return out
@@ -1164,6 +1179,28 @@ def release_app(kwargs):
     return get_release(kwargs["release_id"])["app_id"]
 
 
+def verification_reports(release_id, reports):
+    """The release's verification reports, latest first, each with its outcome and who asked for it
+    (the verification job that wrote it; a report stored before jobs existed names no one)."""
+    jobs = {row["report_id"]: row for row in db().execute(
+        "SELECT report_id, tested, requested_by FROM verifications WHERE release_id = ? AND report_id IS NOT NULL",
+        (release_id,))}
+    out = []
+    for n, r in enumerate(sorted(reports, key=lambda r: r["id"], reverse=True)):
+        job = jobs.get(r["id"])
+        tested = None if job is None or job["tested"] is None else bool(job["tested"])
+        if tested is None:
+            content = commit_checks.get_report(db(), release_id, r["id"])
+            try:
+                tested = bool(json.loads(content).get("tested")) if content else None
+            except ValueError:
+                tested = None
+        out.append({"id": r["id"], "created_at": r["created_at"], "sha256": r["sha256"], "latest": n == 0,
+                    "number": len(reports) - n, "tested": tested,
+                    "requested_by": job["requested_by"] if job is not None else None})
+    return out
+
+
 def check_summary(release_id):
     gate = commit_checks.summary(db(), release_id)
     return {
@@ -1175,8 +1212,8 @@ def check_summary(release_id):
         "checks": [{"name": c["name"], "kind": c["kind"], "conclusion": c["conclusion"], "url": c.get("url") or None,
                     "completed_at": c.get("completed_at")} for c in gate.get("checks", [])],
         "reasons": list(gate["reasons"]),
-        "reports": [{"id": r["id"], "created_at": r["created_at"], "sha256": r["sha256"]}
-                    for r in gate.get("reports", []) if r.get("kind", "verification_report") == "verification_report"],
+        "reports": verification_reports(release_id, [r for r in gate.get("reports", [])
+                                                     if r.get("kind", "verification_report") == "verification_report"]),
         "ok": gate["ok"],
     }
 
@@ -1200,7 +1237,7 @@ def release_detail(release_id, notice=None):
     test = db().execute("SELECT * FROM release_tests WHERE release_id = ?", (release_id,)).fetchone()
     brief = db().execute("SELECT manifest FROM briefs WHERE revision = ?", (item["revision"],)).fetchone()
     return {
-        "release": dict(shapes.release_summary(item), published_at=item["published_at"],
+        "release": dict(shapes.release_summary(item, registry.release_labels(db(), app_id)[item["id"]]), published_at=item["published_at"],
                         repository=item["repository"] or None, pr_number=item["pr_number"],
                         source_ref=item["source_ref"] or None),
         "app": shapes.ref(get_app(app_id)), "my_role": auth.role_of(db(), app_id, g.user),
