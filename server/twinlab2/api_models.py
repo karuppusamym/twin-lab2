@@ -1387,6 +1387,24 @@ class UserInput(Model):
     is_admin: bool
 
 
+class RecorderRelease(Model):
+    """One recorder release (an MSI) the portal serves."""
+    version: str
+    file: str
+    url: str
+    size: int
+    sha256: str
+    notes: str | None = None
+    published_at: str | None = None
+
+
+class RecorderUpdate(Model):
+    """The answer to a recorder asking for a newer version of itself."""
+    current: str | None = None
+    update_available: bool
+    latest: RecorderRelease | Any
+
+
 class AgentMessage(Model):
     """A recorder message as RECORDER-CONTRACT.md defines it (with `contract_version`)."""
     pass
@@ -1739,6 +1757,8 @@ PublishedDemo.model_rebuild()
 ReadyToBuild.model_rebuild()
 RecordedApp.model_rebuild()
 RecordedFlow.model_rebuild()
+RecorderRelease.model_rebuild()
+RecorderUpdate.model_rebuild()
 RecordingDetail.model_rebuild()
 RecordingEvents.model_rebuild()
 RecordingImport.model_rebuild()

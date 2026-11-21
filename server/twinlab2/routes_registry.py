@@ -323,6 +323,29 @@ def agent_apps():
         for r in rows]}  # fmt: skip
 
 
+@routes.get("/api/agent/update", auth.agent_token, response_model=m.RecorderUpdate)
+def agent_update(version: str = ""):
+    """The newest recorder release this portal offers (recorder_releases)."""
+    from twinlab2 import recorder_releases
+
+    agent_machine()
+    return recorder_releases.answer(version.strip()[:20] or None)
+
+
+@routes.get("/api/agent/update/{file}", auth.agent_token)
+def agent_update_file(file: str):
+    from fastapi.responses import FileResponse
+
+    from twinlab2 import recorder_releases
+
+    agent_machine()
+    rel = recorder_releases.latest()
+    if rel is None or file != rel["file"]:
+        return agent_error("There is no such recorder release.", 404)
+    return FileResponse(rel["path"], media_type="application/octet-stream", filename=rel["file"],
+                        headers={"Cache-Control": "no-store"})  # fmt: skip
+
+
 # -- references -------------------------------------------------------------------------------------
 
 
