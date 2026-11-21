@@ -411,6 +411,8 @@ MIGRATIONS = [
     (6, "roles and audit", ROLES_AUDIT),
     (7, "build sessions", BUILD_SESSIONS),
     (8, "screen structure", SCREEN_STRUCTURE),
+    # the demo's data backend chosen at onboarding: '' = predicted from its data model (demo_target)
+    (9, "demo data backend", [add_columns([("apps", "data_backend", "TEXT NOT NULL DEFAULT ''")])]),
 ]
 
 

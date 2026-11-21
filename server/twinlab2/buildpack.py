@@ -42,6 +42,7 @@ from urllib.parse import urlsplit, urlunsplit
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
 from twinlab2 import artifacts
+from twinlab2 import demo_target
 from twinlab2 import redact
 from twinlab2 import scenarios
 from twinlab2_contract import structure
@@ -195,8 +196,9 @@ def scenario_entry(scenario, events):
     }
 
 
-def manifest(db, app_id):
+def manifest(db, app_id, version_path=".twinlab/version"):
     app = db.execute("SELECT id, name, git_url, status, surface FROM apps WHERE id = ?", (app_id,)).fetchone()
+    app_row = db.execute("SELECT * FROM apps WHERE id = ?", (app_id,)).fetchone()
     linked = evidence(db, app_id)
     events = {scenarios.event_ref(rec["recording_id"], ev["event_id"]): ev for rec in linked for ev in rec["events"]}
     items = [scenario_entry(s, events) for s in scenarios.load(db, app_id)]
@@ -215,8 +217,12 @@ def manifest(db, app_id):
         files[path] = content
         attachments.append({"path": path, "title": redact.redact_text(row["title"]), "kind": row["kind"],
                             "share": share, "sha256": hashlib.sha256(content).hexdigest()})
+    target, deploy_files = demo_target.plan(db, app_row, version_path, {a["path"]: files[a["path"]] for a in attachments})
+    target["data_model"]["tables"] = [redact.redact_text(t) for t in target["data_model"]["tables"]]
+    files.update(deploy_files)
     data = {
         "format": FORMAT, "app": dict(app), "scenarios": items, "evidence": linked, "attachments": attachments,
+        "target": target,
         "unresolved_questions": [f"Selected event {ref} is not part of any scenario." for ref in unlinked],
     }
     screens = screen_structure(db, app_id)
@@ -276,6 +282,8 @@ def task_markdown(data, revision, version_path):
             out += ["**Notes**", "", s["notes"], ""]
     if data.get("screens"):
         out += screens_markdown(data)
+    if data.get("target"):
+        out += demo_target.markdown(data["target"])
     if data["unresolved_questions"]:
         out += ["## Other unresolved questions", ""]
         out += [f"- {q}" for q in data["unresolved_questions"]] + [""]
@@ -415,7 +423,7 @@ class Draft:
 
 
 def draft(db, app_id, version_path):
-    data, attachments, report = manifest(db, app_id)
+    data, attachments, report = manifest(db, app_id, version_path)
     contents = json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2)
     revision = hashlib.sha256(contents.encode("utf-8")).hexdigest()
     files = {"BUILD_TASK.md": task_markdown(data, revision, version_path).encode("utf-8"),
