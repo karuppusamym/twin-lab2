@@ -47,7 +47,9 @@ search, filters and paging.
 3. **Scope triage** decides the applications the recording discovered. For each one, choose
    **Replicate**, **Same as …** (merge into an existing application, previewed first) or **Not
    replicated (used only)**.
-4. An **application's page** follows one journey:
+4. **Applications** lists them in collapsible groups with counts: **Needs a scope decision**,
+   **In build**, **Tested**, **Published** and **Not replicated** (collapsed at first).
+   An **application's page** follows one journey:
    **Choose application → Add examples → Review required behaviour → Connect repository → Build →
    Verification settings → Verify → Open or download**. A step that cannot be done yet says why
    and links to the fix. Add business scenarios here, preview the builder package file by file,

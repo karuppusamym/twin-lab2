@@ -209,7 +209,7 @@ describe("the applications page", () => {
       return HttpResponse.json({ ...example<object>("listApps"), page: { total: 120, limit: 50, offset: Number(new URL(request.url).searchParams.get("offset") ?? 0), next_offset: 50 } } as never);
     }));
     const { user } = renderApp("/apps", "owner");
-    await screen.findByRole("heading", { level: 2, name: /Billing Desk/ });
+    await screen.findByRole("heading", { level: 3, name: /Billing Desk/ });
     const find = within(screen.getByRole("search", { name: "Find applications" }));
     await user.type(find.getByRole("searchbox", { name: "Search" }), "bill");
     await waitFor(() => expect(queries.at(-1)?.get("q")).toBe("bill"));
@@ -219,13 +219,61 @@ describe("the applications page", () => {
     await waitFor(() => expect(Object.fromEntries(queries.at(-1) ?? [])).toMatchObject({ q: "bill", owner: "ana", status: "discovered", sort: "-stage", limit: "50", offset: "0" }));
 
     await user.click(screen.getByRole("button", { name: "Table" }));
-    const table = await screen.findByRole("table", { name: "Applications" });
+    const table = await screen.findByRole("table", { name: "Applications: Tested" });
     expect(within(table).getByRole("rowheader", { name: /Billing Desk/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Table" })).toHaveAttribute("aria-pressed", "true");
 
     await user.click(screen.getByRole("button", { name: "Next" }));
     await waitFor(() => expect(queries.at(-1)?.get("offset")).toBe("50"));
     expect(window.location.search).toMatch(/view=table/);
+  });
+
+  it("groups the applications by status family, each collapsible with its count", async () => {
+    type Group = { family: string; label: string; count: number; offset: number | null; collapsed: boolean };
+    const queries: URLSearchParams[] = [];
+    server.use(on("listApps", ({ request }) => {
+      const p = new URL(request.url).searchParams;
+      queries.push(p);
+      const catalog = example<{ apps: { family: string }[]; groups: Group[] }>("listApps");
+      const collapsed = p.getAll("collapsed");
+      const groups = catalog.groups.map((g) => ({
+        ...g, collapsed: collapsed.includes(g.family),
+        // published: four applications, all on the next page
+        ...(g.family === "published" ? { count: 4, offset: 50 } : {}),
+        ...(g.family === "not_replicated" ? { count: 2, offset: null } : {}),
+      }));
+      return HttpResponse.json({ ...catalog, groups, apps: catalog.apps.filter((a) => !collapsed.includes(a.family)),
+        page: { total: 53, limit: 50, offset: Number(p.get("offset") ?? 0), next_offset: 50 } } as never);
+    }));
+    const { user } = renderApp("/apps", "owner");
+    const decide = await screen.findByRole("region", { name: /Needs a scope decision/ });
+    expect(within(decide).getByRole("heading", { level: 3, name: /Outlook/ })).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: /Tested/ })).getByRole("heading", { level: 3, name: /Billing Desk/ })).toBeInTheDocument();
+    // the out-of-scope group starts collapsed: counted, not fetched
+    expect(queries[0]?.getAll("collapsed")).toEqual(["not_replicated"]);
+    const out = screen.getByRole("button", { name: /Not replicated \(used only\)/ });
+    expect(out).toHaveAttribute("aria-expanded", "false");
+    expect(out).toHaveTextContent("2");
+
+    // collapse "In build": its cards go, the next request leaves it out of the pages
+    const build = screen.getByRole("button", { name: /In build/ });
+    expect(build).toHaveAttribute("aria-expanded", "true");
+    await user.click(build);
+    await waitFor(() => expect(queries.at(-1)?.getAll("collapsed")).toEqual(["build", "not_replicated"]));
+    expect(await screen.findByRole("button", { name: /In build/, expanded: false })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3, name: /CaseDesk/ })).not.toBeInTheDocument();
+    expect(window.location.search).toMatch(/collapsed=build%2Cnot_replicated/);
+
+    // a group on another page: one click pages straight to it
+    const published = screen.getByRole("region", { name: /Published/ });
+    await user.click(within(published).getByRole("button", { name: "Show published" }));
+    await waitFor(() => expect(queries.at(-1)?.get("offset")).toBe("50"));
+
+    // open everything again: the parameter stays, empty
+    await user.click(screen.getByRole("button", { name: /In build/ }));
+    await user.click(screen.getByRole("button", { name: /Not replicated/ }));
+    await waitFor(() => expect(queries.at(-1)?.getAll("collapsed")).toEqual([]));
+    expect(new URLSearchParams(window.location.search).get("collapsed")).toBe("");
   });
 });
 

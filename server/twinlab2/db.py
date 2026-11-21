@@ -214,6 +214,7 @@ class Connection:
         self.raw = raw
         self.engine = engine
         self.target = target
+        self._after_commit = []
 
     # -- statements ----------------------------------------------------------------------------
 
@@ -254,11 +255,19 @@ class Connection:
         if self.engine == "sqlite" and not self.raw.in_transaction:
             self.raw.execute("BEGIN IMMEDIATE")
 
+    def after_commit(self, callback):
+        """Call `callback()` once the current transaction commits (dropped on a rollback)."""
+        self._after_commit.append(callback)
+
     def commit(self):
         self.raw.commit()
+        callbacks, self._after_commit = self._after_commit, []
+        for callback in callbacks:
+            callback()
 
     def rollback(self):
         self.raw.rollback()
+        self._after_commit = []
 
     def close(self):
         self.raw.close()
