@@ -193,6 +193,19 @@ def case_a(cdp: str, base: str) -> dict:
     return result
 
 
+def case_w(cdp: str, base: str) -> dict:
+    """Orders then Billing (same host, /billing) in the browser the recorder started itself."""
+    result = {"values": VALUES}
+    pw, browser, context, page = web_page(cdp)
+    try:
+        orders(page, base, result)
+        billing(context, page, result)
+        time.sleep(1.5)
+    finally:
+        pw.stop()  # disconnects; the browser stays with the recorder
+    return result
+
+
 def case_b(proxy_port: int) -> dict:
     m = Mainframe(proxy_port)
     m.sign_on()

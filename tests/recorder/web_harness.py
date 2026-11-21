@@ -100,7 +100,12 @@ def headless_chromium(exe: str, size: str = "1000,700"):
             proc.kill()
         log.close()
         shutil.rmtree(profile, ignore_errors=True)
-        Path(log.name).unlink(missing_ok=True)
+        for _ in range(20):  # a Chromium helper process can hold the log a moment longer
+            try:
+                Path(log.name).unlink(missing_ok=True)
+                break
+            except PermissionError:
+                time.sleep(0.25)
 
 
 def attach_in_thread(cdp: str, out: Path, **kwargs):

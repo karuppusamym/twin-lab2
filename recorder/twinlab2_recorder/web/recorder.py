@@ -1341,6 +1341,55 @@ def _boxes(masks: list) -> list[dict]:
     return out[:200]
 
 
+FIT_JS = "() => [innerWidth, innerHeight, outerWidth, outerHeight, devicePixelRatio]"
+
+
+def fit_viewport(page, viewport: dict) -> bool:
+    """Resize the window of `page` (over the DevTools protocol) so the page shows exactly
+    `viewport` CSS pixels at scale 1, as `record()`'s own context does. For a browser the
+    recorder started itself: a headless Edge started with `--window-size=1280,720` shows
+    1250x625, because the window size includes its frame. Emulating the size instead
+    (Emulation.setDeviceMetricsOverride) made headless Edge's pictures hang. -> True when the
+    page shows that size now (False: a scale other than 1, or the window could not be resized)."""
+    want = (int(viewport["width"]), int(viewport["height"]))
+    for _ in range(40):  # a page still loading has no document to measure for a moment
+        try:
+            got = _measure(page)
+            if got is None:
+                return False
+            iw, ih, ow, oh, dpr = got
+            if dpr != DEVICE_SCALE_FACTOR:
+                return False
+            if (iw, ih) == want:
+                return True
+            cdp = page.context.new_cdp_session(page)
+            try:
+                win = cdp.send("Browser.getWindowForTarget")["windowId"]
+                cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {
+                    "width": want[0] + max(0, ow - iw), "height": want[1] + max(0, oh - ih)}})  # fmt: skip
+            finally:
+                cdp.detach()
+        except Exception:  # noqa: BLE001 - the page navigated meanwhile: measure again
+            pass
+        if page.is_closed():
+            return False
+        page.wait_for_timeout(50)
+    return False
+
+
+def _measure(page) -> list | None:
+    """[innerWidth, innerHeight, outerWidth, outerHeight, devicePixelRatio] of `page`, measured
+    again while it navigates (None: the page closed)."""
+    for _ in range(40):
+        if page.is_closed():
+            return None
+        try:
+            return page.evaluate(FIT_JS)
+        except Exception:  # noqa: BLE001 - "execution context was destroyed": it navigated
+            page.wait_for_timeout(50)
+    return None
+
+
 def write_meta(
     out_dir: Path, browser, viewport: dict | None, mode: str, settle_ms: int | None = None
 ) -> None:
@@ -1715,14 +1764,32 @@ class _Steps:
     def drain(self, pictures: bool = True) -> None:
         """Finish the waiting steps: frames the page could not read, canvases, the picture.
         Called when the recording loop has control (never from inside the binding)."""
-        from twinlab2_contract.evidence.dom import fill_frames
-
-        if pictures:
-            self._ensure_installed()
-        waiting, self.waiting = self.waiting, []
         # The pictures first, the moment the loop has control: each is of the page as its step
-        # left it only until the next action begins (frames, canvases, documents and cookies
-        # can wait; they come from the snapshot or do not change on screen).
+        # left it only until the next action begins (the listener check, frames, canvases,
+        # documents and cookies can wait; they come from the snapshot or do not change on
+        # screen). A snapshot that arrives while earlier steps are being finished has its
+        # picture taken before the next of them is finished: finishing a step (its frames, a
+        # canvas's text, a PDF, cookies) can take longer than a person's pause, more so on a
+        # busy PC, and its picture would otherwise be dropped.
+        pending: list[tuple[dict, object]] = []
+        installed = not pictures
+        while True:
+            arrived, self.waiting = self.waiting, []
+            if arrived:
+                self._take_pictures(arrived, pictures)
+                pending.extend(arrived)
+                continue
+            if not installed:
+                self._ensure_installed()
+                installed = True
+                continue
+            if not pending:
+                break
+            self._finish(*pending.pop(0), pictures)
+        self.file.flush()
+
+    def _take_pictures(self, waiting: list, pictures: bool) -> None:
+        """The pictures of steps whose snapshots have arrived (`drain`)."""
         for step, page in waiting:
             if pictures and page is not None and self.screenshots and step["dom"]:
                 later = self._overtaken(step)
@@ -1733,6 +1800,13 @@ class _Steps:
                     step["_dropped_for"] = later  # the note is written at close(), renumbered
                     step["picture_note"] = (f"no picture: step {later[0]} ({later[1]}) began before it "
                                             "could be taken, so it would show what that step did")  # fmt: skip
+                    continue
+                if self.drop_late_pictures and self._behind(page):
+                    # Another tab is in front (the step opened it): a hidden tab's picture takes
+                    # a second or more, shows nothing the person sees, and would make the new
+                    # tab's own picture late as well.
+                    step["picture_dropped"] = True
+                    step["picture_note"] = "no picture: its tab was behind another tab by then"
                     continue
                 rel = f"screens/{step['seq']:04d}.png"
                 try:
@@ -1750,47 +1824,60 @@ class _Steps:
                         step["picture_note"] = "no picture: the next action began before it could be taken"
                 except Exception:  # noqa: BLE001 - a missing picture never loses the step
                     pass
-        for step, page in waiting:
-            html = step.pop("_html", None)
-            live = pictures and page is not None
-            if html is not None:
-                if live:
-                    try:
-                        html = fill_frames(page, html, values=False)
-                    except Exception:  # noqa: BLE001 - the page may have gone
-                        pass
-                    if self.screenshots:
-                        html = self._canvases(page, html, step["seq"])
-                    self._documents(page, html, step.get("url") or "")
-                if "data-tl-pending=" in html:
-                    step["frames_unread"] = html.count("data-tl-pending=")
-                used: set[str] = set()
-                html = self.secrets.redact_html(html, used)
-                if used:  # ids and names that were a whole typed value: their placeholders
-                    step["_ph_dom"] = sorted(used | set(step.get("_ph_dom") or ()))
-                (self.out_dir / step["dom"]).write_text(html, encoding="utf-8")
-            if live and isinstance(step.get("storage"), dict) and step.get("url"):
-                try:  # HttpOnly cookies too, by name; a cookie's value is never read
-                    names = {c["name"] for c in page.context.cookies([step["url"]])}
-                    names |= set(step["storage"].get("cookies") or [])
-                    if names:
-                        step["storage"]["cookies"] = sorted(names)[:50]
-                    # every site's cookies the browser holds, by name, per domain
-                    per: dict[str, set] = {}
-                    for c in page.context.cookies():
-                        per.setdefault(str(c.get("domain") or ""), set()).add(str(c["name"]))
-                    if per:
-                        step["storage"]["cookies_by_domain"] = {
-                            d: sorted(n)[:50] for d, n in sorted(per.items())[:20]
-                        }
+
+    def _finish(self, step: dict, page, pictures: bool) -> None:
+        """A step whose picture is taken (or given up): its frames, canvases, documents and
+        cookies, then it is written (`drain`)."""
+        from twinlab2_contract.evidence.dom import fill_frames
+
+        html = step.pop("_html", None)
+        live = pictures and page is not None
+        if html is not None:
+            if live:
+                try:
+                    html = fill_frames(page, html, values=False)
                 except Exception:  # noqa: BLE001 - the page may have gone
                     pass
-            step = self.secrets.clean_step(step)
-            self.written.append(step)
-            self.file.write(json.dumps(_public(step)) + "\n")
-            if self.journal is not None:
-                self.journal.step(step, self.recording)
-        self.file.flush()
+                if self.screenshots:
+                    html = self._canvases(page, html, step["seq"])
+                self._documents(page, html, step.get("url") or "")
+            if "data-tl-pending=" in html:
+                step["frames_unread"] = html.count("data-tl-pending=")
+            used: set[str] = set()
+            html = self.secrets.redact_html(html, used)
+            if used:  # ids and names that were a whole typed value: their placeholders
+                step["_ph_dom"] = sorted(used | set(step.get("_ph_dom") or ()))
+            (self.out_dir / step["dom"]).write_text(html, encoding="utf-8")
+        if live and isinstance(step.get("storage"), dict) and step.get("url"):
+            try:  # HttpOnly cookies too, by name; a cookie's value is never read
+                names = {c["name"] for c in page.context.cookies([step["url"]])}
+                names |= set(step["storage"].get("cookies") or [])
+                if names:
+                    step["storage"]["cookies"] = sorted(names)[:50]
+                # every site's cookies the browser holds, by name, per domain
+                per: dict[str, set] = {}
+                for c in page.context.cookies():
+                    per.setdefault(str(c.get("domain") or ""), set()).add(str(c["name"]))
+                if per:
+                    step["storage"]["cookies_by_domain"] = {
+                        d: sorted(n)[:50] for d, n in sorted(per.items())[:20]
+                    }
+            except Exception:  # noqa: BLE001 - the page may have gone
+                pass
+        step = self.secrets.clean_step(step)
+        self.written.append(step)
+        self.file.write(json.dumps(_public(step)) + "\n")
+        if self.journal is not None:
+            self.journal.step(step, self.recording)
+
+    def _behind(self, page) -> bool:
+        """Is `page` hidden behind another tab of its window (document.visibilityState)?"""
+        if len(self.pages) < 2:
+            return False
+        try:
+            return page.evaluate("() => document.visibilityState") == "hidden"
+        except Exception:  # noqa: BLE001 - navigating: take the picture as before
+            return False
 
     def _overtaken(self, step: dict) -> tuple | None:
         """(seq, action, event_id) of a later action in the step's tab that has already reached the
@@ -2629,6 +2716,7 @@ def attach(
     journal=None,
     network_journal=None,
     exclude: Callable[[str], str | None] | None = None,
+    viewport: dict | None = None,
     paused: Callable[[], bool] | None = None,
 ) -> Path:
     """Record a browser that is already running (a robot's Chrome or Edge started with
@@ -2644,6 +2732,9 @@ def attach(
     `network_journal` (twinlab2_recorder.workstation.journal.Journal) receive each step and each HAR entry
     as it is captured, so a session that dies keeps them. `exclude(url)` (the PC's exclude list,
     twinlab2_recorder.workstation.exclude): an address it names is neither recorded nor in the HAR.
+    `viewport` (only for a browser the recorder started itself, such as a headless one): every
+    window is resized so its pages show exactly this size (`fit_viewport`), and `recording.json`
+    names it when every page fitted, so pictures compare at a known size.
     """
     from playwright.sync_api import sync_playwright
 
@@ -2665,13 +2756,28 @@ def attach(
             context = browser.contexts[0]
             # The tabs already open are t1, t2...; each tab or popup opened later is recorded
             # from its first page, with a tab-open step.
+            fitted = [True]
+
+            def fit(page) -> None:
+                if viewport is not None and not fit_viewport(page, viewport):
+                    fitted[0] = False
+
             for page in context.pages:
+                fit(page)
                 steps.on_page(page, quiet=True)
-            context.on("page", steps.on_page)
-            try:  # the robot's own window size, as it is (not set by Twin Lab)
-                size = context.pages[0].viewport_size if context.pages else None
-            except Exception:  # noqa: BLE001
-                size = None
+
+            def on_page(page) -> None:
+                fit(page)  # before the page's first action: a popup or a new tab
+                steps.on_page(page)
+
+            context.on("page", on_page)
+            if viewport is not None:
+                size = dict(viewport) if fitted[0] else None
+            else:
+                try:  # the robot's own window size, as it is (not set by Twin Lab)
+                    size = context.pages[0].viewport_size if context.pages else None
+                except Exception:  # noqa: BLE001
+                    size = None
             write_meta(out_dir, browser, size, "attach", settle_ms)
             context.expose_binding("__tlEvent", steps.on_event)
             context.expose_binding("__tlStep", steps.on_flush)
@@ -2728,6 +2834,8 @@ def attach(
                     pass
             steps.drain()
             steps.closing = True
+            if viewport is not None and size is not None and not fitted[0]:
+                write_meta(out_dir, browser, None, "attach", settle_ms)  # a tab of another size
             # Disconnect only: the robot's browser keeps running.
     finally:
         steps.close()

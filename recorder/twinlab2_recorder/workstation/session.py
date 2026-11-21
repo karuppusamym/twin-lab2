@@ -519,6 +519,10 @@ class Session:
                           "start the session again; web targets not recorded")  # fmt: skip
                 return
         cdp = f"http://127.0.0.1:{port}"
+        # Headless (TWINLAB_BROWSER_HEADLESS=1, `record --headless`: proofs and tests on a PC
+        # someone works at): no window opens, and every page is fitted to 1280x720.
+        headless = browser_headless()
+        shown = ["--headless=new", f"--window-size={WINDOW[0]},{WINDOW[1]}"] if headless else []
         part = self.web_part
         gone_at: str | None = None  # when the browser closed, until it records again
         try:
@@ -529,7 +533,7 @@ class Session:
             while not self.stopping() and part < self.web_part + 20:
                 part += 1
                 out = self.folder / ("web" if part == 1 else f"web-{part}")
-                proc = subprocess.Popen([exe, f"--remote-debugging-port={port}",
+                proc = subprocess.Popen([exe, *shown, f"--remote-debugging-port={port}",
                                          f"--user-data-dir={profile}", "--no-first-run",
                                          "--no-default-browser-check", "--disable-sync",
                                          "--disable-features=msEdgeStartupBoost,Translate",
@@ -558,7 +562,9 @@ class Session:
 
                     recorder.attach(cdp, out, max_seconds=self.max_seconds, stop=self.stopping,
                                     origins=self.targets.origins(), outside=self._outside,
-                                    keep_open=True, on_ready=ready, **self._web_journals())  # fmt: skip
+                                    keep_open=True, on_ready=ready,
+                                    viewport=recorder.VIEWPORT if headless else None,
+                                    **self._web_journals())  # fmt: skip
                 except Exception as exc:  # noqa: BLE001 - the desktop part goes on
                     self.note_once(f"web recorder: {type(exc).__name__}: {str(exc)[:200]}")
                     self.failed |= {"web", "network"}
@@ -904,6 +910,16 @@ def _window_pids(win) -> set[int]:
 
     win.user32.EnumWindows(win.WNDENUMPROC(cb), 0)
     return pids
+
+
+HEADLESS_ENV = "TWINLAB_BROWSER_HEADLESS"
+WINDOW = (1280, 720)  # the headless window's starting size; its pages are then fitted
+
+
+def browser_headless() -> bool:
+    """Does the session start its browser headless (`TWINLAB_BROWSER_HEADLESS=1`, set by
+    `record --headless`)? The variable reaches the web collector's own process."""
+    return os.environ.get(HEADLESS_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 def _wait_cdp(cdp: str, timeout: float, stopping: Callable[[], bool]) -> bool:

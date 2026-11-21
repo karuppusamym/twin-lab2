@@ -12,6 +12,7 @@ an unzipped package. Nothing here opens a visible window, except `desktop_batch.
 | c | many apps | Orders and Billing on **one host**, told apart by path; Account Inquiry (mainframe); CaseDesk (desktop) |
 | d | one app | CaseDesk (desktop) |
 | e | one app, live desktop | CaseDesk, recorded live: `desktop_batch.ps1 -GoDesktop` only |
+| w | many apps, **launched browser** | Orders and Billing on one host, recorded in the recorder's own Edge started headless (`record --headless`), not attached |
 
 Evidence goes outside the repository, to `../rebuild-proof/` (`REBUILD_PROOF_EVIDENCE`). The Twin Lab checkout
 `../twin-lab` (`TWINLAB_CHECKOUT`) is read, never written.
@@ -32,6 +33,9 @@ python tools\rebuild_proof\probes.py web a             # non-happy path: referen
 python tools\rebuild_proof\verify_portal.py a          # the portal's own Verify (a job) takes the rebuild to Tested: a, b, c
 ```
 
+- **web_audit.py**: is a web recording good evidence? Viewport, pictures kept/dropped/settled, each picture's
+  OCR against its own step's heading, no typed value in pictures, steps, DOM or HAR, steps against another
+  case's recording, HAR completeness (`python tools\rebuild_proof\web_audit.py w c`).
 - **visual_run.py**: the portal's `visual.py` at the recorded pictures' size (attach-mode pictures are not
   1280x720). **probes.py**: probes off the recorded path (invalid input, empty results, permission), with
   the reference app as the oracle.

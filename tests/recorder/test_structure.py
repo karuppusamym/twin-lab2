@@ -208,6 +208,31 @@ class SessionStructureTest(unittest.TestCase):
         if jsonschema is not None:
             jsonschema.validate(doc, {**contract.schema(), "$ref": "#/$defs/references_1_1"})
 
+    def test_a_step_without_a_snapshot_belongs_to_the_state_it_led_to(self):
+        """A click observed at the page it loaded has no snapshot of its own (launched-web proof:
+        the package validator refused every such event, "resolves to no screen state")."""
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            self.session(folder)
+            path = folder / "web" / "steps.jsonl"
+            steps = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+            steps[5]["dom"] = None  # the new-order click, observed at the next page
+            steps[5]["after"] = "navigation"
+            seq = 7
+            steps.append(dict(steps[5], seq=seq, action="goto", selector=None, dom=f"dom/{seq:04d}.html",
+                              after=None, event_id=f"019aa1b0-{seq:04x}-7000-8000-{seq:012x}"))
+            (folder / "web" / "dom" / f"{seq:04d}.html").write_text(
+                "<html><body><form id='orderForm'><input id='qty' name='qty'></form></body></html>", encoding="utf-8")
+            path.write_text("".join(json.dumps(s) + "\n" for s in steps), encoding="utf-8")
+            box = timeline.build(folder)
+        [screens] = box["screens"].values()
+        states = [st for sc in screens for st in sc["states"]]
+        click, load = steps[5]["event_id"], steps[6]["event_id"]
+        [new] = [st for st in states if load in st["events"]]
+        self.assertIn(click, new["events"])
+        every = {e for st in states for e in st["events"]}
+        self.assertEqual(every, {s["event_id"] for s in steps})
+
     def test_a_steps_level_application_gets_no_structure(self):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
