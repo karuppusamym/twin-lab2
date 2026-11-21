@@ -23,7 +23,8 @@ led from one state to another. A state holds:
 - `events`: the event ids of the steps after which the screen was in this state.
 
 Every word in it passes the label rules of the flow (twinlab2_recorder.workstation.flow): an
-identifier is `ident()` (no digit, no `@`, at most 40 characters, letters, `_`, `.`, `-`); a
+identifier is `ident()` (no `@`, at most 40 characters, letters, `_`, `.`, `-`, and since 1.4 at
+most one short digit run, as in `addressLine2`); a
 label, column header or code-list entry is `plain()` and at most three words (a column header
 four). Row counts are shapes: `0`, `1`, `few` (2 to 9), `many` (10 or more). Never a value, a
 row, a record's identifier or a typed character.
@@ -40,14 +41,24 @@ import hashlib
 import json
 import re
 
-IDENT = re.compile(r"^[A-Za-z_][A-Za-z_.\-]*$")
+IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]*$")
+DIGIT_RUN = re.compile(r"\d+")
+IDENT_DIGITS = 2  # the longest digit run an identifier may hold (addressLine2, btn2FA, tab12)
 SHAPE = re.compile(r"^[Xx9\W_]+$")
 EVENT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 ROWS = ("0", "1", "few", "many")
 SURFACES = ("web", "desktop", "mainframe")
 VALUES = ("empty", "filled")
 LIMITS = {"screens": 500, "states": 20, "controls": 400, "regions": 200, "grids": 50,
-          "columns": 40, "options": 30, "events": 2000, "transitions": 100, "classes": 12}  # fmt: skip
+          "columns": 40, "options": 30, "events": 2000, "transitions": 100, "classes": 12,
+          "texts": 200}  # fmt: skip
+# 1.4: a screen's own texts (`states[].texts`): a 3270 screen's protected fields (title, labels,
+# message line, key line, and other protected text as a shape only) and a desktop message box's
+# message. TEXT_SHOWN kinds keep their text; `text` is anything that may be data: a shape.
+TEXT_KINDS = ("title", "label", "message", "keys", "text")
+TEXT_SHOWN = ("title", "label", "message", "keys")
+TEXT_MAX = 160
+KEY_NAME = re.compile(r"\b(?:PF|PA|F)\d{1,2}\b")
 BOOLS = ("visible", "enabled", "readonly", "required", "checked", "selected", "numeric", "hidden",
          "intensified")  # fmt: skip
 INTS = ("options", "row", "col", "len")
@@ -64,7 +75,25 @@ def plain(text: object) -> bool:
 
 
 def ident(text: object) -> bool:
-    return plain(text) and bool(IDENT.match(str(text).strip()))
+    """An identifier a control or screen may be named by: at most 40 characters of letters,
+    digits, `_`, `.` and `-`, no `@`, not a shape the recorder wrote. Since contract 1.4 it may
+    hold digits the way a developer names things: it starts with a letter, holds at least three
+    letters and at most one run of at most two digits, and that run does not follow `-`, `_` or
+    `.` (`addressLine2`, `button1`, `btn2FA`, `txtLine2` are identifiers; `12345`, `cust10442`,
+    `a1b2c3`, `mat-input-0`, `row_12` and `INV-1001` are not: an all-digit id, a long or
+    repeated digit run and a counter after a separator are records or generated ids)."""
+    s = str(text or "").strip()
+    if not s or len(s) > 40 or "@" in s or SHAPE.match(s) or not IDENT.match(s):
+        return False
+    runs = DIGIT_RUN.findall(s)
+    if not runs:
+        return True
+    if len(runs) > 1 or len(runs[0]) > IDENT_DIGITS or not s[0].isalpha():
+        return False
+    at = s.index(runs[0])
+    if s[at - 1] in "-_.":
+        return False
+    return sum(c.isalpha() for c in s) >= 3
 
 
 def words(text: object, most: int = 3) -> str | None:
@@ -191,8 +220,56 @@ def clean_state(s) -> dict | None:
         if isinstance(g.get("visible"), bool):
             item["visible"] = g["visible"]
         grids.append(item)
+    texts = []
+    for t in (s.get("texts") or [])[: LIMITS["texts"]] if isinstance(s.get("texts"), list) else []:
+        item = clean_text(t)
+        if item is None:
+            withheld += 1
+        else:
+            texts.append(item)
     events = sorted({e for e in (s.get("events") or []) if isinstance(e, str) and EVENT_ID.match(e)})[: LIMITS["events"]]
     out = {"controls": controls, "regions": regions, "grids": grids, "withheld": withheld, "events": events}
+    if texts:  # 1.4; a state without texts keeps the id it had in 1.3
+        out["texts"] = texts
+    return out
+
+
+def masked_text(text: str, kind: str) -> str:
+    """A shown text with every digit as the shape digit `9`, except a key's own name on a key
+    line (`PF3=EXIT`): the recorder masks digit tokens already, and this holds on any sender."""
+    keep = {m.span(): m.group() for m in KEY_NAME.finditer(text)} if kind == "keys" else {}
+    out, i = [], 0
+    for (a, b), name in sorted(keep.items()):
+        out.append(re.sub(r"\d", "9", text[i:a]))
+        out.append(name)
+        i = b
+    out.append(re.sub(r"\d", "9", text[i:]))
+    return "".join(out)
+
+
+def clean_text(t) -> dict | None:
+    """One of a screen's own texts (1.4): `kind` (title, label, message, keys: the text is kept;
+    text: only its `shape`), and for 3270 `row`, `col`, `len`, `intensified`, `hidden`. None when
+    it is outside the rules (an `@`, a control character, too long, a shape that is not one)."""
+    if not isinstance(t, dict) or t.get("kind") not in TEXT_KINDS:
+        return None
+    out: dict = {"kind": t["kind"]}
+    for k in ("row", "col", "len"):
+        if isinstance(t.get(k), int) and not isinstance(t.get(k), bool) and 0 <= t[k] <= 100000:
+            out[k] = t[k]
+    for k in ("intensified", "hidden"):
+        if isinstance(t.get(k), bool):
+            out[k] = t[k]
+    if t["kind"] in TEXT_SHOWN:
+        text = re.sub(r"\s+", " ", str(t.get("text") or "")).strip()
+        if not text or len(text) > TEXT_MAX or "@" in text or re.search(r"[\x00-\x1f]", text):
+            return None
+        out["text"] = masked_text(text, t["kind"])
+    elif t.get("shape") is not None:
+        shape = str(t["shape"])
+        if not shape or len(shape) > TEXT_MAX or not SHAPE.match(shape):
+            return None
+        out["shape"] = shape
     return out
 
 

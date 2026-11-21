@@ -97,6 +97,11 @@ class AttachPictures(unittest.TestCase):
                                   ("#ce", "Priya Okonkwo-Hale")):  # fmt: skip
                     page.click(sel)
                     page.keyboard.type(text, delay=90)
+                # A robot's speed: the next click comes before the first one's picture can be
+                # taken (gap 15). That picture would show the next action: it is dropped.
+                page.click("#save")
+                page.click("#name")
+                page.wait_for_timeout(800)
                 page.click("#start")
                 page.wait_for_timeout(3500)
                 page.click("#save")
@@ -124,6 +129,21 @@ class AttachPictures(unittest.TestCase):
         for s in self.steps:
             if s.get("screenshot") and s.get("seq", 0) > 2:
                 self.assertTrue(s.get("mask_boxes"), s)
+
+    def test_no_picture_is_kept_that_was_taken_after_the_next_action_began(self):
+        late = [(s["seq"], s.get("picture_note")) for s in self.steps
+                if s.get("screenshot") and s.get("picture_settled") is False]  # fmt: skip
+        self.assertEqual(late, [])
+        for s in self.steps:
+            if s.get("picture_dropped"):
+                self.assertIsNone(s.get("screenshot"))
+                self.assertIn("began", s.get("picture_note") or "")
+                self.assertFalse((self.out / f"screens/{s['seq']:04d}.png").exists())
+
+    def test_quick_actions_still_get_their_pictures(self):
+        kept = [s for s in self.steps if s.get("screenshot")]
+        # goto, the click into each field and the type steps: most keep a picture
+        self.assertGreaterEqual(len(kept), 6, [(s["seq"], s["action"], s.get("picture_note")) for s in self.steps])
 
     def test_no_typed_value_in_the_steps(self):
         text = (self.out / "steps.jsonl").read_text(encoding="utf-8")

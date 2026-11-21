@@ -12,6 +12,7 @@ import unittest
 
 from twinlab2_recorder import main as agent_main
 from twinlab2_contract import recorder_contract as contract
+from twinlab2_recorder.workstation import flow
 
 try:
     import jsonschema
@@ -49,7 +50,7 @@ class TenAppFixtureTest(unittest.TestCase):
 
     def test_the_references_are_in_the_contract(self):
         doc = agent_main.contract_references(json.loads(BUILT.read_text(encoding="utf-8")))
-        self.assertEqual(doc["contract_version"], "1.3.0")
+        self.assertEqual(doc["contract_version"], "1.4.0")
         self.assertEqual(contract.errors(doc, "references"), [])
         if jsonschema is not None:
             schema = contract.schema()
@@ -82,9 +83,9 @@ class TenAppFixtureTest(unittest.TestCase):
         for event, screen in screens.items():
             by_tag.setdefault(tags[event], set()).add(screen.removeprefix("https://fin.example.test"))
         self.assertEqual(by_tag, {
-            "ledger": {"/finance", "/finance/{id}/{id}", "/finance/{id}/edit"},  # billing-archive is not billing
-            "receivable": {"/finance/billing/{id}/{id}", "/finance/billing"},
-            "payroll": {"/finance/payroll/{id}/{id}", "/finance/payroll/{id}/new"},
+            "ledger": {"/finance", "/finance/{id}/{id}", "/finance/journal/edit"},  # billing-archive is not billing
+            "receivable": {"/finance/billing/invoices/{id}", "/finance/billing"},
+            "payroll": {"/finance/payroll/runs/{id}", "/finance/payroll/runs/new"},
         })
         paths = sorted(t["path"] for t in doc["session"]["targets"] if t.get("path"))
         self.assertEqual(paths, ["/billing", "/billing-admin", "/finance", "/finance/billing", "/finance/payroll"])
@@ -97,11 +98,23 @@ class TenAppFixtureTest(unittest.TestCase):
         self.assertEqual(contract.errors(agent_main.contract_references(old), "references"), [])
         self.assertEqual({s["event_id"] for f in old["flows"].values() for s in f}, set(generate.legacy_tags()))
 
-        def facts(doc):
-            return {k: [(s.get("action"), s.get("control"), s.get("label"), s.get("screen")) for s in v]
+        def facts(doc, screen):
+            return {k: [(s.get("action"), s.get("control"), s.get("label"), screen(s.get("screen"))) for s in v]
                     for k, v in doc["flows"].items() if k != FIN}
 
-        self.assertEqual(facts(old), facts(new))
+        def as_1_1(screen):
+            # 1.4 keeps a plain lower-case route word (gap 4) where 1.1 wrote {id}
+            if not screen:
+                return screen
+            head, _, path = screen.partition("://")[2].partition("/")
+            segs = path.split("/")
+            return screen[: len(screen) - len(path)] + "/".join(
+                "{id}" if i and flow.route_word(s) and s not in flow.ROUTE_WORDS else s for i, s in enumerate(segs))
+
+        self.assertEqual(facts(old, as_1_1), facts(new, as_1_1))
+        changed = {s.get("screen") for f in new["flows"].values() for s in f} - {
+            s.get("screen") for f in old["flows"].values() for s in f}
+        self.assertIn("https://erp.example.test/billing/invoices/{id}", changed)
 
 
 if __name__ == "__main__":

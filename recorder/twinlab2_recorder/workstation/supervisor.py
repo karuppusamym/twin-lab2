@@ -71,11 +71,11 @@ RUNNERS = {
     "mainframe": "twinlab2_recorder.workstation.supervisor:run_mainframe",
 }
 BROWSER_MODES = ("controlled", "attach")
+# Within the contract's 300 characters for a channel note (completeness.fit cuts any longer one).
 CDP_WARNING = (
-    "web: attached to an existing browser over CDP (a qualified mode): Chromium-based browsers "
-    "only, and lower fidelity than the recorder-controlled browser: pages and closed shadow "
-    "roots opened before the recorder attached are not fully recorded, the browser's own "
-    "extensions and settings change what is seen, and the browser is not restarted if it closes"
+    "web: attached to a running browser over CDP (qualified mode, lower fidelity): Chromium-based "
+    "only; pages and closed shadow roots opened before attaching are not fully recorded, the "
+    "browser's extensions and settings change what is seen, and it is not restarted if it closes"
 )
 # Remote and virtual desktop clients: what runs inside them is pixels to this machine.
 REMOTE_CLIENTS = {"wfica32.exe", "cdviewer.exe", "selfservice.exe", "mstsc.exe", "msrdc.exe",

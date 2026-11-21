@@ -1,4 +1,4 @@
-# Recorder contract 1.3.0
+# Recorder contract 1.4.0
 
 What a workstation recorder sends to the TwinLab2 portal, and how the two sides agree on a version. The
 machine-checkable form is [`contract/twinlab2_contract/recorder-contract.schema.json`](contract/twinlab2_contract/recorder-contract.schema.json)
@@ -234,6 +234,23 @@ only these fields, checks every word again by the same rules, and stores each ap
 screens with that application's recording link, so a screen never reaches another application's
 package. The build pack carries the states that the owner's selected events show (`screens` in
 `evidence.json`, "Screens and controls" in `BUILD_TASK.md`).
+
+#### Contract 1.4: screen texts, identifiers with a digit, route words
+
+1.4.0 is a minor version with no new requirement (checked against `#/$defs/references_1_1`); the
+portal still accepts 1.0.x to 1.3.x. What changed, from the blind-rebuild proof's gaps:
+
+| Change | Rule |
+|---|---|
+| `states[].texts[]` (new, optional) | a screen's own texts. A **3270** screen: every protected field with `row`, `col`, `len`, `intensified`, `hidden`, and `kind`: `title` (the protected text of the first row that has any, which names the screen), `label` (right before an input field on its row, or ending as a label does: `NAME:`, `NAME . .`), `keys` (`PF3=EXIT ENTER=SEARCH`), `message` (the last three rows), each with its `text`; anything else is `text` with only its `shape` (`XXXXX XXXXXXX`): it may be data, such as a name in an output field. A label with no colon or leader dots and no input field after it (`NAME` before a protected output field) is such a `text` too: on its own it cannot be told apart from data; its position and length are still there. A **desktop** message box (`#32770`): its message, `{"kind": "message", "text": ...}`. Every digit in a text is `9` (the recorder's shape) except a key's name on a key line; no `@`; at most 160 characters; at most 200 per state. A state with no texts has no `texts` key, so a 1.3 state keeps its id |
+| identifiers (`structure_ident`, `twinlab2_contract.structure.ident`) | may hold one run of at most two digits after a letter (`addressLine2`, `button1`, `btn2FA`, `txtLine2`), with at least three letters. Still refused: all-digit ids (Win32's `2`, `65535`), longer or repeated digit runs (`cust10442`, `a1b2c3`), a digit run after `-`, `_` or `.` (`mat-input-0`, `row_12`), record shapes (`INV-1001`). The same rule names flow labels |
+| web route templates (`twinlab2_recorder.workstation.flow.route_template`) | a segment of two to 24 lower-case letters is kept as itself (`/orders/new/items`, `/billing/lookup`), except right after a segment that names people or accounts (`users`, `customers`, `accounts`, `u`, ... `flow.PEOPLE`), where a lower-case word may be a username slug (`/users/jdoe` stays `/users/{id}`). Digits, upper case, separators, e-mail addresses, UUIDs and longer words stay `{id}`; a typed value in a whole segment is its shape before this rule runs |
+| desktop screens | a message box (`#32770`, which has no AutomationId) is named by its title when that is plain and at most four words |
+| desktop combo boxes | a drop-down's `options` and `option_texts` come from its expand step's list (the tree is read while the list is closed), under the code-list rule |
+
+Privacy of the route rule: a lower-case single word after another route word that is not something
+the person typed is taken as the route's own name. A username slug in that place (`/projects/jdoe`,
+where `projects` is not in `PEOPLE`) would be kept; that is the risk accepted, and the list can grow.
 
 #### Event ids in the portal
 

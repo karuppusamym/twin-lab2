@@ -120,6 +120,34 @@ Display → Scale), and with the window on a second monitor at a different scale
 2. `TwinLabRecorder.exe --help` from a command prompt.
    → The commands print; no window opens.
 
+## 10. Desktop capture (recorder contract 1.4, rebuild-proof gaps 7, 8, 16)
+
+Tested only on fixture trees so far (`tests/recorder/test_structure_texts.py`,
+`test_desktop_picture_masks.py`). Record CaseDesk with pictures on (`record … --pictures`), then
+`show <session>` and open the session folder.
+
+1. **Combo box options (gap 7).** Open the case, open **Status** (`cboStatus`), pick *Resolved*,
+   close it.
+   → The expand step in `desktop/steps.jsonl` has `items` (the four statuses). In the outbox's
+     `screens`, every state of the case window lists `cboStatus` with `options: 4` and
+     `option_texts: ["Open", "In progress", "Resolved", "Closed"]`. Repeat with an editable combo
+     box or one holding names: only `options` (a count), no texts.
+2. **Message boxes (gap 8).** Sign in with an empty password, so the *Sign in* message box
+   (`#32770`) opens; press OK.
+   → The steps on the message box have `screen: "Sign in"` in the outbox flow (not missing, not
+     `(window)`), and the outbox's `screens` has a *Sign in* screen whose state has
+     `texts: [{"kind": "message", "text": "Enter your user name and password."}]` and an `OK`
+     button. A message box that shows a case number shows it as `99999`.
+3. **No typed text in desktop pictures (gap 16, desktop side).** Type a customer name into the
+   summary box and, at once, click into the next box and type there.
+   → Open `desktop/pictures/*.png`: every text box is painted over in its own background
+     (with its shape drawn where it had a value), also one that was empty when its tree was
+     read; `desktop/pictures.json` lists nothing dropped for a readable value.
+4. **Ids with a digit.** If the app under test has controls such as `txtLine2` or `button1`
+   (CaseDesk has none: try Calculator's `num1Button`):
+   → their steps keep that id as `label` in the outbox flow and as `id` in `screens`; Win32's
+     numeric ids (`2`, `65535`) are still not labels.
+
 ## Verify: the portal's desktop replay
 
 Verify's desktop replay (`twinlab2.replay.desktop`) is unit-tested on recorded window trees
