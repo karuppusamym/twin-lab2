@@ -22,6 +22,7 @@ from twinlab2 import api_models as m
 from twinlab2 import audit
 from twinlab2 import auth
 from twinlab2 import event_ids
+from twinlab2 import readiness_cache
 from twinlab2 import shapes
 from twinlab2.auth import require_role
 from twinlab2.registry import (CODE_ALPHABET, CODE_LENGTH, CODE_MINUTES, FAILURES_PER_10_MIN, HOST_EXES, LEVELS,
@@ -358,6 +359,7 @@ def app_for(item):
     facts = {k: item[k] for k in ("exe", "company", "product", "version", "toolkit") if k in item}
     db().execute("INSERT INTO app_identities(key, app_id, surface, facts) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                  (item["key"], app_id, item["surface"], json.dumps(facts)))  # fmt: skip
+    readiness_cache.forget(db(), app_id)
     return app_id, created
 
 
@@ -525,6 +527,9 @@ def agent_references(request: Request, doc=Depends(json_body)):
                     (discovered if created else mapped).append(app_id)
         for app_id, numbers in received.items():
             link_evidence(app_id, recording_id, numbers, seen.get(app_id, set()))
+        # the recording's events, flows and recorded day changed for the applications it had and has
+        readiness_cache.forget(db(), *seen)
+        readiness_cache.forget_recording(db(), recording_id)
         db().execute("INSERT INTO recording_uploads(recording_id, added_by, added_at) VALUES (?, ?, ?) "
                      "ON CONFLICT DO NOTHING", (recording_id, machine["paired_by"], now()))
         for app_id in discovered:
@@ -711,6 +716,7 @@ def add_identity(app_id: int, data: m.IdentityInput):
         db().execute("INSERT INTO app_identities(key, app_id, surface, facts) VALUES (?, ?, ?, '{}') ON CONFLICT DO NOTHING",
                      (key, app_id, surface))
         db().execute("UPDATE apps SET surface = ? WHERE id = ? AND surface = ''", (surface, app_id))
+        readiness_cache.forget(db(), app_id)
     return app_setup(app_id)
 
 
@@ -847,6 +853,7 @@ def merge_app(app_id: int, data: m.MergeInput):
     if plan["blockers"]:
         fail(400, "This application cannot be merged: " + ", ".join(plan["blockers"]) + ".")
     with db():
+        readiness_cache.forget(db(), app_id, into)
         db().execute("UPDATE app_identities SET app_id = ? WHERE app_id = ?", (into, app_id))
         for row in db().execute("SELECT * FROM recording_apps WHERE app_id = ?", (app_id,)).fetchall():
             keep = db().execute("SELECT flow, screens FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",

@@ -172,7 +172,7 @@ describe("navigation and gating by role", () => {
 
   it("does not offer a viewer to add an application or import a recording", async () => {
     renderApp("/apps", "viewer");
-    await screen.findByRole("heading", { level: 2, name: /Billing Desk/ });
+    await screen.findByRole("heading", { level: 3, name: /Billing Desk/ });
     expect(screen.queryByRole("heading", { name: "Add an application" })).not.toBeInTheDocument();
     expect(screen.queryByRole("form", { name: "Import recording" })).not.toBeInTheDocument();
   });

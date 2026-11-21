@@ -46,6 +46,13 @@ export interface paths {
          *     order (out-of-scope applications last, then by name). `filters` lists the owners and stages
          *     to choose from (of every visible application, not only this page). `recordings` is the
          *     first 50 recordings the caller may open; the recordings list has them all.
+         *
+         *     The page is grouped by status family (`AppSummary.family`: needs a scope decision, in
+         *     build, tested, published, not replicated, in that order; the sort applies within each
+         *     family). `groups` counts every matching application per family, also those of other pages.
+         *     `collapsed` names families whose applications are counted but left out of the pages, so
+         *     a collapsed group takes no room on any page; each other group's `offset` is where its
+         *     first application is, to page straight to it.
          */
         get: operations["listApps"];
         put?: never;
@@ -1988,11 +1995,20 @@ export interface components {
             };
             deployment: components["schemas"]["Deployment"] | null;
         };
+        /**
+         * @description Where an application stands, as the catalog groups it: `decide` needs a scope decision
+         *     (status `discovered`); `build` is replicated and has no Tested or Published release yet;
+         *     `tested` has a Tested release and none published; `published` has a Published release;
+         *     `not_replicated` is out of scope (status `not_replicated`).
+         * @enum {string}
+         */
+        AppFamily: "decide" | "build" | "tested" | "published" | "not_replicated";
         AppSummary: {
             id: number;
             name: string;
             status: components["schemas"]["AppStatus"];
             status_label: string;
+            family: components["schemas"]["AppFamily"];
             /** @description The owners' names for display (roles are authoritative). */
             owner: string;
             purpose: string;
@@ -2000,9 +2016,21 @@ export interface components {
             journey: components["schemas"]["Journey"];
             tested_release: components["schemas"]["TestedRelease"] | null;
         };
+        CatalogGroup: {
+            family: components["schemas"]["AppFamily"];
+            label: string;
+            /** @description Matching applications of this family, on every page. */
+            count: number;
+            /** @description Named in `collapsed`: counted, not paged. */
+            collapsed: boolean;
+            /** @description The offset of the page that starts with this family's first application; null when collapsed or empty. */
+            offset: number | null;
+        };
         Catalog: {
-            /** @description One page of the matching applications. */
+            /** @description One page of the matching applications, family by family. */
             apps: components["schemas"]["AppSummary"][];
+            /** @description Every status family in order, with its count of matching applications (zero included). */
+            groups: components["schemas"]["CatalogGroup"][];
             page: components["schemas"]["Page"];
             /** @description The values to filter by, from every application the caller sees. */
             filters: {
@@ -3722,6 +3750,8 @@ export interface operations {
                 status?: components["schemas"]["AppStatus"];
                 stage?: string;
                 sort?: "name" | "-name" | "owner" | "-owner" | "status" | "-status" | "stage" | "-stage";
+                /** @description Families to count but leave out of the pages (repeat the parameter for more than one). */
+                collapsed?: components["schemas"]["AppFamily"][];
             };
             header?: never;
             path?: never;

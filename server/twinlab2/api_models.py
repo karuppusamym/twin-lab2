@@ -158,16 +158,28 @@ class TestedRelease(Model):
     deployment: Deployment | Any
 
 
+AppFamily = Literal['decide', 'build', 'tested', 'published', 'not_replicated']
+
+
 class AppSummary(Model):
     id: int
     name: str
     status: AppStatus
     status_label: str
+    family: AppFamily
     owner: str
     purpose: str
     my_role: Role | Any
     journey: Journey
     tested_release: TestedRelease | Any
+
+
+class CatalogGroup(Model):
+    family: AppFamily
+    label: str
+    count: int
+    collapsed: bool
+    offset: int | Any
 
 
 class Catalog_Filters(Model):
@@ -183,6 +195,7 @@ class RecordingRef(Model):
 
 class Catalog(Model):
     apps: list[AppSummary]
+    groups: list[CatalogGroup]
     page: Page
     filters: Catalog_Filters
     recordings: list[RecordingRef]
@@ -1655,6 +1668,7 @@ CapturePage.model_rebuild()
 CaptureSession.model_rebuild()
 CaptureTarget.model_rebuild()
 Catalog.model_rebuild()
+CatalogGroup.model_rebuild()
 Channel.model_rebuild()
 CheckSummary.model_rebuild()
 Choice.model_rebuild()
