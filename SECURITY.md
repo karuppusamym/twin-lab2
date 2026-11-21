@@ -11,7 +11,8 @@ problem is understood. Reports are credited unless you ask otherwise.
 
 ## Supported versions
 
-Only the latest `main` is supported. There are no maintained release branches yet.
+Only the latest release (tags `vX.Y.Z`, docs/releasing.md) and `main` are supported. There are no
+maintained release branches yet. How dependencies and images are checked: docs/security-supply-chain.md.
 
 ## Sensitive data
 

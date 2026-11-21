@@ -6,3 +6,6 @@ __pycache__/
 /recorder/twinlab2_recorder/_build.json
 /recorder/twinlab2_recorder/data/
 *.egg-info/
+/test-results/
+/contract/build/
+/server/build/

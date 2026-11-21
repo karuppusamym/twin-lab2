@@ -14,7 +14,8 @@
 # Chromium): Verify reports the replay as not available here.
 
 # -- 1: the web app (web/dist) -------------------------------------------------------------------
-FROM node:22-slim AS web
+# Base images pinned by digest (Dependabot proposes new digests: .github/dependabot.yml).
+FROM node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json web/.npmrc* ./
 RUN npm ci --no-audit --no-fund
@@ -23,7 +24,7 @@ COPY web /src/web
 RUN npm run build
 
 # -- 2: the portal ----------------------------------------------------------------------------------
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     TWINLAB2_DATABASE=/data/catalog.db TWINLAB2_STATE=/data TWINLAB2_AUTH_MODE=trusted-proxy TWINLAB2_SECURE_COOKIES=1 \
@@ -33,6 +34,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
 # is in TWINLAB2_TRUSTED_PROXIES (default loopback: the sidecar). `--forwarded-allow-ips=0.0.0.0`
 # (an address no peer has) keeps uvicorn from replacing that peer with the proxy's X-Forwarded-For.
 # TWINLAB2_SECRET_KEY is required: the portal refuses to start without it.
+
+# Debian's security fixes released since the base image was built (the supply-chain workflow's image
+# scan fails on a fixable high or critical finding: docs/security-supply-chain.md)
+RUN apt-get update && apt-get -y upgrade --no-install-recommends && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 # the two packages the portal is made of: what it shares with the recorder, and the portal itself

@@ -1,0 +1,33 @@
+# Dependabot: weekly update pull requests, grouped per ecosystem so they stay reviewable.
+# Every PR runs the same checks as any other (test, web, image, e2e, supply-chain) and is merged
+# only when they are green. Security updates are raised as soon as an advisory appears.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directories: ["/contract", "/server", "/recorder", "/tools/supply-chain"]
+    schedule:
+      interval: weekly
+    groups:
+      python-minor:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule:
+      interval: weekly
