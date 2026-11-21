@@ -6,8 +6,11 @@ data in other shapes. Everything that goes into a builder package passes through
 - **text** (flow labels, screens, notes, scenario text, text attachments): e-mail addresses
   (except reserved example domains), US SSNs, payment card numbers (Luhn-checked), IBANs
   (mod-97-checked), international phone numbers, JWTs, bearer tokens, well-known API key
-  formats, `password=…`-style assignments and URL query values are replaced by
-  `[REDACTED:<kind>]`;
+  formats, `password=…`-style assignments, the password of a connection string
+  (`scheme://user:password@host`) and URL query values are replaced by `[REDACTED:<kind>]`.
+  Prose is not an assignment: in "Sign in without a password: the sign-in page shows …" the word
+  after the colon is followed by more words, so it is left alone; `password: Hunter2!`,
+  `password=word` and a lone `password: word` are still redacted;
 - **JSON** (attachments, HAR bodies): fields whose name says what they hold (password, token,
   cookie, email, ssn, card, iban, phone, address, birth date, …) are replaced whole; every other
   string goes through the text rules;
@@ -54,6 +57,13 @@ _KEYS = re.compile(r"\b(AKIA[0-9A-Z]{16}|(?:sk|pk|rk)_(?:live|test)_[\w]{10,}|sk
                    r"|gh[pousr]_[A-Za-z0-9]{30,}|xox[abprs]-[\w-]{10,}|AIza[\w-]{35})\b")
 _ASSIGN = re.compile(r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret)"
                      r"(\s*[\"']?\s*[:=]\s*[\"']?)([^\s\"',;&<>]+)")
+# "Sign in without a password: the sign-in page shows …" is prose, not a credential: after a
+# colon and a space, a value of letters only that is followed by more words is a sentence going on.
+# `password=word`, `password: word` at the end, and any value with a digit or symbol stay secrets.
+_PROSE_VALUE = re.compile(r"[A-Za-z][A-Za-z'’-]*")
+_NEXT_WORD = re.compile(r"\s+[\"'‘“]?[A-Za-z]")
+# a connection string's password: `scheme://user:password@host`
+_CONN = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s/:@\"'<>]+:([^\s/@\"'<>]+)@", re.I)
 _URL = re.compile(r"\bhttps?://[^\s\"'<>]+", re.I)
 # An id (an event id, any UUID) is never a card, phone or social security number, though its
 # digits can look like one (`…-8000-000000000011` passes the Luhn check): the number patterns
@@ -107,6 +117,15 @@ def redact_url(url: str, found: Counter) -> str:
     return urlunsplit((parts.scheme, host, parts.path, query, ""))
 
 
+def _prose(match) -> bool:
+    """An `_ASSIGN` match that is a sentence going on, not a credential: `password: the page …`
+    (a colon and a space, a value of letters only, then another word)."""
+    sep, value = match.group(2), match.group(3)
+    if "=" in sep or not re.search(r":\s", sep) or not _PROSE_VALUE.fullmatch(value):
+        return False
+    return bool(_NEXT_WORD.match(match.string, match.end(3)))
+
+
 def redact_text(text: str, found: Counter | None = None) -> str:
     """`text` with the patterns of this module replaced; counts go to `found`."""
     found = Counter() if found is None else found
@@ -121,17 +140,19 @@ def redact_text(text: str, found: Counter | None = None) -> str:
                 return match.group(0)
             found[kind] += 1
             if group:
-                return match.group(0)[: match.start(group) - match.start(0)] + MARK.format(kind)
+                whole, start = match.group(0), match.start(0)
+                return whole[: match.start(group) - start] + MARK.format(kind) + whole[match.end(group) - start:]
             return MARK.format(kind)
 
         text = pattern.sub(replace, text)
 
+    sub(_CONN, "secret", group=1)
     text = _URL.sub(lambda m: redact_url(m.group(0), found) if ("?" in m.group(0) or "@" in m.group(0)
                                                                  or "#" in m.group(0)) else m.group(0), text)
     sub(_JWT, "token")
     sub(_BEARER, "token")
     sub(_KEYS, "api key")
-    sub(_ASSIGN, "secret", group=3)
+    sub(_ASSIGN, "secret", check=lambda m: not _prose(m), group=3)
     ids = []
     shielded = not _PRIVATE.search(text) and 0 < len(_UUID.findall(text)) < 0xFFFE
     if shielded:

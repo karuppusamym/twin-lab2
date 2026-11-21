@@ -127,6 +127,14 @@ SPEC: tuple[Item, ...] = (
     Item("behaviour.persistence", "behaviour", "Persistence", "important", ALL,
          "What was saved must still be there after a reload or a restart; acceptance cases can check a reload.",
          "scenarios", "Say in the expected result what is still shown after a reload or restart."),
+    Item("behaviour.unrecorded", "behaviour", "Failure cases or precondition rules", "important", ALL,
+         "Off the recorded path the builder follows the pack's defaults (a direct URL to a later page returns to "
+         "the start, keys not listed do nothing); without the owner's failure cases or precondition rules the "
+         "copy behaves however the builder guessed (a blind rebuild showed a form the original never shows "
+         "without a lookup).", "scenarios",
+         "Write the failure cases, and the precondition rules: which pages or screens are reached only from "
+         "another (for example \"the invoice form is only reached from a found order\"), what a direct URL "
+         "shows, which keys do something."),
     # -- screens --------------------------------------------------------------------------------
     Item("screens.structure", "screens", "Screen structure (recorder contract 1.3)", "critical", ALL,
          "The replay compares every recorded screen's interactive elements by tag, id and classes after every step; "
@@ -208,11 +216,20 @@ SPEC: tuple[Item, ...] = (
     Item("mainframe.layout", "surface", "Field positions and lengths", "critical", ("mainframe",),
          "A 3270 screen is a fixed grid: each field's row, column and length is the screen.", "recordings",
          "Record the host screens again at level full."),
+    Item("mainframe.title", "surface", "Title line of each host screen", "critical", ("mainframe",),
+         "The replay names a 3270 screen by all the protected text of its first non-empty row and compares it "
+         "exactly; a screen known only by its layout id gives the builder no title to put there.", "recordings",
+         "Record the host screens again so each has a title line (the first row with protected text)."),
     Item("mainframe.attributes", "surface", "Field attributes (protected, hidden, numeric)", "important",
          ("mainframe",), "Protected, non-display and numeric fields behave differently on the terminal.",
-         "recordings", "Record the host screens again at level full.",
-         capture_gap="Recorder 1.3 sends only unprotected fields; protected output fields appear only as the "
-                     "label of the field after them."),
+         "recordings", "Record the host screens again at level full."),
+    Item("mainframe.protected", "surface", "Protected text positions (labels, messages, key line)", "important",
+         ("mainframe",), "Where labels, output fields, the message line and the key line sit is the look of a "
+         "3270 screen; without them the builder places them and the copy looks different.", "recordings",
+         "Record the host screens again with a recorder that sends protected fields (contract 1.4).",
+         capture_gap="Recorder contract 1.3 sends only unprotected fields; protected output fields appear only as "
+                     "the label of the field after them. The pack renders a layout table once protected fields "
+                     "with row, column and length arrive (`protected: true`, `text` or `shape`)."),
     Item("mainframe.aid", "surface", "AID keys (Enter, PF keys, Clear)", "critical", ("mainframe",),
          "A host transaction moves on an AID key; a step without it cannot be replayed.", "recordings",
          "Record the AID steps again."),
@@ -269,6 +286,12 @@ BEHAVIOUR = {  # spec item -> words that show a scenario covers it
     "behaviour.cancellation": r"cancel|abort|discard|close without|back without",
     "behaviour.persistence": r"reload|refresh|persist|restart|reopen|still (there|shown|listed)|after (a )?(log ?out|sign ?out)",
 }
+# words that state a precondition or what happens off the recorded path
+PRECONDITION = re.compile(r"only (be )?(reached|opened|shown|available)|direct(ly)? (url|link|address)|by url"
+                          r"|without (a |an |the |first )?\w+ (first|before)|precondition"
+                          r"|unless|requires? (a |an |the )?\w+ first|(key|pf\d+|pa\d|clear)s? .{0,30}"
+                          r"(nothing|ignored|no effect)|sends? you back|returns? to|redirect", re.I)
+TITLE_ID = re.compile(r"^scr:[0-9a-f]+$")
 LINK_GONE = re.compile(r"^Linked event (\S+) is no longer selected")
 
 
@@ -417,6 +440,14 @@ class _Checker:
 
     def check_behaviour_persistence(self):
         return self.behaviour("behaviour.persistence", self.typed(), "what is still there after a reload or restart")
+
+    def check_behaviour_unrecorded(self):
+        if not self.scenarios:
+            return "n/a"
+        if any(s.get("failure_cases") for s in self.scenarios) or PRECONDITION.search(self.text()):
+            return []
+        return ["No scenario has failure cases or a precondition rule (which page or screen is reached only from "
+                "another, what a direct URL or an unlisted key does)."]
 
     # -- screens -------------------------------------------------------------------------------
     def check_screens_structure(self):
@@ -574,6 +605,30 @@ class _Checker:
             fields = [c for _, c in _controls({name: self.screens[name]})]
             if not fields or any(not all(k in c for k in ("row", "col", "len")) for c in fields):
                 out.append(f"Host screen `{name}` has fields without row, column and length.")
+        return out
+
+    def host_screens(self):
+        """The host screens the scenarios touch, by name, with their structure when known."""
+        return sorted(self.touched | {n for n, sc in self.screens.items()
+                                      if sc.get("surface", "mainframe") == "mainframe"})
+
+    def check_mainframe_title(self):
+        names = self.host_screens()
+        if not names:
+            return "n/a"
+        return [f"Host screen `{n}` is known only by its layout id: no title line was recorded."
+                for n in names if TITLE_ID.match(n) or not n.strip()]
+
+    def check_mainframe_protected(self):
+        if not self.screens:
+            return ["The package has no host screen structure, so no protected field positions (labels, messages, "
+                    "key line)."]
+        out = []
+        for name in sorted(self.touched & set(self.screens)):
+            states = self.screens[name].get("states") or []
+            if not any(c.get("protected") for st in states for c in st.get("controls") or []):
+                out.append(f"Host screen `{name}` has no protected field with its position (labels, messages, "
+                           "key line).")
         return out
 
     def check_mainframe_attributes(self):
