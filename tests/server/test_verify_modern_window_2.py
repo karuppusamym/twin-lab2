@@ -85,3 +85,14 @@ class NamedPath(unittest.TestCase):
         path = ["uia:Name=Calculator;ControlType=Window", "uia:ControlType=Group;ClassName=LandmarkTarget;Index=0",
                 "uia:AutomationId=NumberPad;ControlType=Group"]
         self.assertEqual(desktop._named(path), [path[0], path[2]])
+
+
+class NestingInTheBrief(unittest.TestCase):
+    def test_build_task_names_each_controls_container(self):
+        from twinlab2 import buildpack
+
+        line = buildpack._control_line({"kind": "Button", "id": "num1Button", "label": "One", "in": "NumberPad"})
+        self.assertEqual(line, '- `Button#num1Button` (Button) "One" in `NumberPad`')
+        self.assertEqual(buildpack._region({"kind": "Group", "id": "NumberPad", "in": "NavView"}),
+                         "`Group#NumberPad` (in `NavView`)")
+        self.assertEqual(buildpack._region({"kind": "Custom", "id": "NavView"}), "`Custom#NavView`")

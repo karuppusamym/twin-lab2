@@ -332,7 +332,9 @@ REPLAY_NOTE = (
     "value format of fields. Build each state below with exactly these controls, identifiers, classes and "
     "states, and no other interactive elements. Text and data are not compared (on a 3270 screen, except its "
     "title line); rows are given as a shape "
-    "(0, 1, few = 2 to 9, many = 10 or more). Words that could be data were left out (counted as withheld).")
+    "(0, 1, few = 2 to 9, many = 10 or more). Words that could be data were left out (counted as withheld). "
+    "On a desktop screen, \"in `X`\" names the region a control or region is inside: nest it there, as the "
+    "replay compares each control's chain of named containers.")
 
 REPLAY_NOTE_3270 = (
     "On a 3270 screen the replay names the screen by its title line, all the protected text of its first non-empty "
@@ -443,12 +445,14 @@ def _control_line(c):
         texts = c.get("option_texts")
         states.append(f"{c['options']} options" + (": " + ", ".join(f'"{t}"' for t in texts) if texts else ""))
     label = f' "{c["label"]}"' if c.get("label") else ""
-    return f"- `{ident}` ({c['kind']}){label}" + (f": {'; '.join(states)}" if states else "")
+    inside = f" in `{c['in']}`" if c.get("in") else ""  # contract 1.6: the region it is inside
+    return f"- `{ident}` ({c['kind']}){label}{inside}" + (f": {'; '.join(states)}" if states else "")
 
 
 def _region(r):
     name = f"{r['kind']}#{r['id']}" if r.get("id") else f"{r['kind']}[name={r['name']}]"
-    return "`" + name + "".join(f".{x}" for x in r.get("classes") or []) + "`"
+    inside = f" (in `{r['in']}`)" if r.get("in") else ""
+    return "`" + name + "".join(f".{x}" for x in r.get("classes") or []) + "`" + inside
 
 
 def _state_name(screens, screen, state_id):
