@@ -47,7 +47,9 @@ search, filters and paging.
 3. **Scope triage** decides the applications the recording discovered. For each one, choose
    **Replicate**, **Same as …** (merge into an existing application, previewed first) or **Not
    replicated (used only)**.
-4. An **application's page** follows one journey:
+4. **Applications** lists them in collapsible groups with counts: **Needs a scope decision**,
+   **In build**, **Tested**, **Published** and **Not replicated** (collapsed at first).
+   An **application's page** follows one journey:
    **Choose application → Add examples → Review required behaviour → Connect repository → Build →
    Verification settings → Verify → Open or download**. A step that cannot be done yet says why
    and links to the fix. Add business scenarios here, preview the builder package file by file,
@@ -94,6 +96,8 @@ Windows PC, pair a machine under **Setup** and follow the
 | [docs/VERIFICATION.md](docs/VERIFICATION.md) | test results and their limits |
 | [docs/PACKAGE-COMPLETENESS.md](docs/PACKAGE-COMPLETENESS.md) | what a builder package must contain |
 | [docs/api-versioning.md](docs/api-versioning.md) | how the APIs are versioned |
+| [docs/ACCESS-REQUESTS.md](docs/ACCESS-REQUESTS.md) | requesting a role on an application, and the owners' decisions |
+| [docs/AGENT-API-SECURITY.md](docs/AGENT-API-SECURITY.md) | the recorder API's credentials, token scopes and rate limit |
 | [docs/deploying-on-openshift.md](docs/deploying-on-openshift.md) | running the portal on OpenShift (not yet run on a cluster) |
 | [docs/UPSTREAM.md](docs/UPSTREAM.md) | where the code copied from Twin Lab came from |
 

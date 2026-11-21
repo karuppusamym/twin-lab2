@@ -30,6 +30,7 @@ import secrets
 from fastapi import Depends
 from fastapi.responses import JSONResponse
 
+from twinlab2 import agentauth
 from twinlab2 import artifacts
 from twinlab2 import auth
 from twinlab2_contract import recorder_contract as contract
@@ -85,6 +86,8 @@ def agent_machine():
                        (registry.sha(token),)).fetchone()
     if row is None:
         fail(401)
+    agentauth.limit(row["id"])
+    agentauth.require_scope(row, "upload")
     return row
 
 
@@ -104,10 +107,12 @@ def get_upload(upload_id):
     if _time(row["token_expires"]) < _now():
         raise Problem(401, body={"error": "the upload authorisation expired: init the upload again to resume",
                                  "expired": True})
-    machine = db().execute("SELECT 1 FROM machines WHERE id = ? AND revoked_at IS NULL",
+    machine = db().execute("SELECT * FROM machines WHERE id = ? AND revoked_at IS NULL",
                            (row["machine_id"],)).fetchone()
     if machine is None:
         fail(401)
+    agentauth.limit(machine["id"])
+    agentauth.require_scope(machine, "upload")
     return row
 
 
@@ -271,6 +276,9 @@ def upload_chunk(upload_id: str, offset: str | None = None, data: bytes = Depend
     else:
         store().upload_part(row["object_key"], row["multipart_id"], offset // row["chunk_size"] + 1, data)
     update(row["id"], received_bytes=end, last_error=None)
+    from twinlab2 import observability
+
+    observability.count_upload_bytes(len(data))
     return JSONResponse({"received_bytes": end, "total_bytes": row["total_bytes"]},
                         headers={"Upload-Offset": str(end)})
 

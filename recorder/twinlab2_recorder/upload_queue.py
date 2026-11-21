@@ -37,7 +37,7 @@ from twinlab2_recorder.client import PortalError
 
 CHUNK = 1024 * 1024
 MAX_ATTEMPTS = 5
-SKIP = {"stop", "sent.json"}
+SKIP = {"stop", "paused", "sent.json"}
 
 
 def _stamp() -> str:
@@ -56,14 +56,20 @@ def pack_session(folder: Path, out: Path) -> Path:
     """The session folder as a deterministic ZIP (sorted names, fixed times): the same
     recording always gives the same bytes, so queueing it again resumes the same upload."""
     folder = Path(folder)
-    files = sorted(p for p in folder.rglob("*") if p.is_file() and p.name not in SKIP and p.suffix != ".tmp")
+    files = []
+    for p in sorted(folder.rglob("*")):
+        if p.is_symlink() or p.is_junction() or not p.resolve().is_relative_to(folder.resolve()):
+            raise OSError(f"recording contains a linked path: {p.relative_to(folder)}")
+        if p.is_file() and p.name not in SKIP and p.suffix != ".tmp":
+            files.append(p)
     tmp = out.with_suffix(".tmp")
     with ZipFile(tmp, "w", ZIP_DEFLATED) as archive:
         for path in files:
             info = ZipInfo(path.relative_to(folder).as_posix(), (2020, 1, 1, 0, 0, 0))
             info.compress_type = ZIP_DEFLATED
             info.external_attr = 0o644 << 16
-            archive.writestr(info, path.read_bytes())
+            with path.open("rb") as source, archive.open(info, "w", force_zip64=True) as target:
+                shutil.copyfileobj(source, target, CHUNK)
     os.replace(tmp, out)
     return out
 
@@ -231,6 +237,17 @@ class UploadQueue:
         if status["state"] == "rejected":
             raise PortalError(status.get("last_error") or "the portal rejected the upload", 422, status)
         offset, size, chunk = status["received_bytes"], job["size"], job["chunk_size"]
+        def checked_offset(value):
+            if type(value) is not int or not 0 <= value <= size:
+                raise PortalError("the portal returned an invalid upload offset", 400)
+            return value
+
+        checked_offset(offset)
+        if type(chunk) is not int or not 0 < chunk <= 16 * 1024 * 1024:
+            raise PortalError("the portal returned an invalid upload chunk size", 400)
+        if job["mode"] not in ("direct", "portal"):
+            raise PortalError("the portal returned an unknown upload mode", 400)
+        job["received_bytes"] = offset
         with path.open("rb") as f:
             if job["mode"] == "direct":
                 have = {p["number"] for p in status.get("parts", []) if p["size"] == min(chunk, size - (p["number"] - 1) * chunk)}
@@ -244,6 +261,7 @@ class UploadQueue:
                         job["received_bytes"] = min(size, job.get("received_bytes", 0) + chunk)
                         self.save(job)
             else:
+                conflicts = 0
                 while offset < size:
                     f.seek(offset)
                     data = f.read(chunk)
@@ -251,10 +269,18 @@ class UploadQueue:
                         answer = portal.upload_chunk(job["upload_id"], job["upload_token"], offset, data)
                     except PortalError as error:
                         if error.status == 409 and isinstance(error.body.get("received_bytes"), int):
-                            offset = error.body["received_bytes"]  # the portal has more or less: go there
+                            next_offset = checked_offset(error.body["received_bytes"])
+                            conflicts += 1
+                            if next_offset == offset or conflicts > MAX_ATTEMPTS:
+                                raise PortalError("upload progress did not settle; retrying later") from error
+                            offset = next_offset  # the portal has more or less: go there
                             continue
                         raise
-                    offset = answer["received_bytes"]
+                    next_offset = checked_offset(answer.get("received_bytes"))
+                    if next_offset <= offset:
+                        raise PortalError("the portal acknowledged no upload progress; retrying later")
+                    offset = next_offset
+                    conflicts = 0
                     job.update(received_bytes=offset, last_error=None)
                     self.save(job)
         answer = portal.upload_complete(job["upload_id"], job["upload_token"])

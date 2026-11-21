@@ -83,6 +83,15 @@ class RequestLog:
         rid = sent if _SAFE_ID.fullmatch(sent) else secrets.token_hex(8)
         token = _request_id.set(rid)
         started, status = time.monotonic(), 0
+        from twinlab2 import observability
+
+        tracer = observability.tracer()
+        span = None
+        if tracer is not None:
+            span = tracer.start_span(f"{scope.get('method')} request", context=observability.extract_context(scope),
+                                     kind=_server_kind())
+            span.set_attribute("http.request.method", scope.get("method", ""))
+            span.set_attribute("twinlab2.request_id", rid)
 
         async def stamped(message):
             nonlocal status
@@ -104,10 +113,57 @@ class RequestLog:
                 scope, receive, stamped)
         finally:
             path = scope.get("path", "")
+            seconds = time.monotonic() - started
+            route = route_template(scope)
             if path not in QUIET:
-                log.info("%s %s %s %.0fms", scope.get("method"), path, status or "-",
-                         (time.monotonic() - started) * 1000, extra={"request_id": rid})
+                state = scope.get(STATE_KEY)
+                params = scope.get("path_params") or {}
+                app_id = params.get("app_id") if isinstance(params.get("app_id"), int) else None
+                log.info("%s %s %s %.0fms", scope.get("method"), observability.scrub(path), status or "-",
+                         seconds * 1000,
+                         extra={"request_id": rid, "method": scope.get("method"), "route": route,
+                                "status": status or None, "ms": round(seconds * 1000, 1),
+                                "user": getattr(state, "user", None), "app_id": app_id})
+                observability.observe_request(scope.get("method", ""), route, status or 500, seconds)
+            if span is not None:
+                span.update_name(f"{scope.get('method')} {route}")
+                span.set_attribute("http.route", route)
+                span.set_attribute("http.response.status_code", status or 500)
+                if (status or 500) >= 500:
+                    from opentelemetry.trace import Status, StatusCode
+
+                    span.set_status(Status(StatusCode.ERROR))
+                span.end()
             _request_id.reset(token)
+
+
+STATE_KEY = "twinlab2.state"  # the request's State in the ASGI scope (for the request log line)
+
+
+def route_template(scope) -> str:
+    """The matched route's path template (`/api/v1/apps/{app_id}`), never the raw path: a
+    metrics label and a span name with no ids or tokens. `unmatched` when no route matched."""
+    route = scope.get("route")
+    path = getattr(route, "path", None)
+    if not path:
+        return "unmatched" if scope.get("path") not in QUIET else scope.get("path")
+    return re.sub(r"\{(\w+):[^}]+\}", r"{\1}", path)
+
+
+def _server_kind():
+    from opentelemetry.trace import SpanKind
+
+    return SpanKind.SERVER
+
+
+def log_context():
+    """(user, app_id) of the current request, for the JSON log lines written while it runs."""
+    state = _state.get()
+    if state is None:
+        return None, None
+    params = getattr(state.request, "path_params", None) or {}
+    app_id = params.get("app_id")
+    return state.user, app_id if isinstance(app_id, int) else None
 
 
 # -- the request's state ------------------------------------------------------------------------
@@ -189,6 +245,7 @@ class RequestState:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         state = State(self.target, self.settings)
+        scope[STATE_KEY] = state
         token = _state.set(state)
         extra = self.around(scope) if self.around else None
 
@@ -351,11 +408,12 @@ CODES: dict[str, tuple[int, str]] = {
     "internal": (500, "The portal failed; the error is in its log under the response's Request-Id."),
     "bad_gateway": (502, "A service the portal depends on failed."),
     "unavailable": (503, "The portal is not ready (starting, migrating, or a dependency is down): retry later."),
+    "gone": (410, "The stored file was deleted (retention, an owner's request or a purge); a tombstone records it."),
     "error": (0, "Any other HTTP error status."),
 }
 DEFAULT_CODE = {400: "invalid_request", 401: "signed_out", 403: "forbidden", 404: "not_found",
                 405: "method_not_allowed", 409: "state_conflict", 413: "too_large", 415: "unsupported_media_type",
-                422: "idempotency_key_reused", 500: "internal", 502: "bad_gateway", 503: "unavailable"}
+                410: "gone", 422: "idempotency_key_reused", 500: "internal", 502: "bad_gateway", 503: "unavailable"}
 ERRORS_BASE = "/errors/"  # `type` is ERRORS_BASE + code: a URI reference relative to the portal
 
 
@@ -466,7 +524,7 @@ def check_csrf(request: Request):
     sent = request.headers.get("X-CSRF-Token", "")
     token = request.session.get("form_token", "")
     if not sent or not token or not hmac.compare_digest(sent, token):
-        fail(403, "Reload the page: the form token is missing or out of date.", "csrf")
+        fail(403, "The form token is missing or out of date (you signed in or out in another tab?): read the session again and retry.", "csrf")
 
 
 def deny(request: Request):

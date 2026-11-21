@@ -109,10 +109,62 @@ class Recording:
             return None
         if rel not in self._trees:
             try:
-                self._trees[rel] = json.loads((self.path / rel).read_text(encoding="utf-8"))
+                self._trees[rel] = unframe(json.loads((self.path / rel).read_text(encoding="utf-8")))
             except (OSError, ValueError):
                 return None
         return self._trees[rel]
+
+
+# A modern (UWP / WinUI) application's window is drawn by Windows' frame host: the top-level
+# ApplicationFrameWindow holds the title bar (ApplicationFrameTitleBarWindow), an input sink and
+# the application's own CoreWindow. A rebuild in another toolkit cannot have those Windows
+# classes; what the application itself shows is the CoreWindow's content and the title bar.
+FRAME_WINDOW = "ApplicationFrameWindow"
+FRAME_TITLE_BAR = "ApplicationFrameTitleBarWindow"
+FRAME_INPUT_SINK = "ApplicationFrameInputSinkWindow"
+CORE_WINDOW = "Windows.UI.Core.CoreWindow"
+
+
+def unframe(tree: dict) -> dict:
+    """A recorded window tree as the application draws it: when the window is a frame host's,
+    the CoreWindow's children are the window's own, the input sink is left out, and the frame
+    host's classes are not compared (the title bar keeps its controls). Any other tree as it is."""
+    if not isinstance(tree, dict) or locator.normalise_class(tree.get("cls")) != FRAME_WINDOW:
+        return tree
+    kids: list[dict] = []
+    for child in tree.get("children") or []:
+        cls = child.get("cls")
+        if cls == FRAME_INPUT_SINK:
+            continue
+        if cls == CORE_WINDOW:
+            kids += child.get("children") or []
+        elif cls == FRAME_TITLE_BAR:  # Windows' chrome: not compared (SKIP_UNDER)
+            kids.append({**{k: v for k, v in child.items() if k not in ("cls", "fw")}, "type": "TitleBar"})
+        else:
+            kids.append(child)
+    out = {k: v for k, v in tree.items() if k not in ("cls", "fw")}
+    out["children"] = [classless(k) for k in kids]
+    out["framed"] = True
+    return out
+
+
+def classless(node: dict) -> dict:
+    """A tree without toolkit classes (ClassName, FrameworkId), all the way down: a modern app's
+    are XAML peers (ListView, LandmarkTarget), which a rebuild in another toolkit cannot have, so
+    no locator of a framed window may lean on them (an unnamed list is found by type and place)."""
+    out = {k: v for k, v in node.items() if k not in ("cls", "fw")}
+    if node.get("children"):
+        out["children"] = [classless(c) for c in node["children"]]
+    return out
+
+
+def window_wanted(selector: str) -> dict:
+    """The parts of a recorded window locator a rebuilt window can have: a frame host's class
+    (ApplicationFrameWindow) is left out, so the window is found by its name and type."""
+    want = locator.parse(selector)
+    if want.get("ClassName") == FRAME_WINDOW:
+        want.pop("ClassName")
+    return want
 
 
 COMPARED = {"Button", "Edit", "Document", "CheckBox", "RadioButton", "ComboBox", "List",
@@ -126,12 +178,14 @@ SKIP_UNDER = {"TitleBar"}
 def _controls(tree: dict) -> list[tuple[dict, tuple, int]]:
     """Controls to compare: structural ones, never inside a data row, never the title bar."""
     out = []
+    framed = bool(tree.get("framed"))
 
     def walk(node: dict, ancestors: tuple, idx: int, data: bool) -> None:
         t = node.get("type")
-        if t in SKIP_UNDER:
-            return
-        if ancestors and not data and t in COMPARED:
+        if t in SKIP_UNDER or (framed and node.get("aid") == "TitleBar"):
+            return  # a window's title bar; a modern app's is Windows' own (a rebuild draws its own)
+        if ancestors and not data and t in COMPARED and not caption(node, ancestors[-1]) and not (
+                framed and t in LAYOUT and not node.get("aid") and not node.get("name")):  # fmt: skip
             if t != "Text" or node.get("name_is") in ("structure", "message"):
                 out.append((node, ancestors, idx))
         inside = data or t in ROW_TYPES or t in ("DataGrid", "Table", "List", "Tree")
@@ -147,11 +201,40 @@ def _controls(tree: dict) -> list[tuple[dict, tuple, int]]:
     return out
 
 
+LAYOUT = {"Group", "Pane", "Custom"}
+CAPTIONED = {"TabItem", "Button", "ListItem", "MenuItem", "CheckBox", "RadioButton", "HeaderItem"}
+
+
+def caption(node: dict, parent: dict) -> bool:
+    """A Text that only shows its parent's caption (WPF draws a TabItem's or Button's header as a
+    TextBlock; UWP exposes none): part of the parent, not a control of its own."""
+    if node.get("type") != "Text" or parent.get("type") not in CAPTIONED:
+        return False
+    text, own = str(node.get("name") or "").strip(), str(parent.get("name") or "")
+    return bool(text) and text.casefold() in own.casefold()  # "log" on the key named "Log"
+
+
+def _find(tree: dict, selector: str, path: list[str] | None, framed: bool) -> list[tuple[dict, tuple]]:
+    """locator.find; in a modern app's window a control located by its place (Index) is matched
+    by its named ancestors only: the unnamed XAML layers between them (LandmarkTarget) are not
+    controls a rebuild can know of, as in the parent-path check (`_named`)."""
+    if not framed or not path:
+        return locator.find(tree, selector, path)
+    want = _named(path)
+    return [(n, anc) for n, anc in locator.find(tree, selector, None)
+            if _named([locator.step_of(a, a.get("idx", 0)) for a in anc]) == want]
+
+
 def _named(path: list[str]) -> list[str]:
     """The steps of an ancestor path that name a control (AutomationId or Name). Unnamed
     containers in between (Java's root pane, layered pane and panels; WPF's borders) are left
     out: toolkits add and reorder them, bots do not anchor on them."""
-    return [p for p in path if "AutomationId=" in p or "Name=" in p]
+    out = []
+    for p in path:
+        parts = locator.parse(p)  # not a substring test: `ClassName=` holds "Name="
+        if parts.get("AutomationId") or parts.get("Name"):
+            out.append(p)
+    return out
 
 
 def _submenu_closed(other: dict, tree: dict, ancestors: tuple) -> bool:
@@ -262,6 +345,9 @@ def compare_trees(recorded: dict, live: dict, step: int = 0,
     # the message box opened or closed), not the app: enabled states are then not compared; the
     # message box itself is compared as its own window.
     modal = bool(recorded.get("enabled")) != bool(live.get("enabled"))
+    framed = bool(recorded.get("framed"))
+    if framed:  # the window's own class is the frame host's: on neither side
+        live = {**classless(live), "framed": True}
     for node, ancestors, idx in _controls(recorded):
         loc = locator.build(recorded, node, ancestors, idx)
         expected.append((loc, node, ancestors))
@@ -269,7 +355,7 @@ def compare_trees(recorded: dict, live: dict, step: int = 0,
     for loc, node, ancestors in expected:
         sel = loc["selector"]
         scoped = "Index=" in sel
-        hits = locator.find(live, sel, loc["path"] if scoped else None)
+        hits = _find(live, sel, loc["path"] if scoped else None, framed)
         if loc.get("ambiguous"):
             # Ambiguous in the real application already (the brief lists it): a difference only
             # when the demo app has another number of matches.
@@ -288,7 +374,10 @@ def compare_trees(recorded: dict, live: dict, step: int = 0,
             continue
         have, anc = hits[0]
         matched_ids.add(id(have))
-        for key, label in (("cls", "ClassName"), ("fw", "FrameworkId")):
+        # A modern application's controls are XAML automation peers (FrameworkId XAML,
+        # NamedContainerAutomationPeer...): toolkit classes a rebuild in WPF or WinForms cannot
+        # have. For a frame host's window they are not compared (the report says so).
+        for key, label in () if recorded.get("framed") else (("cls", "ClassName"), ("fw", "FrameworkId")):
             a = locator.normalise_class(node.get(key)) if key == "cls" else node.get(key)
             b = locator.normalise_class(have.get(key)) if key == "cls" else have.get(key)
             if a and a != b:
@@ -329,9 +418,7 @@ def compare_trees(recorded: dict, live: dict, step: int = 0,
                                     expected=node["value"], actual=have["value"]))  # fmt: skip
     for node, ancestors, idx in _controls(live):
         loc = locator.build(live, node, ancestors, idx)
-        found = locator.find(
-            recorded, loc["selector"], loc["path"] if "Index=" in loc["selector"] else None
-        )
+        found = _find(recorded, loc["selector"], loc["path"] if "Index=" in loc["selector"] else None, framed)
         if not found:
             if node.get("type") == "MenuItem" and _submenu_closed(recorded, live, ancestors):
                 continue
@@ -409,9 +496,29 @@ class _Live:
                                      pixels)  # fmt: skip
         return got[0] if got else None
 
+    def read(self, selectors: list[str]) -> dict[str, list[str]]:
+        """{selector: the live Name and Value of each control it matches} in the app's windows:
+        for a judge-side `value` case only (the rebuild's own synthetic values; never written
+        into a package)."""
+        out: dict[str, list[str]] = {}
+        for sel in selectors:
+            texts: list[str] = []
+            for h in self.win.top_windows(self.pids):
+                try:
+                    found = self.win.find_all(self.win.element_from_handle(h), sel)
+                except Exception:  # noqa: BLE001 - a window that went
+                    continue
+                for el in found:
+                    try:
+                        texts.append(" ".join(x for x in (el.CurrentName, self.win.value_of(el)) if x))
+                    except Exception:  # noqa: BLE001
+                        pass
+            out[sel] = texts
+        return out
+
     def window(self, selector: str, timeout: float = 8.0) -> tuple[int, dict] | tuple[None, int]:
         """The window a recorded window locator names: (hwnd, tree), or (None, matches)."""
-        want = locator.parse(selector)
+        want = window_wanted(selector)
         end = time.monotonic() + timeout
         count = 0
         while True:
@@ -439,6 +546,12 @@ def _element(live: _Live, hwnd: int, step: dict):
     raise DriveError(
         f"{sel}: located only by position (Index); not replayed ({target.get('note', '')})"
     )
+
+
+def _own_id(step: dict) -> bool:
+    """Whether a step's target is located by an AutomationId of its own (not by position)."""
+    sel = step.get("selector") or ""
+    return "AutomationId=" in sel and "Index=" not in sel
 
 
 def _act(live: _Live, hwnd: int, step: dict, values: dict[str, list[str]]) -> str:
@@ -471,6 +584,23 @@ def _act(live: _Live, hwnd: int, step: dict, values: dict[str, list[str]]) -> st
         if step.get("state") and win.toggle_state(el) == step["state"]:
             return "already in the recorded state"
         return win.post_click(el) or _async(lambda: win.toggle(el)) or "toggled"
+    if action == "select" and _own_id(step):
+        # An item with an identifier of its own (a navigation entry, a tab): selected by it,
+        # wherever it is shown (an open navigation pane, the window itself).
+        sel = step["selector"]
+        found, rids = [], set()
+        for h in [hwnd, *[x for x in win.top_windows(live.pids) if x != hwnd]]:
+            for f in win.find_all(win.element_from_handle(h), sel):
+                rid = tuple(f.GetRuntimeId())
+                if rid not in rids:
+                    rids.add(rid)
+                    found.append(f)
+        if len(found) > 1:
+            raise Ambiguous(sel, len(found))
+        if not found:
+            raise DriveError(f"no control {sel}")
+        win.select(found[0])
+        return f"selected {props.get('AutomationId')}"
     if action == "select":
         if step.get("item_is") != "code":
             raise ValueError(
@@ -521,6 +651,37 @@ def _act(live: _Live, hwnd: int, step: dict, values: dict[str, list[str]]) -> st
     raise ValueError(f"action {action} is not replayed")
 
 
+CLOSED_BY_APP_S = 1.5  # a window that closes this soon after a step in it was closed by that step
+
+
+def closed_by_user(step: dict, previous: dict | None) -> bool:
+    """Whether a recorded window_close was the user closing the window through its frame (the
+    title bar's Close, Alt+F4: no step of the application's) rather than the application
+    closing it because of the step before (Save, OK, Exit). The frame's Close is not a control
+    the recorder sees in a modern app, so the replay does what the user did."""
+    if previous is None or previous.get("action") in ("window_open", "window_close", "focus"):
+        return True
+    from datetime import datetime
+
+    try:
+        gap = (datetime.fromisoformat(str(step["ts"]).replace("Z", "+00:00"))
+               - datetime.fromisoformat(str(previous["ts"]).replace("Z", "+00:00"))).total_seconds()  # fmt: skip
+    except (KeyError, TypeError, ValueError):
+        return False
+    return gap >= CLOSED_BY_APP_S
+
+
+def close_window(live: _Live, hwnd: int) -> str:
+    """Close a window as its frame's Close does (WM_CLOSE): nothing reaches another window."""
+    import ctypes
+
+    ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+    end = time.monotonic() + 5
+    while time.monotonic() < end and live.win.user32.IsWindow(hwnd):
+        time.sleep(0.2)
+    return "closed by the replay, as the user closed it (its frame's Close; not an application step)"
+
+
 def verify(exe: str, recording: Path, *, values: dict[str, str | list[str]] | None = None,
            settle: float = 0.8, wait: float = 20.0, geometry: bool = False, rows: bool = False,
            pictures_dir: Path | None = None, picture_threshold: float = 1.0,
@@ -555,6 +716,10 @@ def verify(exe: str, recording: Path, *, values: dict[str, str | list[str]] | No
         last_window = None
         wanted = set((observe or {}).get("after") or ())
         trees = observe.setdefault("trees", {}) if observe is not None else {}
+        # selectors whose live text a judge-side `value` case reads (never stored in a package)
+        value_reads = list((observe or {}).get("read") or ())
+        values_seen = observe.setdefault("values", {}) if observe is not None else {}
+        previous: dict | None = None
         for step in rec.steps:
             try:
                 action = step.get("action")
@@ -571,10 +736,13 @@ def verify(exe: str, recording: Path, *, values: dict[str, str | list[str]] | No
                 if action == "window_close":
                     time.sleep(settle)
                     hwnd, n = live.window(wsel, timeout=2) if wsel else (None, 0)
+                    if hwnd is not None and closed_by_user(step, previous):
+                        note = close_window(live, hwnd)
+                        hwnd, n = live.window(wsel, timeout=1) if wsel else (None, 0)
                     if hwnd is not None:
                         diffs.append(Difference(step=seq, element=wsel, check="extra", expected="closed",
                                                 actual="still open"))  # fmt: skip
-                    reports.append(StepReport(seq=seq, action=action, selector=wsel,
+                    reports.append(StepReport(seq=seq, action=action, selector=wsel, note=note,
                                               status="fail" if diffs else "pass", differences=diffs))  # fmt: skip
                     continue
                 hwnd, found = live.window(wsel) if wsel else (None, 0)
@@ -629,12 +797,17 @@ def verify(exe: str, recording: Path, *, values: dict[str, str | list[str]] | No
                 reports.append(StepReport(seq=seq, action=action, selector=sel, status=status,
                                           differences=diffs, note=note))  # fmt: skip
             finally:  # the windows once this step ran, for the acceptance cases
+                previous = step
                 if step.get("seq") in wanted:
                     trees[step.get("seq")] = [t for _h, t in live.windows()]
+                    if value_reads:
+                        values_seen[step.get("seq")] = live.read(value_reads)
 
         if observe is not None:
             time.sleep(settle)
             trees["end"] = [t for _h, t in live.windows()]
+            if value_reads:
+                values_seen["end"] = live.read(value_reads)
     finally:
         if proc.poll() is None:
             proc.terminate()
@@ -708,7 +881,26 @@ def _yaml(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def judge_case(case: dict, windows: list[dict] | None) -> dict:
+def judge_value(case: dict, out: dict, values: dict | None) -> dict:
+    """A `value` case: the live text of the one control `selector` names (its UI Automation Name
+    and Value) contains `contains` (a computed result: the display of a calculator, a total).
+    The expected text is the owner's (the scenario's expected result), judge side; the live text
+    is the rebuild's and is not kept."""
+    sel, want = case.get("selector"), case.get("contains")
+    if not isinstance(sel, str) or not sel.startswith("uia:") or not isinstance(want, (str, int, float)):
+        return {**out, "status": "BLOCKED", "note": "a value case needs selector: uia:... and contains: <text>"}
+    if values is None:
+        return {**out, "status": "BLOCKED", "note": f"step {out['after']} did not run"}
+    texts = values.get(sel) or []
+    if len(texts) != 1:
+        return {**out, "status": "BLOCKED" if len(texts) > 1 else "FAIL",
+                "note": f"{sel} matches {len(texts)} controls" + ("; not choosing one" if len(texts) > 1 else "")}
+    if str(want) in texts[0]:
+        return {**out, "status": "PASS"}
+    return {**out, "status": "FAIL", "note": f"{sel} does not show {want!r}"}
+
+
+def judge_case(case: dict, windows: list[dict] | None, values: dict | None = None) -> dict:
     """One acceptance case on the live windows' trees (value-free, as `_Live.windows` gives
     them): {id, check, required, after, status (PASS | FAIL | BLOCKED), note}."""
     require_modules()
@@ -722,8 +914,10 @@ def judge_case(case: dict, windows: list[dict] | None) -> dict:
             or expect not in ("present", "absent", "enabled", "disabled")):
         return {**out, "status": "BLOCKED",
                 "note": "a desktop case needs selector: uia:... and expect: present, absent, enabled or disabled"}
+    if out["check"] == "value":
+        return judge_value(case, out, values)
     if out["check"] == "window":
-        want = locator.parse(sel)
+        want = window_wanted(sel)
         hits = [(t, ()) for t in windows if locator.matches(t, want)]
     elif out["check"] == "control":
         hits = [h for t in windows for h in locator.find(t, sel)]
@@ -745,7 +939,7 @@ def judge_case(case: dict, windows: list[dict] | None) -> dict:
     return {**out, "status": "FAIL", "note": f"{sel}: expected {expect}, found {len(hits)} match(es){state}"}
 
 
-def judge_cases(decl: list[dict], trees: dict) -> list[dict]:
+def judge_cases(decl: list[dict], trees: dict, values: dict | None = None) -> list[dict]:
     out = []
     for n, case in enumerate(decl, 1):
         case = {"id": f"case-{n}", **case}
@@ -759,7 +953,7 @@ def judge_cases(decl: list[dict], trees: dict) -> list[dict]:
                             "required": bool(case.get("required", True)), "after": str(after), "status": "BLOCKED",
                             "note": f"after: {after!r} is neither a step number nor end"})
                 continue
-        out.append(judge_case(case, trees.get(key)))
+        out.append(judge_case(case, trees.get(key), (values or {}).get(key)))
     return out
 
 
@@ -807,6 +1001,18 @@ def replay(recording: Path, exe: str) -> dict:
             after.add(int(c.get("after")))
         except (TypeError, ValueError):
             pass
-    observe = {"after": after}
+    reads = sorted({c["selector"] for c in decl if c.get("check") == "value" and isinstance(c.get("selector"), str)})
+    observe = {"after": after, "read": reads}
     report = verify(exe, folder, values=values_of(folder), observe=observe)
-    return finish(report, judge_cases(decl, observe.get("trees") or {}))
+    out = finish(report, judge_cases(decl, observe.get("trees") or {}, observe.get("values") or {}))
+    if framed(folder):
+        out["categories"]["replay"]["note"] += (
+            "; a modern (UWP / WinUI) application's window: the frame host's layers and the "
+            "controls' toolkit classes (ClassName, FrameworkId) are not compared")
+    return out
+
+
+def framed(folder: Path) -> bool:
+    """Whether a desktop recording's windows are a frame host's (a modern application)."""
+    rec = Recording(Path(folder))
+    return any((rec.tree(s.get("tree")) or {}).get("framed") for s in rec.steps[:5])

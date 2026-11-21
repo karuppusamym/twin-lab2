@@ -11,10 +11,12 @@ import http.client
 import json
 from pathlib import Path
 import re
+import sys
 from urllib.parse import urlsplit, urlunsplit
 import urllib.request
 
 
+from twinlab2 import acceptance_checks
 from twinlab2 import audit
 from twinlab2 import auth
 from twinlab2 import artifacts
@@ -118,6 +120,11 @@ def record_test(connection, release_id, commit, platform, launch, reset_result, 
         raise LookupError("No such release.")
     if release["state"] == "published":
         raise ValueError("A published release is final: package a new version to test again.")
+    if tested and method != "twinlab" and "build_id" in release.keys() and release["build_id"]:
+        # a provider finishing is "Ready for verification", never acceptance: only Verify's
+        # independent checks make a build session's release Tested
+        raise ValueError("This release comes from build session #" + str(release["build_id"]) + ": it becomes "
+                         "Tested only through Verify, not by recording results by hand.")
     if (commit or "").strip().lower() != release["commit_sha"]:
         raise ValueError("The tested commit must be the packaged commit " + release["commit_sha"] + ".")
     platform, launch = (platform or "").strip(), (launch or "").strip()
@@ -367,6 +374,16 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
         reasons += twin.get("problems") or []
     if progress is not None:
         progress.stage("recording the results")
+    if twin is not None and plan.get("desktop"):
+        taken = commit_checks.accept_verifier(
+            gate, platform=sys.platform, opted_in=os.environ.get("TWINLAB2_DESKTOP_VERIFY") == "1",
+            release_commit=sha, built_commit=deployment["reported_commit"], desktop=plan["desktop"], twin=twin)
+        if taken is not gate:
+            gate = taken
+            reasons = [r for r in reasons if not r.startswith("Windows validation")]
+            audit.record(connection, user, "release.windows_validation", "release", release_id,
+                         app_id=release["app_id"], satisfied_by="verifier", commit=sha,
+                         verifier=sys.platform, executable=Path(plan["desktop"]).name)
     tested, scope = False, None
     platform = commit_checks.PLATFORMS.get(app["target_platform"], app["target_platform"]) if app["target_platform"] else ""
     if twin is not None:  # what the replay covered, Tested or not
@@ -374,6 +391,13 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
         scope = verified_scope(sha, platform, user, role, "twinlab",
                                [{"id": s["id"], "name": s["name"], "result": s["result"]} for s in twin["scenarios"]],
                                where, registry.now())
+    session_commit = None
+    if "build_id" in release.keys() and release["build_id"]:
+        built = connection.execute("SELECT head_sha FROM builds WHERE id = ?", (release["build_id"],)).fetchone()
+        session_commit = (built["head_sha"] or "") if built else ""
+    checks = acceptance_checks.build(
+        gate=gate, sha=sha, deployment=deployment, session_commit=session_commit, twin=twin, manifest=manifest,
+        dims=(twin or {}).get("dimensions") or independent.dimensions([], []))
     if twin is not None and not twin.get("problems"):
         reset = twin["reset"] or {}
         # Tested only when all of it holds: every scenario passed and the reset restored the
@@ -382,6 +406,8 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
                 for s in twin["scenarios"] if s["result"] != "pass"]
         if reset.get("result") == "fail":
             held.append("The reset check failed: " + (reset.get("notes") or "no notes") + ".")
+        held += [f"{c['label']}: {c['detail']}." for c in acceptance_checks.blocking(checks)
+                 if c["id"] in ("commit_identity", "persistence", "failure_scenarios", "visual_coverage")]
         try:
             scope = record_test(connection, release_id, sha, platform, app["launch"], reset.get("result"),
                                 reset.get("notes"), {s["id"]: s["result"] for s in twin["scenarios"]}, user,
@@ -416,6 +442,8 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
         "scope": scope,
         # the results per dimension, each with what it covered
         "dimensions": dims,
+        # each acceptance check on its own (acceptance_checks.py)
+        "checks": checks,
     }
     digest = commit_checks.put_report(connection, release_id, report)
     row = connection.execute("SELECT id FROM release_artifacts WHERE release_id = ? AND kind = 'verification_report' "
@@ -756,5 +784,6 @@ if __name__ == "__main__":
         import uvicorn
 
         os.environ["DATABASE_URL"] = str(args.database)
+        os.environ["TWINLAB2_BIND_HOST"] = args.host  # app.bind_host: the startup check of the address
         uvicorn.run("twinlab2.app:asgi", factory=True, host=args.host, port=args.port, reload=args.reload,
                     proxy_headers=False)

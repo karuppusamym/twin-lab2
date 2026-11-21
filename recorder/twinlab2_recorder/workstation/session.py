@@ -229,6 +229,13 @@ class Session:
         self.isolated = os.environ.get("TWINLAB_COLLECTORS", "processes") != "threads"
         self.supervisor = None
         self.web_part = 0  # web parts already recorded (a restarted web collector goes on)
+        # Paused by the window (twinlab2_recorder.workstation.pause): nothing is captured meanwhile.
+        self.pause_flag = None
+        self._pauses = None
+
+    def paused(self) -> bool:
+        flag = self.pause_flag
+        return bool(flag is not None and flag())
 
     # -- journal ---------------------------------------------------------------------------------
 
@@ -339,7 +346,8 @@ class Session:
                 "targets": self.targets.as_list(), "deny_keys": sorted(self.targets.deny_keys),
                 "channels": self.requested_channels(), "apps": self.apps, "notes": self.notes,
                 "local_policy": _policy_facts(self.targets.exclude),
-                **({"preflight": self.preflight} if self.preflight else {})}  # fmt: skip
+                **({"preflight": self.preflight} if self.preflight else {}),
+                **({"pauses": self._pauses.close()} if self._pauses is not None and state != "recording" else {})}  # fmt: skip
 
     # -- stopping ------------------------------------------------------------------------------
 
@@ -434,6 +442,10 @@ class Session:
         cache, added = self._cache, self._added
         last_pid, next_scan = None, 0.0
         while not self.stopping():
+            if self.paused():  # not even that another application was used
+                last_pid = None
+                time.sleep(0.2)
+                continue
             try:
                 now = time.monotonic()
                 if now >= next_scan:
@@ -595,7 +607,7 @@ class Session:
 
     def _web_journals(self) -> dict:
         return {"journal": self.capture.get("web"), "network_journal": self.capture.get("network"),
-                "exclude": self.excluded_url if self.targets.exclude else None}
+                "exclude": self.excluded_url if self.targets.exclude else None, "paused": self.paused}  # fmt: skip
 
     def _web_ready(self, gone_at: str | None) -> None:
         """The web recorder listens: its channels are capturing (again, after `gone_at`)."""
@@ -616,6 +628,13 @@ class Session:
             ch: capture.Journal(capture.path_of(self.folder, ch), ch)
             for ch in self.requested_channels()}  # fmt: skip
         _write_json(self.folder / "session.json", self._meta("recording"))
+        from twinlab2_recorder.workstation import pause
+
+        self.pause_flag = pause.PauseFlag(self.folder)
+        self._pauses = pause.Pauses(self.journal)
+        self.pause_flag.on_change(self._pauses.changed)
+        if self.pause_flag.paused:
+            self._pauses.changed(True)
         threads = []
         desktop_targets = [t for t in self.targets.targets if not t.origin and not t.tn3270]
         started_procs = []
@@ -684,6 +703,9 @@ class Session:
                 _end_process_tree(p)
             for ch, j in self.capture.items():
                 j.close(clean=ch not in self.failed)
+            if self.pause_flag is not None:
+                self.pause_flag.stop()
+                (self.folder / pause.FILE).unlink(missing_ok=True)
             meta = self._meta("stopped")
             if self.channel_status is not None:
                 try:
@@ -733,11 +755,11 @@ class Session:
             try:
                 proxy = tn3270.Proxy(host, int(port), self.folder / "mainframe", listen=wanted,
                                      tls=t.tls, app_key=t.key, stop=self.stopping,
-                                     journal=journal)  # fmt: skip
+                                     journal=journal, paused=self.paused)  # fmt: skip
             except OSError:
                 proxy = tn3270.Proxy(host, int(port), self.folder / "mainframe", listen=0,
                                      tls=t.tls, app_key=t.key, stop=self.stopping,
-                                     journal=journal)  # fmt: skip
+                                     journal=journal, paused=self.paused)  # fmt: skip
                 self.note(f"port {wanted} was taken: the terminal connects to {proxy.address}")
             proxy.start()
             self._channel_open("mainframe")
@@ -773,9 +795,10 @@ class Session:
 
     def desktop_exclusions(self) -> dict:
         """The desktop recorder's hooks into the exclude list (none without one)."""
+        pause = {"paused": self.paused}
         if not self.targets.exclude:
-            return {}
-        return {"exclude_window": self.excluded_window, "exclusion_masks": self.exclusion_masks}
+            return pause
+        return {"exclude_window": self.excluded_window, "exclusion_masks": self.exclusion_masks, **pause}
 
     def _script(self, script, failure: list) -> None:
         try:

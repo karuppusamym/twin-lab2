@@ -52,6 +52,7 @@ import re
 import subprocess
 import sys
 import tempfile  # noqa: F401 - kept for callers that patch it
+import time
 import uuid
 
 from twinlab2 import artifacts
@@ -521,8 +522,9 @@ def propose_scope_change(db, build, text, user, key, reply_to):
     """An answer that changes agreed behaviour: a new proposed scenario, so the application's draft
     package changes and an owner must review and approve a new revision. The revision this
     session builds is untouched, and nothing is sent to the provider."""
-    from twinlab2 import scenarios
+    from twinlab2 import readiness_cache, scenarios
 
+    readiness_cache.forget(db, build["app_id"])
     stamp = now()
     name = f"Agreed in build session #{build['id']}"[:200]
     cursor = db.execute(
@@ -659,7 +661,30 @@ def spec_of(db, build):
         workspace=Path(build["workspace"] or workspace_dir(db, build["id"])), model=build["model"],
         budget=build["budget"] if build["budget"] is not None else build["acu_budget"],
         budget_unit=build["budget_unit"], tag=build["idempotency_tag"],
-        title=f"TwinLab2 build {build['id']} (attempt {build['attempt']})", attempt=build["attempt"])
+        title=f"TwinLab2 build {build['id']} (attempt {build['attempt']})", attempt=build["attempt"],
+        generation=int(build["runner_generation"] or 1))
+
+
+def grant_lease(db, build_id, generation, reason):
+    """Record runner generation `generation` of a build. For a successor, the guarded update makes
+    the grant exclusive: of two workers that both saw the runner go stale, one wins; False for the
+    other (and for a generation granted before)."""
+    stamp = now()
+    if generation > 1:
+        won = db.execute("UPDATE builds SET runner_generation = ?, updated_at = ? WHERE id = ? AND runner_generation = ?",
+                         (generation, stamp, build_id, generation - 1)).rowcount
+        if won != 1:
+            db.commit()
+            return False
+    db.execute("INSERT INTO runner_leases (build_id, generation, granted_at, reason) VALUES (?, ?, ?, ?) "
+               "ON CONFLICT (build_id, generation) DO NOTHING", (build_id, generation, stamp, reason))
+    db.commit()
+    return True
+
+
+def leases(db, build_id):
+    return [dict(r) for r in db.execute("SELECT * FROM runner_leases WHERE build_id = ? ORDER BY generation",
+                                        (build_id,)).fetchall()]
 
 
 def _bind(db, adapter, build, started):
@@ -780,6 +805,7 @@ def start(db, ctx, adapter, build):
     db.commit()
     if claimed != 1:
         return again(1)
+    grant_lease(db, build["id"], spec.generation, "start")
     try:
         started = adapter.start(spec, _state(build))
     except base.ProviderError as exc:
@@ -837,6 +863,19 @@ def poll(db, ctx, adapter, build):
         _update(db, build["id"], note=adapter.explain(exc))
         return again(ctx.poll_seconds * (4 if exc.auth else 1))
     record_events(db, build, snap.events)
+    if snap.rejected:
+        db.execute("UPDATE builds SET runner_rejected = runner_rejected + ? WHERE id = ?", (snap.rejected, build["id"]))
+        db.commit()
+    if snap.restart:
+        generation = int(build["runner_generation"] or 1) + 1
+        if grant_lease(db, build["id"], generation, "the runner stopped answering"):
+            restarts = int(_state(build).get("restarts", 0)) + 1
+            snap.state_update = {**(snap.state_update or {}), "restarts": restarts, "lease_at": time.time()}
+            try:
+                adapter.relaunch(dict(get(db, build["id"])), generation)
+            except base.ProviderError as exc:
+                snap.note = f"Could not start runner generation {generation}: {adapter.explain(exc)}"
+        build = get(db, build["id"])
     if adapter.has(base.ACKNOWLEDGE):
         db.execute("UPDATE build_messages SET state = 'delivery_uncertain', error = ?, updated_at = ? "
                    "WHERE build_id = ? AND state = 'sent' AND updated_at < ?",

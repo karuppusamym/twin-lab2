@@ -116,6 +116,24 @@ def self_made_selection(sel: dict, last: dict | None, popup: bool = False) -> bo
     return not (containers & {a_rid, *a_ancestors})
 
 
+SCRIPT_SELECT_S = 1.0  # a selection this long after a scripted action is the script's own step
+
+
+def scripted_selection(t: float, last: dict | None) -> bool:
+    """Whether a selection that `self_made_selection` would give to the application is a step of
+    a script (an accessibility tool, a robot or a test driving the application through UI
+    Automation patterns): the user's last action came from a pattern event with no mouse or key
+    behind it (`via` uia-..., not `mouse`), and the selection came at least SCRIPT_SELECT_S after
+    it. An application selects by itself at once, while it handles the action (a grid selecting
+    its row again after Save); a script that opens a navigation pane, waits, then selects one of
+    its items (Windows Calculator's modes) acts a moment later, with no input in between."""
+    action = (last or {}).get("action")
+    if not isinstance(action, dict) or action.get("mouse"):
+        return False
+    via = str(action.get("via") or "")
+    return via.startswith("uia-") and t - float(last.get("t") or 0) >= SCRIPT_SELECT_S
+
+
 def order_batch(batch: list[dict]) -> list[dict]:
     """The actions of one batch in the order they happened: by time, where the time of an
     action is the user's input (the mouse press, the key press) when there was one.
@@ -357,7 +375,8 @@ class Recorder:
                  unfocused_values: bool = False, journal=None,
                  resume: bool = False,
                  exclude_window: Callable[[int], str | None] | None = None,
-                 exclusion_masks: Callable[[int], list | None] | None = None) -> None:  # fmt: skip
+                 exclusion_masks: Callable[[int], list | None] | None = None,
+                 paused: Callable[[], bool] | None = None) -> None:  # fmt: skip
         require()
         from twinlab2_recorder.desktop import win
 
@@ -383,6 +402,9 @@ class Recorder:
         self.exclude_window = exclude_window
         self.exclusion_masks = exclusion_masks
         self.excluded_events = 0  # counted, never described
+        # A paused session (twinlab2_recorder.workstation.pause): no event is taken, no element or
+        # window read, until it resumes.
+        self.paused_fn = paused
         # A robot (UiPath's Simulate input) sets values without the keyboard focus: in a session
         # recording one, such a change is a step too.
         self.unfocused_values = unfocused_values
@@ -471,10 +493,20 @@ class Recorder:
         self.refused.add(pid)
         return False
 
+    def _is_paused(self) -> bool:
+        fn = getattr(self, "paused_fn", None)
+        return bool(fn is not None and fn())
+
+    def _wanted_now(self, pid: int) -> bool:
+        """The hooks' question: nothing is wanted while the session is paused."""
+        return not self._is_paused() and self._wanted(pid)
+
     def _level(self, pid: int | None) -> str:
         return self.levels.get(pid, "full") if pid is not None else "full"
 
     def _ours(self, el) -> bool:
+        if self._is_paused():
+            return False
         try:
             return self._wanted(el.CurrentProcessId)
         except Exception:  # noqa: BLE001
@@ -588,7 +620,7 @@ class Recorder:
                     el = win.click_target(win.element_from_point(x, y))
                     return el, win.describe_now(el, hwnd or 0)
 
-                hooks = _Hooks(self.q, self._wanted, resolve)
+                hooks = _Hooks(self.q, self._wanted_now, resolve)
                 hooks.start()
                 hooks.ready.wait(5)
                 if hooks.failed:
@@ -596,6 +628,7 @@ class Recorder:
                                       "and key chords are not recorded, only pattern events")  # fmt: skip
             started = time.monotonic()
             next_poll = 0.0
+            was_paused = False
             try:
                 while True:
                     now = time.monotonic()
@@ -604,20 +637,29 @@ class Recorder:
                     if now - started > self.max_seconds:
                         self.notes.append(f"stopped after max_seconds={self.max_seconds:.0f}")
                         break
+                    if self._is_paused():
+                        if not was_paused:  # what was under way began before the pause
+                            was_paused = True
+                            self._guarded("handling an event", self._drain)
+                            self._guarded("writing a step", lambda: self._finish(force=True))
+                        self._discard()
+                        time.sleep(0.05)
+                        continue
+                    was_paused = False
                     if now >= next_poll:
                         next_poll = now + POLL_S
                         self._take_added()
                         if not self.session and not any(win.alive(p) for p in self.pids):
                             break
-                        self._poll_windows()
-                    self._drain()
-                    self._finish(force=False)
+                        self._guarded("reading the windows", self._poll_windows)
+                    self._guarded("handling an event", self._drain)
+                    self._guarded("writing a step", lambda: self._finish(force=False))
                     time.sleep(0.02)
             except KeyboardInterrupt:
                 self.notes.append("stopped with Ctrl+C")
             time.sleep(0.2)
-            self._drain()
-            self._finish(force=True)
+            self._guarded("handling an event", self._drain)
+            self._guarded("writing a step", lambda: self._finish(force=True))
         finally:
             if hooks is not None:
                 hooks.stop()
@@ -628,6 +670,23 @@ class Recorder:
             self.file.close()
             self._write_session()
         return self.out
+
+    def _guarded(self, what: str, fn: Callable[[], None]) -> bool:
+        """One part of the recording loop. A call into UI Automation or a window that fails
+        (the application closed while it was read) loses at most what that call was handling:
+        it is counted, each kind of failure noted once in `desktop.json`, and the recording goes
+        on, instead of the whole channel ending on the error. -> whether it ran cleanly."""
+        try:
+            fn()
+            return True
+        except Exception as exc:  # noqa: BLE001 - noted; the recording goes on
+            failures = self.__dict__.setdefault("loop_failures", {})
+            key = f"{what}: {type(exc).__name__}"
+            failures[key] = failures.get(key, 0) + 1
+            if failures[key] == 1:
+                self.notes.append(f"a call failed while {key} ({str(exc)[:160]}); what it was "
+                                  "handling is not recorded, the recording went on")  # fmt: skip
+            return False
 
     @staticmethod
     def _system() -> dict:
@@ -786,6 +845,14 @@ class Recorder:
         self.pending.append(action)
         self.last_activity = time.monotonic()
 
+    def _discard(self) -> None:
+        """Drop what came in while paused (an event already on its way): nothing is read."""
+        while True:
+            try:
+                self.q.get_nowait()
+            except queue.Empty:
+                return
+
     def _drain(self) -> None:
         win = self.win
         while True:
@@ -856,6 +923,8 @@ class Recorder:
         types = desc.get("ancestor_types") or []
         popup = desc.get("window") in getattr(self, "popup_owner", {}) or not types
         if last is None or not self_made_selection(desc, last["desc"], popup):
+            return False
+        if scripted_selection(ev["t"], last):
             return False
         cause = last.get("action")
         if cause is None or not any(a is cause for a in self.pending):
@@ -1437,6 +1506,10 @@ class Recorder:
         if self.effects_unplaced:
             self.notes.append(f"{self.effects_unplaced} selection(s) the application made by "
                               "itself, after the step before them was written: not recorded")  # fmt: skip
+        again = {k: n for k, n in self.__dict__.get("loop_failures", {}).items() if n > 1}
+        if again:
+            self.notes.append("calls that failed more than once: " +
+                              "; ".join(f"{k} ({n} times)" for k, n in sorted(again.items())))  # fmt: skip
         doc = {
             "format": FORMAT,
             "surface": SURFACE,

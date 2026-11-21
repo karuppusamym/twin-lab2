@@ -34,6 +34,7 @@ const PAGES: [path: string, heading: RegExp, who?: Who][] = [
   ["/setup", /^Setup$/],
   ["/setup/builds", /Build sessions: Setup/, "admin"],
   ["/admin/users", /Users and portal admins/, "admin"],
+  ["/admin/operations", /^Operations$/, "admin"],
   ["/no/such/page", /Not found/],
 ];
 
@@ -66,6 +67,8 @@ describe("every page", () => {
     await waitFor(() => expect(screen.getByTestId("verification")).toHaveTextContent(/Passed: Tested/), { timeout: 8000 });
     const dims = screen.getByRole("table", { name: "Verification by dimension" });
     expect(dims).toHaveTextContent(/Behavioural.*pass.*Structural.*title line and input fields.*Visual.*not-checked.*Deployment/);
+    const checks = screen.getByRole("table", { name: "Acceptance checks" });
+    expect(checks).toHaveTextContent(/Exact commit identity.*pass.*Fixture reset.*pass.*Data persists across a restart.*pass.*Failure scenarios.*pass.*Visual coverage \(does not decide\).*not-checked/);
     expect(screen.getByRole("link", { name: "Report of this verification" })).toHaveAttribute("href", "/api/v1/releases/5/reports/31");
   }, 15000);
 

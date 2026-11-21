@@ -239,6 +239,7 @@ def build(state, scale=False):
         "TWINLAB2_GITHUB_TOKEN": builds_github.token, "TWINLAB2_GITHUB_API": builds_github.url,
         "TWINLAB2_WORKSPACES": str(state / "workspaces"), "TWINLAB2_STATE": str(state),
         "TWINLAB2_DEV_WORKER": "0", "TWINLAB2_SECRET_KEY": "demo-only", "TWINLAB2_HOSTS": "localhost,127.0.0.1",
+        "TWINLAB2_BIND_HOST": "127.0.0.1",  # uvicorn.run below listens there
         # everyone signs in with their own password (alice, bob, vera), even on this machine
         "TWINLAB2_AUTH_MODE": "individual",
         # a demo portal: the stand-in build provider is offered on the Build page
@@ -308,7 +309,7 @@ def main():
 
 
 def release(app, billing, build_id, deployment):
-    """Billing's build verified on its commit (Tested), its test results recorded, published."""
+    """Billing's build verified on its commit (Tested through Verify), then published."""
     from support import Client
 
     alice = Client(app, remote="10.0.0.9")
@@ -319,11 +320,10 @@ def release(app, billing, build_id, deployment):
     release_id = outcome["release_id"]
     check(alice.put(f"/api/v1/releases/{release_id}/deployments", json={"environment": "Demo", "url": deployment.url}))
     finished(alice, check(alice.post(f"/api/v1/releases/{release_id}/verify"), 202))
-    detail = check(alice.get(f"/api/v1/releases/{release_id}"))
-    verified = detail
-    check(alice.post(f"/api/v1/releases/{release_id}/tests", json={
-        "commit": SHA, "platform": "Web", "launch": "python run.py", "reset_result": "pass",
-        "results": {s["id"]: "pass" for s in detail["scenarios"]}}))
+    verified = check(alice.get(f"/api/v1/releases/{release_id}"))
+    # a build session's release is Tested only through Verify (never by hand-recorded results)
+    if verified["release"]["state"] != "tested":
+        raise SystemExit(f"seeding failed: Verify left Billing's release {verified['release']['state']}")
     check(alice.post(f"/api/v1/releases/{release_id}/publish"))
     print(f"Billing release {release_id}: {verified['release']['state']}, then published", flush=True)
 

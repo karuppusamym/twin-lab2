@@ -14,6 +14,10 @@ A 1.5 recorder may say that the PC's own exclude list kept applications out of t
 (`local_exclusions`: how many, and the names of the exclude entries, never a title or address).
 That is not a gap and does not make a recording partial: the pages say "N applications excluded on
 this PC" so that the missing activity is not taken for a failure.
+
+A 1.7 recorder may say that the person paused the recording (`paused`: how many times, for how
+long, and each period). Nothing was captured meanwhile, by their choice: not a gap either, and
+the pages say "Paused twice, for 3 min 21 s in all".
 """
 
 from __future__ import annotations
@@ -59,7 +63,59 @@ def clean(doc) -> dict | None:
     local = clean_exclusions(doc.get("local_exclusions"))
     if local is not None:
         out["local_exclusions"] = local
+    paused = clean_paused(doc.get("paused"))
+    if paused is not None:
+        out["paused"] = paused
     return out
+
+
+def _seconds(value) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        return round(float(value), 1)
+    return None
+
+
+def clean_paused(doc) -> dict | None:
+    """`paused` (contract 1.7) in the stored form: how many pauses, their seconds in all, and
+    the periods with a valid start and end (at most 50). None when there was no pause."""
+    if not isinstance(doc, dict):
+        return None
+    periods = []
+    for p in doc.get("periods") or []:
+        if not isinstance(p, dict) or not parse(p.get("from")) or not parse(p.get("to")):
+            continue
+        seconds = _seconds(p.get("seconds"))
+        if seconds is None:
+            seconds = round(max(0.0, (parse(p["to"]) - parse(p["from"])).total_seconds()), 1)
+        periods.append({"from": p["from"], "to": p["to"], "seconds": seconds})
+    periods = periods[:50]
+    count = max(_count(doc.get("count")) or 0, len(periods))
+    if not count:
+        return None
+    total = _seconds(doc.get("seconds"))
+    if total is None:
+        total = round(sum(p["seconds"] for p in periods), 1)
+    return {"count": count, "seconds": total, "periods": periods}
+
+
+def duration_text(seconds: float) -> str:
+    """"45 s", "3 min 21 s", "1 h 2 min"."""
+    s = int(round(seconds))
+    if s < 60:
+        return f"{s} s"
+    if s < 3600:
+        return f"{s // 60} min" + (f" {s % 60} s" if s % 60 else "")
+    return f"{s // 3600} h" + (f" {s % 3600 // 60} min" if s % 3600 // 60 else "")
+
+
+def paused_text(data) -> str | None:
+    """"paused once, for 45 s" / "paused 3 times, for 3 min 21 s in all", or None."""
+    paused = (data or {}).get("paused")
+    if not paused or not paused.get("count"):
+        return None
+    n = paused["count"]
+    times = {1: "once", 2: "twice"}.get(n, f"{n} times")
+    return f"paused {times}, for {duration_text(paused.get('seconds') or 0)}" + (" in all" if n > 1 else "")
 
 
 def _count(value) -> int | None:
@@ -142,6 +198,9 @@ def summary(data) -> str:
     excluded = exclusions_text(data)
     if excluded:
         parts.append(excluded)
+    paused = paused_text(data)
+    if paused:
+        parts.append(paused)
     text = "; ".join(parts) or f"Recording {data['overall']}"
     return text[0].upper() + text[1:]
 

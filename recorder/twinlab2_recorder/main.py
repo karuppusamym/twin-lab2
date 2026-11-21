@@ -15,9 +15,14 @@
     TwinLabRecorder upload <session-id>  queue the recorded session for upload and send the queue
     TwinLabRecorder uploads              send what is queued (resuming), and show the queue
     TwinLabRecorder recover              finalise sessions an earlier run left unfinished
+    TwinLabRecorder update [--install]   a newer version from the portal (twinlab2_recorder.updater)
+    TwinLabRecorder policy [--url URL]   the machine policy and network settings in effect
+    TwinLabRecorder selfcheck            every module of this build imports (IT, after installing)
+    TwinLabRecorder cleanup [--all-users] delete the recorder's data (the MSI's uninstall runs this)
 
 Options for every command: `--portable-data` (keep everything in `data\\` beside the program),
-`--ca-bundle FILE` (a private certificate authority for the portal).
+`--ca-bundle FILE` (a private certificate authority for the portal), `--proxy URL|direct|system`.
+The office's machine policy (twinlab2_recorder.policy) wins over both.
 
 The recordings stay in the data folder. The references go to the portal only when the person
 agrees; a recording itself only when the person uploads it (`upload`), through the offline queue
@@ -31,15 +36,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import random
 import re
-import subprocess
 import sys
-import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 if __package__ in (None, ""):  # run as a script: python recorder/twinlab2_recorder/main.py
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -47,11 +47,9 @@ if __package__ in (None, ""):  # run as a script: python recorder/twinlab2_recor
         sys.path.insert(1, str(Path(__file__).resolve().parents[2] / "contract"))
 
 from twinlab2_recorder import settings as st  # noqa: E402
-from twinlab2_recorder import ui_model as ui  # noqa: E402
-from twinlab2_recorder.uithread import (Dispatcher, Job, Jobs, clear_ui_thread, mark_ui_thread,  # noqa: E402
-                                        wait_process)
 from twinlab2_recorder.client import Portal, PortalError, check_portal  # noqa: E402
 from twinlab2_recorder.upload_queue import UploadQueue, describe as describe_upload  # noqa: E402
+from twinlab2_recorder import updater  # noqa: E402
 from twinlab2_contract import recorder_contract as contract  # noqa: E402
 from twinlab2_contract.upstream import UPSTREAM_COMMIT  # noqa: E402
 
@@ -67,9 +65,15 @@ def _build_info() -> dict:
 
 
 def _portal(cfg: st.Settings, ca_bundle: str | None) -> Portal:
+    from twinlab2_recorder import policy
+
     if not cfg.values.get("portal") or not cfg.token():
         raise PortalError("this machine is not paired: run `TwinLabRecorder pair` first")
-    return Portal(cfg.values["portal"], cfg.token(), ca_bundle)
+    try:
+        policy.check_portal_allowed(policy.load(), cfg.values["portal"])
+    except PortalError as exc:
+        raise PortalError(f"{exc}: pair this PC again with that portal") from exc
+    return Portal(cfg.values["portal"], cfg.token(), ca_bundle, proxy=cfg.values.get("proxy"))
 
 
 # --- sessions ---------------------------------------------------------------------------------------
@@ -193,7 +197,13 @@ def run_session(cfg: st.Settings, conf: dict, script=None, parent_pid: int | Non
                 cdp=conf.get("cdp") or None, browser=conf.get("browser") or None,
                 pictures=bool(conf.get("pictures")), robot=conf.get("robot", True) is not False,
                 parent_pid=parent_pid, preflight=pre)  # fmt: skip
-    return s.run(script=script)
+    from twinlab2_recorder import updater
+
+    updater.take_lock(cfg.folder)  # no update is installed while this records
+    try:
+        return s.run(script=script)
+    finally:
+        updater.release_lock(cfg.folder)
 
 
 def outbox(cfg: st.Settings, session_id: str) -> dict:
@@ -396,884 +406,61 @@ def _hide_own_console() -> None:
             ctypes.windll.user32.ShowWindow(window, 0)
 
 
-STOP_WAIT_S = 120  # how long closing the window waits for a recording to finish
-IDLE = "Not recording. Choose a session and press Start."
-EXCLUDE_KINDS = ["Program", "Window title", "Web site"]
-EXCLUDE_KIND_OF = {"Program": "process", "Window title": "title", "Web site": "web"}
-EXCLUDE_HINTS = {
-    "Program": "A program's file name, such as WINWORD.EXE or EXCEL.EXE (* matches anything: adobe*.exe).",
-    "Window title": "Words in a window's title, such as Personal; or a whole title with *, such as * - Excel.",
-    "Web site": "A host, such as mail.google.com (its subdomains too), or an address prefix, such as "
-                "https://intranet.example.com/hr/.",
-}
+def window_parts() -> str:
+    """Whether this build can show its window (pywebview, its WebView2 backend, the page), without
+    opening one: `TwinLabRecorder version` prints it."""
+    from twinlab2_recorder import webwindow
+
+    if not (webwindow.UI / "index.html").is_file():
+        return "missing: the page (twinlab2_recorder/ui)"
+    try:
+        import webview
+    except ImportError as exc:
+        return f"missing: pywebview ({exc})"
+    if sys.platform == "win32":
+        try:
+            import webview.platforms.edgechromium  # noqa: F401 - loads pythonnet and WebView2's loader
+        except Exception as exc:  # noqa: BLE001 - reported
+            return f"missing: Edge WebView2 support ({type(exc).__name__}: {exc})"
+    from importlib import metadata
+
+    try:
+        version = metadata.version("pywebview")
+    except metadata.PackageNotFoundError:  # frozen: no package metadata
+        version = getattr(webview, "__version__", "")
+    return f"pywebview {version}".strip() + f", page {webwindow.UI.name}/index.html"
 
 
-def choose_from_list(root, title: str, prompt: str, items: list[str]) -> list[str] | None:
-    """A small modal list to choose several items from; None when cancelled."""
-    import tkinter as tk
-    from tkinter import ttk
+def dpi_aware() -> float:
+    """Declare this process DPI-aware before its first window, so Windows does not stretch the
+    window as a bitmap (blurred text, and PrintWindow shows it in a corner of a larger frame at
+    150 %). -> the scale of the primary display (1.0 at 96 dpi, 1.5 at 144 dpi). Only the
+    window's process: the collectors run in processes of their own."""
+    if sys.platform != "win32":
+        return 1.0
+    import ctypes
 
-    dlg = tk.Toplevel(root)
-    dlg.title(title)
-    dlg.transient(root)
-    dlg.geometry("380x360")
-    ttk.Label(dlg, text=prompt, wraplength=350, justify="left", padding=8).pack(fill="x")
-    box = tk.Listbox(dlg, selectmode="extended", exportselection=False)
-    for item in items:
-        box.insert("end", item)
-    box.pack(fill="both", expand=True, padx=8)
-    got: dict = {"items": None}
-
-    def ok():
-        got["items"] = [items[i] for i in box.curselection()]
-        dlg.destroy()
-
-    row = ttk.Frame(dlg, padding=8)
-    row.pack(fill="x")
-    ttk.Button(row, text="Exclude selected", command=ok).pack(side="right")
-    ttk.Button(row, text="Cancel", command=dlg.destroy).pack(side="right", padx=6)
-    dlg.grab_set()
-    root.wait_window(dlg)
-    return got["items"]
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per monitor
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()  # Windows 7: the system DPI
+        except (AttributeError, OSError):
+            return 1.0
+    try:
+        dpi = int(ctypes.windll.user32.GetDpiForSystem())
+    except (AttributeError, OSError, ValueError):
+        return 1.0
+    return max(1.0, dpi / 96.0)
 
 
 def gui(cfg: st.Settings, ca_bundle: str | None) -> None:
-    import tkinter as tk
+    """The window: twinlab2_recorder.app (what it does) in WebView2 (twinlab2_recorder.webwindow)."""
+    from twinlab2_recorder import webwindow
 
     _hide_own_console()
-    root = tk.Tk()
-    build_window(cfg, ca_bundle, root)
-    root.mainloop()
-
-
-def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespace:  # noqa: C901 - one window
-    """The recorder's window in `root`. Nothing here waits: portal calls, sending, uploads and
-    finishing a recording run as background jobs (twinlab2_recorder.uithread), whose results come
-    back through the dispatcher drained on this thread. Returns the window's parts (tests)."""
-    import tkinter as tk
-    from tkinter import messagebox, simpledialog, ttk
-
-    mark_ui_thread()
-    dispatcher = Dispatcher()
-    root.title("TwinLab Recorder")
-    root.geometry("760x620")
-    root.minsize(600, 460)
-    state = {"proc": None, "session": None, "deny": [], "apps": [], "polling": False, "closing": False,
-             "recording": None, "watcher": None, "details": False, "box": None, "stop_asked": None}  # fmt: skip
-    offered_model = ui.OfferedList()
-
-    top = ttk.Frame(root, padding=10)
-    top.pack(fill="x")
-    status = tk.StringVar()
-    activity = tk.StringVar()
-    pair_btn = ttk.Button(top, text="Pair with portal…")
-    pair_btn.pack(side="right", anchor="n")
-    heads = ttk.Frame(top)
-    heads.pack(side="left", fill="x", expand=True)
-    status_label = ttk.Label(heads, textvariable=status, font=("Segoe UI", 10, "bold"), wraplength=520,
-                             justify="left")  # fmt: skip
-    status_label.pack(anchor="w", fill="x")
-    activity_label = ttk.Label(heads, textvariable=activity, wraplength=520, justify="left")
-    activity_label.pack(anchor="w", fill="x")
-
-    def rewrap(e):
-        for label in (status_label, activity_label):
-            label.configure(wraplength=max(200, e.width - 180))
-
-    top.bind("<Configure>", rewrap)
-
-    # the recording indicator: always visible while a session records
-    indicator = tk.StringVar(value=IDLE)
-    rec_frame = ttk.Frame(root, padding=(10, 0))
-    rec_frame.pack(fill="x")
-    rec_label = tk.Label(rec_frame, textvariable=indicator, anchor="w", justify="left", font=("Segoe UI", 10))
-    rec_label.pack(side="left", fill="x", expand=True)
-    stop_btn = ttk.Button(rec_frame, text="Stop recording", state="disabled")
-    stop_btn.pack(side="right")
-    idle_fg = rec_label.cget("fg")
-
-    body = ttk.Notebook(root)
-    body.pack(fill="both", expand=True, padx=10, pady=(6, 0))
-    tabs = {name: ttk.Frame(body, padding=8) for name in ("offered", "own", "done", "uploads", "exclude",
-                                                           "settings")}  # fmt: skip
-    body.add(tabs["offered"], text="Offered sessions")
-    body.add(tabs["own"], text="My own session")
-    body.add(tabs["done"], text="Recordings on this PC")
-    body.add(tabs["uploads"], text="Uploads")
-    body.add(tabs["exclude"], text="Excluded apps")
-    body.add(tabs["settings"], text="Settings")
-
-    offered_note = tk.StringVar()
-    ttk.Label(tabs["offered"], textvariable=offered_note, wraplength=640, justify="left").pack(fill="x")
-    offered_list = tk.Listbox(tabs["offered"], height=8, exportselection=False)
-    offered_list.pack(fill="both", expand=True, pady=(4, 0))
-    ttk.Label(tabs["offered"], text="Nothing is recorded until you press Start. The session's target "
-              "applications are recorded in full; other applications only as having been used, without "
-              "their names; applications on the Excluded apps tab not at all.",
-              wraplength=640, justify="left").pack(fill="x", pady=4)  # fmt: skip
-    start_offered = ttk.Button(tabs["offered"], text="Start selected session", state="disabled")
-    start_offered.pack(anchor="w")
-
-    tab_own = tabs["own"]
-    name_var = tk.StringVar(value="My session")
-    ttk.Label(tab_own, text="Session name").pack(anchor="w")
-    ttk.Entry(tab_own, textvariable=name_var).pack(fill="x")
-    ttk.Label(tab_own, text="Target applications from the portal's catalog").pack(anchor="w", pady=(8, 0))
-    own_frame = ttk.Frame(tab_own)
-    own_frame.pack(fill="both", expand=True)
-    own_empty = ttk.Label(own_frame, text="None yet: the catalog appears here once this PC is paired "
-                          "with the portal.", foreground="#555555")  # fmt: skip
-    own_empty.pack(anchor="w")
-    own_vars: list[list] = []  # [BooleanVar, app, Checkbutton]
-    ttk.Label(tab_own, text="Other targets, one per line: a program (CaseDesk.exe), a web address "
-              "(https://…), or a mainframe host (tn3270://host:port)").pack(anchor="w", pady=(6, 0))  # fmt: skip
-    extra = tk.Text(tab_own, height=3)
-    extra.pack(fill="x")
-    own_buttons = ttk.Frame(tab_own)
-    own_buttons.pack(fill="x", pady=4)
-    start_own = ttk.Button(own_buttons, text="Start my session")
-    start_own.pack(side="left")
-    propose_btn = ttk.Button(own_buttons, text="Fill in from a UiPath project…")
-    propose_btn.pack(side="left", padx=8)
-
-    opts = ttk.LabelFrame(tabs["settings"], text="Web applications", padding=6)
-    opts.pack(fill="x")
-    more = ttk.Frame(opts)
-    more.pack(fill="x")
-    ttk.Label(more, text="Browser the session opens:").pack(side="left")
-    browser_var = tk.StringVar(value=cfg.values.get("browser") or "edge")
-    ttk.Combobox(more, textvariable=browser_var, values=["edge", "chrome"], width=8,
-                 state="readonly").pack(side="left", padx=4)  # fmt: skip
-    keep_var = tk.BooleanVar(value=bool(cfg.values.get("keep_browser_profile")))
-    keep_row = ttk.Frame(opts)
-    keep_row.pack(fill="x", pady=(4, 0))
-    ttk.Checkbutton(keep_row, text="Keep the browser's profile between sessions (needed for UiPath's "
-                    "browser extension)", variable=keep_var).pack(side="left")  # fmt: skip
-    profile_btn = ttk.Button(keep_row, text="Open the kept profile…")
-    profile_btn.pack(side="right")
-    cdp_row = ttk.Frame(opts)
-    cdp_row.pack(fill="x", pady=(4, 0))
-    ttk.Label(cdp_row, text="Or record a browser already running on this PC, at its DevTools address:"
-              ).pack(side="left")  # fmt: skip
-    cdp_var = tk.StringVar(value=cfg.values.get("cdp") or "")
-    ttk.Entry(cdp_row, textvariable=cdp_var, width=26).pack(side="left", padx=4)
-    ttk.Label(opts, text="For example http://127.0.0.1:9222, a robot's browser. Leave it empty and the "
-              "recorder opens a browser of its own.", foreground="#555555",
-              wraplength=640, justify="left").pack(anchor="w")  # fmt: skip
-    desk_opts = ttk.LabelFrame(tabs["settings"], text="Desktop applications", padding=6)
-    desk_opts.pack(fill="x", pady=(8, 0))
-    pictures_var = tk.BooleanVar(value=bool(cfg.values.get("pictures")))
-    ttk.Checkbutton(desk_opts, text="Take pictures of desktop windows (typed values are painted over; "
-                    "uses more memory in long sessions)", variable=pictures_var).pack(anchor="w")  # fmt: skip
-    ttk.Label(tabs["settings"], text="These settings apply to the next session you start.",
-              foreground="#555555").pack(anchor="w", pady=(8, 0))  # fmt: skip
-
-    # -- the exclude list (twinlab2_recorder.workstation.exclude) ------------------------------------
-    tab_ex = tabs["exclude"]
-    ttk.Label(tab_ex, text="Nothing is recorded from these applications on this PC: no steps, no "
-              "pictures, no network traffic, not even that they were used. A recording only says how "
-              "many were excluded, by the names below.", wraplength=640, justify="left").pack(fill="x")  # fmt: skip
-    ex_note = tk.StringVar()
-    ttk.Label(tab_ex, textvariable=ex_note, wraplength=640, justify="left",
-              foreground="#555555").pack(fill="x", pady=(2, 4))  # fmt: skip
-    ex_table = ttk.Treeview(tab_ex, columns=("kind", "pattern", "name", "source"), show="headings", height=7)
-    for col, text, width in (("kind", "Kind", 100), ("pattern", "Matches", 220), ("name", "Name", 170),
-                             ("source", "From", 150)):  # fmt: skip
-        ex_table.heading(col, text=text)
-        ex_table.column(col, width=width, stretch=col == "pattern")
-    ex_table.pack(fill="both", expand=True)
-    ex_add_row = ttk.Frame(tab_ex)
-    ex_add_row.pack(fill="x", pady=(6, 0))
-    ex_kind = tk.StringVar(value=EXCLUDE_KINDS[0])
-    ex_kind_box = ttk.Combobox(ex_add_row, textvariable=ex_kind, values=EXCLUDE_KINDS, width=13, state="readonly")
-    ex_kind_box.pack(side="left")
-    ex_pattern = tk.StringVar()
-    ex_pattern_entry = ttk.Entry(ex_add_row, textvariable=ex_pattern, width=30)
-    ex_pattern_entry.pack(side="left", padx=4, fill="x", expand=True)
-    ex_add_btn = ttk.Button(ex_add_row, text="Add")
-    ex_add_btn.pack(side="left")
-    ex_hint = tk.StringVar(value=EXCLUDE_HINTS[EXCLUDE_KINDS[0]])
-    ttk.Label(tab_ex, textvariable=ex_hint, foreground="#555555", wraplength=640, justify="left").pack(fill="x")
-    ex_buttons = ttk.Frame(tab_ex)
-    ex_buttons.pack(fill="x", pady=(6, 0))
-    ex_remove_btn = ttk.Button(ex_buttons, text="Remove selected", state="disabled")
-    ex_remove_btn.pack(side="left")
-    ex_pick_btn = ttk.Button(ex_buttons, text="Pick from running apps…")
-    ex_pick_btn.pack(side="left", padx=6)
-    ex_defaults_btn = ttk.Button(ex_buttons, text="Restore defaults")
-    ex_defaults_btn.pack(side="left")
-
-    tab_done = tabs["done"]
-    done_note = tk.StringVar()
-    ttk.Label(tab_done, textvariable=done_note, wraplength=640, justify="left").pack(fill="x")
-    done_list = tk.Listbox(tab_done, height=6, exportselection=False)
-    done_list.pack(fill="both", expand=True)
-    review = tk.Text(tab_done, height=12, wrap="word")
-    review.pack(fill="both", expand=True, pady=4)
-    row = ttk.Frame(tab_done)
-    row.pack(fill="x")
-    send_btn = ttk.Button(row, text="Send summary to the portal", state="disabled")
-    send_btn.pack(side="left")
-    details_btn = ttk.Button(row, text="Show what is sent (JSON)", state="disabled")
-    details_btn.pack(side="left", padx=6)
-    upload_btn = ttk.Button(row, text="Upload the recording…", state="disabled")
-    upload_btn.pack(side="left")
-    ttk.Label(tab_done, text="Sending gives the portal only the summary above; the recording itself stays "
-              "on this PC unless you upload it.", wraplength=640, justify="left").pack(fill="x")  # fmt: skip
-
-    tab_up = tabs["uploads"]
-    uploads = ttk.Treeview(tab_up, columns=("session", "state", "progress", "detail"), show="headings", height=8)
-    for col, text, width in (("session", "Session", 210), ("state", "State", 80), ("progress", "Progress", 70),
-                             ("detail", "Detail", 320)):  # fmt: skip
-        uploads.heading(col, text=text)
-        uploads.column(col, width=width, stretch=col == "detail")
-    uploads.pack(fill="both", expand=True)
-    up_row = ttk.Frame(tab_up)
-    up_row.pack(fill="x", pady=4)
-    retry_btn = ttk.Button(up_row, text="Retry selected", state="disabled")
-    retry_btn.pack(side="left")
-    upload_now_btn = ttk.Button(up_row, text="Retry all now")
-    upload_now_btn.pack(side="left", padx=6)
-    upload_note = tk.StringVar(value="Uploads continue in the background and resume after a restart.")
-    ttk.Label(up_row, textvariable=upload_note, wraplength=440).pack(side="left", padx=8)
-
-    # -- jobs and their states ---------------------------------------------------------------------
-
-    def show_job(job: Job):
-        if job.kind == "poll" and job.state != "retrying":
-            return  # polls show through the paired status line
-        activity.set(job.describe())
-
-    jobs = Jobs(dispatcher, show_job)
-
-    def pump():
-        dispatcher.drain()
-        if not state.get("destroyed"):
-            root.after(50, pump)
-
-    root.after(50, pump)
-
-    def paired() -> bool:
-        return bool(cfg.values.get("portal") and cfg.values.get("token"))
-
-    def refresh_status():
-        if paired():
-            status.set(f"Paired as {cfg.values.get('machine')} with {cfg.values.get('portal')}")
-            pair_btn.configure(text="Pair again…")
-        else:
-            status.set("Not paired: pair with the portal to receive sessions and send what you record.")
-            pair_btn.configure(text="Pair with portal…")
-        refresh_offered_note()
-        refresh_buttons()
-
-    def refresh_offered_note():
-        if not paired():
-            offered_note.set("Pair with the portal (top right) to see the sessions it offers this PC. You "
-                             "can still record your own session.")  # fmt: skip
-        elif offered_list.size() == 0:
-            offered_note.set("The portal offers no session to this PC right now. It is asked again every "
-                             "15 to 20 seconds.")  # fmt: skip
-        else:
-            offered_note.set("Choose a session, then press Start.")
-
-    def refresh_buttons(_event=None):
-        """Enable what can be done now: a selection, a pairing, no recording running."""
-        idle = state["proc"] is None and not state.get("checking") and not state["closing"]
-        start_offered.configure(state="normal" if idle and offered_list.curselection() else "disabled")
-        start_own.configure(state="normal" if idle else "disabled")
-        s = selected_done()
-        has_box = s is not None and state.get("box") is not None
-        busy = state.get("sending") or state["closing"]
-        send_btn.configure(state="normal" if has_box and paired() and not busy else "disabled")
-        details_btn.configure(state="normal" if has_box else "disabled")
-        upload_btn.configure(state="normal" if s is not None and paired() and not state["closing"] else "disabled")
-        retry_btn.configure(state="normal" if uploads.selection() else "disabled")
-        if not paired():
-            done_note.set("Not paired: you can review recordings here; pair with the portal to send them.")
-        elif not state.get("done"):
-            done_note.set("No recordings on this PC yet.")
-        else:
-            done_note.set("Choose a recording to see what sending it would give the portal.")
-
-    def refresh_done():
-        keep = None
-        sel = done_list.curselection()
-        if sel and sel[0] < len(state.get("done") or []):
-            keep = state["done"][sel[0]]["id"]
-        done_list.delete(0, "end")
-        state["done"] = sessions_list(cfg)
-        for i, s in enumerate(state["done"]):
-            done_list.insert("end", ui.recording_row(s))
-            if s["id"] == keep:
-                done_list.selection_set(i)
-        refresh_buttons()
-
-    def selected_done() -> dict | None:
-        sel = done_list.curselection()
-        return state["done"][sel[0]] if sel and sel[0] < len(state.get("done") or []) else None
-
-    def render_review():
-        review.configure(state="normal")
-        review.delete("1.0", "end")
-        box, s = state.get("box"), selected_done()
-        if s is None:
-            pass
-        elif box is None:
-            review.insert("end", state.get("box_error") or "")
-        else:
-            review.insert("end", ui.review_summary(box, session_notes(cfg, s["id"]), cfg.values.get("portal"),
-                                                   cfg.values.get("machine")))  # fmt: skip
-            if state["details"]:
-                review.insert("end", "\n\nDetails: the references as sent (JSON)\n" + json.dumps(box, indent=1))
-        details_btn.configure(text="Hide what is sent" if state["details"] else "Show what is sent (JSON)")
-        review.configure(state="disabled")
-        refresh_buttons()
-
-    def show_done(_event=None):
-        s = selected_done()
-        state["box"], state["box_error"] = None, None
-        if s is not None:
-            try:
-                state["box"] = outbox(cfg, s["id"])
-            except SystemExit as exc:
-                state["box_error"] = str(exc)
-        render_review()
-
-    def on_details():
-        state["details"] = not state["details"]
-        render_review()
-
-    # -- polling the portal ----------------------------------------------------------------------------
-
-    def poll_loop():
-        if state.get("destroyed"):
-            return
-        root.after(int((15 + random.uniform(0, 5)) * 1000), poll_loop)
-        poll_portal()
-
-    def poll_portal():
-        if state["polling"] or not cfg.values.get("token") or state.get("destroyed"):
-            return
-        state["polling"] = True
-
-        def work(_report):
-            p = _portal(cfg, ca_bundle)
-            return p.sessions(), p.apps()
-
-        # The error arrives as a bound argument (the reason string), never as a closure over the
-        # handler's exception name, which Python deletes when the handler ends.
-        jobs.run("poll", work, label="the portal", on_done=lambda got: apply(got[0], got[1], None),
-                 on_failed=lambda reason: apply(None, None, reason))  # fmt: skip
-
-    def apply(offered, apps, error):
-        state["polling"] = False
-        if error:
-            if cfg.values.get("portal"):
-                status.set(f"Paired as {cfg.values.get('machine')}: {error}")
-            return
-        refresh_status()
-        state["deny"] = offered["deny_keys"]
-        offered_model.sync(offered_list, offered["sessions"])
-        refresh_offered_note()
-        refresh_buttons()
-        new = apps["apps"]
-        how = ui.app_choices([a for _, a, _ in own_vars], new)
-        if how == "relabel":
-            for item, a in zip(own_vars, new):
-                item[1] = a
-                item[2].configure(text=a["name"])
-        elif how == "rebuild":
-            ticked = {a["app_id"] for var, a, _ in own_vars if var.get()}
-            for child in own_frame.winfo_children():
-                if child is not own_empty:
-                    child.destroy()
-            own_vars.clear()
-            for a in new:
-                var = tk.BooleanVar(value=a["app_id"] in ticked)
-                box = ttk.Checkbutton(own_frame, text=a["name"], variable=var)
-                box.pack(anchor="w")
-                own_vars.append([var, a, box])
-        if own_vars:
-            own_empty.pack_forget()
-        else:
-            own_empty.configure(text="The portal's catalog has no application yet.")
-            own_empty.pack(anchor="w")
-
-    # -- recording -----------------------------------------------------------------------------------
-
-    def options() -> dict:
-        cdp = cdp_var.get().strip()
-        if cdp and not cdp.startswith(("http://127.0.0.1:", "http://localhost:")):
-            raise ValueError("attach only to a browser on this PC, for example http://127.0.0.1:9222")
-        cfg.values.update(keep_browser_profile=keep_var.get(), cdp=cdp, browser=browser_var.get(),
-                          pictures=pictures_var.get())  # fmt: skip
-        cfg.save()
-        return {"keep_browser_profile": keep_var.get(), "cdp": cdp or None,
-                "browser": browser_var.get(), "pictures": pictures_var.get(),
-                "exclude": cfg.exclude_policy().as_session()}  # fmt: skip
-
-    def set_start_buttons(enabled: bool):
-        refresh_buttons()
-        if not enabled:
-            for b in (start_offered, start_own):
-                b.configure(state="disabled")
-
-    def start(conf):
-        """Preflight first (in a worker thread: a check may wait a few seconds), then record."""
-        if state["proc"] is not None or state.get("checking") or state["closing"]:
-            return
-        try:
-            conf.update(options())
-        except ValueError as exc:
-            messagebox.showerror("TwinLab Recorder", str(exc))
-            return
-        state["checking"] = True
-        set_start_buttons(False)
-        indicator.set("Checking that each channel can start…")
-
-        def work():
-            try:
-                block, error = preflight_checks(cfg, conf), None
-            except Exception as exc:  # noqa: BLE001 - shown to the person
-                block, error = None, f"{type(exc).__name__}: {exc}"
-            dispatcher.post(checked, conf, block, error)
-
-        threading.Thread(target=work, name="tl-preflight", daemon=True).start()
-
-    def checked(conf, block, error):
-        state["checking"] = False
-        if state["closing"]:
-            return
-        refresh_buttons()
-        if error:
-            indicator.set("Not recording: the checks could not run.")
-            set_start_buttons(True)
-            messagebox.showerror("TwinLab Recorder", f"The checks before recording could not run: {error}")
-            return
-        conf["preflight"] = block
-        if not block["ready"]:
-            failed = "\n".join("• " + f for f in failed_checks(block))
-            indicator.set("Not ready:\n" + failed)
-            if not messagebox.askyesno("TwinLab Recorder — not ready",
-                                       f"These checks failed:\n\n{failed}\n\nRecord anyway? The recording "
-                                       "will say that it started with these checks failed. Answer No to fix "
-                                       "them first, then press Start again.", icon="warning", default="no"):  # fmt: skip
-                indicator.set("Not recording: fix the failed checks, then press Start again.\n" + failed)
-                set_start_buttons(True)
-                return
-            conf["override_preflight"] = True
-        launch(conf)
-
-    def launch(conf):
-        cfg_path = cfg.folder / "next-session.json"
-        cfg_path.write_text(json.dumps(conf), encoding="utf-8")
-        cmd = [sys.executable] + ([] if getattr(sys, "frozen", False) else [str(Path(__file__).resolve())])
-        cmd += ["run-session", "--config", str(cfg_path), "--parent", str(os.getpid())]
-        cmd += ["--portable-data"] if cfg.portable else []
-        (cfg.folder / "logs").mkdir(exist_ok=True)
-        state["log"] = cfg.folder / "logs" / f"{conf['id']}.log"
-        log = state["log"].open("w", encoding="utf-8")
-        state["proc"] = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
-                                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # fmt: skip
-        log.close()
-        state["session"] = conf["id"]
-        rec = ui.RecordingStatus(conf["name"], conf["targets"], time.monotonic())
-        state["recording"] = rec
-        state["extra_lines"] = (["Ready: every check passed."] if conf["preflight"]["ready"] else
-                                ["Recording anyway, with failed checks."]) + mainframe_addresses(conf)  # fmt: skip
-        state["watcher"] = ui.JournalWatcher(cfg.recordings / conf["id"] / "journal.jsonl", dispatcher.post,
-                                             lambda rows: [rec.feed(r) for r in rows]).start()  # fmt: skip
-        stop_btn.configure(state="normal")
-        set_start_buttons(False)
-        tick()
-        root.after(1000, watch)
-
-    def tick():
-        rec = state["recording"]
-        if rec is None:
-            rec_label.configure(fg=idle_fg)
-            return
-        lines = rec.lines(time.monotonic()) + state.get("extra_lines", [])
-        if state.get("stop_asked") is not None:
-            lines.append(f"Finishing the recording… ({int(time.monotonic() - state['stop_asked'])} s"
-                         + (f" of {STOP_WAIT_S} s before the window closes)" if state["closing"] else ")"))  # fmt: skip
-        indicator.set("\n".join(lines))
-        rec_label.configure(fg={"ok": "#b00020", "starting": "#b00020", "trouble": "#c25e00"}[rec.health()])
-        root.after(1000, tick)
-
-    def watch():
-        proc = state["proc"]
-        if proc is None:
-            return
-        if proc.poll() is None:
-            root.after(1000, watch)
-            return
-        recorded(proc.returncode)
-
-    def recorded(code):
-        """The recording process ended (by itself, Stop, or the window closing)."""
-        if state["proc"] is None:
-            return
-        state["proc"] = None
-        if state["watcher"]:
-            state["watcher"].stop()
-        state["recording"], state["stop_asked"] = None, None
-        rec_label.configure(fg=idle_fg)
-        stop_btn.configure(state="disabled")
-        if state["closing"]:
-            return
-        if code != 0:
-            indicator.set(f"The recording ended with an error (see {state.get('log')}). What was "
-                          "recorded until then is kept.")  # fmt: skip
-            messagebox.showerror("TwinLab Recorder", f"The recording ended with an error. The log is "
-                                 f"{state.get('log')}")  # fmt: skip
-        else:
-            indicator.set("Not recording. The last recording is saved on this PC: review it before you send it.")
-        set_start_buttons(True)
-        refresh_done()
-        body.select(tab_done)
-        for i, s in enumerate(state.get("done") or []):
-            if s["id"] == state["session"]:
-                done_list.selection_clear(0, "end")
-                done_list.selection_set(i)
-                show_done()
-
-    def on_stop():
-        if state["session"] and state["proc"] is not None:
-            (cfg.recordings / state["session"] / "stop").touch()
-            if state["stop_asked"] is None:
-                state["stop_asked"] = time.monotonic()
-            if state["recording"]:
-                state["recording"].stopping = True
-            stop_btn.configure(state="disabled")
-
-    def on_start_offered():
-        s = offered_model.selected(offered_list)
-        if s is None:
-            messagebox.showinfo("TwinLab Recorder", "Choose a session in the list first.")
-            return
-        start(session_config(s["targets"], state["deny"], s["name"], s["id"], s["automation_id"]))
-
-    def on_start_own():
-        targets = [dict(a["target"]) for var, a, _ in own_vars if var.get()]
-        for line in extra.get("1.0", "end").splitlines():
-            line = line.strip()
-            if line.lower().startswith(("http://", "https://")):
-                targets.append({"origin": line, "level": "full"})
-            elif line.lower().endswith(".exe"):
-                targets.append({"exe": line, "level": "full"})
-            elif line.lower().startswith(("tn3270://", "tn3270s://")):
-                targets.append({"tn3270": line})
-        if not targets:
-            messagebox.showinfo("TwinLab Recorder", "Tick at least one application from the catalog, or type "
-                                "one in the box below it.")
-            return
-        start(session_config(targets, state["deny"], name_var.get().strip() or "My session"))
-
-    # -- sending references -----------------------------------------------------------------------------
-
-    def on_send():
-        s = selected_done()
-        if s is None or state.get("sending"):
-            return
-        if not messagebox.askyesno("TwinLab Recorder", f"Send the summary shown here to "
-                                   f"{cfg.values.get('portal') or 'the portal'}? The recording itself stays "
-                                   "on this PC."):  # fmt: skip
-            return
-        state["sending"] = True
-        send_btn.configure(state="disabled")
-        session_id = s["id"]
-
-        def sent(result):
-            state["sending"] = False
-            send_btn.configure(state="normal")
-            messagebox.showinfo("TwinLab Recorder", f"Sent. It is recording {result.get('recording_id')} on the portal.")
-            refresh_done()
-
-        def not_sent(reason):
-            state["sending"] = False
-            send_btn.configure(state="normal")
-            messagebox.showerror("TwinLab Recorder", f"Not sent: {reason}")
-
-        jobs.run("send", lambda _r: send(cfg, session_id, ca_bundle), state="sending",
-                 label=f"references of {s['name']}", retries=3, on_done=sent, on_failed=not_sent)  # fmt: skip
-
-    # -- pairing ------------------------------------------------------------------------------------
-
-    def on_pair():
-        if state.get("pairing"):
-            return
-        url = simpledialog.askstring("Pair", "Portal address", initialvalue=cfg.values.get("portal") or "https://")
-        if not url:
-            return
-        try:
-            url = check_portal(url)
-        except PortalError as exc:
-            messagebox.showerror("TwinLab Recorder", str(exc))
-            return
-        code = simpledialog.askstring("Pair", "Pairing code from the portal's Machines page")
-        if not code:
-            return
-        name = simpledialog.askstring("Pair", "A name for this machine", initialvalue=os.environ.get("COMPUTERNAME", ""))
-        if not name:
-            return
-        state["pairing"] = True
-        pair_btn.configure(state="disabled")
-
-        def paired(doc):
-            state["pairing"] = False
-            pair_btn.configure(state="normal")
-            cfg.paired(url, doc["machine_id"], doc["name"], doc["token"])
-            refresh_status()
-            poll_portal()
-            upload_worker.kick()
-
-        def failed(reason):
-            state["pairing"] = False
-            pair_btn.configure(state="normal")
-            messagebox.showerror("TwinLab Recorder", f"Not paired: {reason}")
-
-        jobs.run("pair", lambda _r: Portal(url, ca_bundle=ca_bundle).pair(code, name), state="connecting",
-                 label=f"pairing with {url}", retries=2, on_done=paired, on_failed=failed)  # fmt: skip
-
-    # -- uploads --------------------------------------------------------------------------------------
-
-    def show_uploads(found, active, error):
-        now = time.time()
-        rows = [ui.upload_row(j, now, active) for j in found]
-        seen = set()
-        for r in rows:
-            values = (r["session"], r["state"], f"{r['percent']}%", r["detail"])
-            seen.add(r["id"])
-            if uploads.exists(r["id"]):
-                uploads.item(r["id"], values=values)
-            else:
-                uploads.insert("", "end", iid=r["id"], values=values)
-        for iid in uploads.get_children():
-            if iid not in seen:
-                uploads.delete(iid)
-        busy = sum(r["state"] in ("sending", "queued", "retrying") for r in rows)
-        upload_note.set((f"Not sending: {error}. " if error else "") +
-                        (f"{busy} upload(s) waiting or in progress; they continue in the background and "
-                         "resume after a restart." if busy else "Nothing waiting to upload."))  # fmt: skip
-
-    upload_worker = ui.UploadWorker(lambda on_change: UploadQueue(cfg.folder, on_change=on_change),
-                                    lambda: _portal(cfg, ca_bundle), dispatcher.post, show_uploads)  # fmt: skip
-
-    def on_upload():
-        s = selected_done()
-        if s is None:
-            return
-        if not messagebox.askyesno("TwinLab Recorder", f"Upload the whole recording of {s['name']} (its "
-                                   "folder, with what it captured) to "
-                                   f"{cfg.values.get('portal') or 'the portal'}? It is queued and sent in "
-                                   "the background."):  # fmt: skip
-            return
-        upload_worker.add(cfg.recordings / s["id"], s["id"])
-        body.select(tab_up)
-
-    def on_retry():
-        for iid in uploads.selection():
-            upload_worker.retry(iid)
-
-    # -- other buttons ----------------------------------------------------------------------------------
-
-    def on_profile():
-        if state["proc"] is not None:
-            messagebox.showinfo("TwinLab Recorder", "Stop the recording first.")
-            return
-        from twinlab2_recorder.workstation.session import open_profile
-
-        try:
-            open_profile(browser_profile(cfg), url="https://microsoftedge.microsoft.com/addons/search/uipath")
-        except RuntimeError as exc:
-            messagebox.showerror("TwinLab Recorder", str(exc))
-            return
-        keep_var.set(True)
-        messagebox.showinfo("TwinLab Recorder", "The recorder's browser opened with its kept profile. "
-                            "Install UiPath's extension there (or sign in to the applications), "
-                            "then close that browser before you start recording.")  # fmt: skip
-
-    def on_propose():
-        from tkinter import filedialog
-
-        folder = filedialog.askdirectory(title="The UiPath project folder (with Main.xaml)")
-        if not folder:
-            return
-        from twinlab2_recorder.workstation.propose import propose
-
-        try:
-            got = propose(Path(folder))
-        except FileNotFoundError as exc:
-            messagebox.showerror("TwinLab Recorder", str(exc))
-            return
-        lines = []
-        for t in got["targets"]:
-            if t.get("exe"):
-                lines.append(t["exe"])
-            elif t.get("origin"):
-                lines.append(t["origin"])
-            elif t.get("tn3270"):
-                lines.append("tn3270://" + t["tn3270"])
-        extra.delete("1.0", "end")
-        extra.insert("end", "\n".join(lines))
-        if got["browser"]:
-            browser_var.set(got["browser"])
-        messagebox.showinfo("TwinLab Recorder", f"{len(lines)} target(s) from {got['files']} workflow file(s)."
-                            + ("\n\n" + "\n".join(got["notes"]) if got["notes"] else "")
-                            + "\n\nCheck them before you start.")  # fmt: skip
-
-    # -- the exclude list -------------------------------------------------------------------------------
-
-    def refresh_exclude():
-        from twinlab2_recorder.workstation import exclude
-
-        pol = cfg.exclude_policy()
-        state["exclude_rows"] = exclude.rows(pol)
-        ex_table.delete(*ex_table.get_children())
-        for i, r in enumerate(state["exclude_rows"]):
-            ex_table.insert("", "end", iid=str(i), values=(r["kind"], r["pattern"], r["name"], r["source"]))
-        can_edit = pol.allow_user_changes
-        for wd in (ex_add_btn, ex_pick_btn, ex_defaults_btn, ex_pattern_entry):
-            wd.configure(state="normal" if can_edit else "disabled")
-        ex_kind_box.configure(state="readonly" if can_edit else "disabled")
-        locked = sum(1 for r in state["exclude_rows"] if r["rule"].locked)
-        if not can_edit:
-            ex_note.set("Your office manages this list on this PC: it cannot be changed here.")
-        elif locked:
-            ex_note.set(f"{locked} entr{'y is' if locked == 1 else 'ies are'} set by your office's policy and "
-                        "cannot be removed here. The rest are yours to change.")  # fmt: skip
-        elif not state["exclude_rows"]:
-            ex_note.set("The list is empty: every application may be recorded as a session's target or "
-                        "as having been used.")  # fmt: skip
-        else:
-            ex_note.set(f"{len(state['exclude_rows'])} entries. Changes apply to the next session you start.")
-        exclude_selection()
-
-    def exclude_selection(_event=None):
-        rows = [state["exclude_rows"][int(i)] for i in ex_table.selection() if int(i) < len(state["exclude_rows"])]
-        ex_remove_btn.configure(state="normal" if rows and not any(r["locked"] for r in rows) else "disabled")
-
-    def own_rules():
-        return [r["rule"] for r in state["exclude_rows"] if not r["rule"].locked]
-
-    def exclude_add(rule=None):
-        from twinlab2_recorder.workstation import exclude
-
-        if rule is None:
-            text = ex_pattern.get().strip()
-            if not text:
-                messagebox.showinfo("TwinLab Recorder", "Type a program, a window title or a web site to exclude.")
-                return
-            rule = exclude.clean_rule({"kind": EXCLUDE_KIND_OF[ex_kind.get()], "pattern": text})
-            if rule is None:
-                messagebox.showerror("TwinLab Recorder", "That entry would exclude every application: name one.")
-                return
-        if any(r["rule"].key() == rule.key() for r in state["exclude_rows"]):
-            ex_pattern.set("")
-            return
-        cfg.set_exclude_rules(own_rules() + [rule])
-        ex_pattern.set("")
-        refresh_exclude()
-
-    def exclude_remove():
-        drop = {int(i) for i in ex_table.selection()}
-        keep = [r["rule"] for i, r in enumerate(state["exclude_rows"]) if i not in drop and not r["rule"].locked]
-        cfg.set_exclude_rules(keep)
-        refresh_exclude()
-
-    def exclude_defaults():
-        from twinlab2_recorder.workstation import exclude
-
-        cfg.set_exclude_rules(exclude.restore_defaults(own_rules()))
-        refresh_exclude()
-
-    def exclude_pick():
-        from twinlab2_recorder.workstation import exclude
-
-        names = [n for n in exclude.running_programs()
-                 if not any(r["rule"].matches_process(n) for r in state["exclude_rows"])]  # fmt: skip
-        if not names:
-            messagebox.showinfo("TwinLab Recorder", "Every program with a window open now is already excluded, "
-                                "or none is open.")  # fmt: skip
-            return
-        chosen = choose_from_list(root, "Exclude running apps", "Programs with a window open now. Choose the "
-                                  "ones to exclude:", names)  # fmt: skip
-        for name in chosen or []:
-            exclude_add(exclude.clean_rule({"kind": "process", "pattern": name}))
-
-    def exclude_kind_changed(_event=None):
-        ex_hint.set(EXCLUDE_HINTS[ex_kind.get()])
-
-    # -- closing ------------------------------------------------------------------------------------
-
-    def destroy():
-        state["destroyed"] = True
-        upload_worker.stop()
-        jobs.cancelled.set()
-        if state["watcher"]:
-            state["watcher"].stop()
-        clear_ui_thread()
-        root.destroy()
-
-    def on_close():
-        if state["closing"]:
-            activity.set("Still finishing the recording: the window closes when it is done "
-                         f"(at most {STOP_WAIT_S} s).")  # fmt: skip
-            return
-        proc = state["proc"]
-        if proc is None:
-            destroy()
-            return
-        if not messagebox.askyesno("TwinLab Recorder", "A recording is running. Stop it and close? The "
-                                   "window stays open until the recording is finished."):  # fmt: skip
-            return
-        state["closing"] = True
-        on_stop()
-        set_start_buttons(False)
-        for b in (pair_btn, send_btn, upload_btn):
-            b.configure(state="disabled")
-        activity.set("Finishing the recording before the window closes…")
-
-        def finished(code):
-            recorded(code if code is not None else -1)
-            message = ui.close_message(code, STOP_WAIT_S)
-            if message:
-                messagebox.showwarning("TwinLab Recorder", message)
-            destroy()
-
-        jobs.run("stop", lambda _r: wait_process(proc, STOP_WAIT_S), state="stopping",
-                 label="finishing the recording before the window closes", on_done=finished,
-                 on_failed=lambda reason: finished(None))  # fmt: skip
-
-    propose_btn.configure(command=on_propose)
-    profile_btn.configure(command=on_profile)
-    pair_btn.configure(command=on_pair)
-    stop_btn.configure(command=on_stop)
-    start_offered.configure(command=on_start_offered)
-    start_own.configure(command=on_start_own)
-    send_btn.configure(command=on_send)
-    details_btn.configure(command=on_details)
-    upload_btn.configure(command=on_upload)
-    retry_btn.configure(command=on_retry)
-    upload_now_btn.configure(command=lambda: upload_worker.kick(force=True))
-    done_list.bind("<<ListboxSelect>>", show_done)
-    offered_list.bind("<<ListboxSelect>>", refresh_buttons)
-    uploads.bind("<<TreeviewSelect>>", refresh_buttons)
-    ex_table.bind("<<TreeviewSelect>>", exclude_selection)
-    ex_kind_box.bind("<<ComboboxSelected>>", exclude_kind_changed)
-    ex_pattern_entry.bind("<Return>", lambda _e: exclude_add())
-    ex_add_btn.configure(command=exclude_add)
-    ex_remove_btn.configure(command=exclude_remove)
-    ex_defaults_btn.configure(command=exclude_defaults)
-    ex_pick_btn.configure(command=exclude_pick)
-    refresh_exclude()
-    refresh_status()
-    refresh_done()
-    upload_worker.start()
-    root.after(200, poll_loop)
-    root.protocol("WM_DELETE_WINDOW", on_close)
-    return SimpleNamespace(**{k: v for k, v in locals().items() if not k.startswith("_")})
+    dpi_aware()
+    webwindow.run(cfg, ca_bundle)
 
 
 # --- command line ---------------------------------------------------------------------------------
@@ -1283,9 +470,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="TwinLabRecorder", description=__doc__.split("\n\n")[0])
     parser.add_argument("--portable-data", action="store_true")
     parser.add_argument("--ca-bundle")
+    parser.add_argument("--proxy", help="a proxy URL, direct, or system (the default); the policy wins")
     sub = parser.add_subparsers(dest="command")
     p = sub.add_parser("pair")
-    p.add_argument("--portal", required=True)
+    p.add_argument("--portal", help="the portal's address (the machine policy's PortalUrl when left out)")
     p.add_argument("--code", required=True)
     p.add_argument("--name", required=True)
     sub.add_parser("sessions")
@@ -1328,18 +516,48 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("project")
     sub.add_parser("gui")
     sub.add_parser("version")
+    upd = sub.add_parser("update", help="ask the portal for a newer version; --install it")
+    upd.add_argument("--install", action="store_true")
+    upd.add_argument("--yes", action="store_true", help="install without asking")
+    pol = sub.add_parser("policy", help="the machine policy and network settings in effect")
+    pol.add_argument("--url", help="also show the proxy used for this address")
+    sub.add_parser("selfcheck", help="check that every module of this build imports")
+    cl = sub.add_parser("cleanup", help="delete the recorder's data on this PC")
+    cl.add_argument("--all-users", action="store_true", help="every profile and ProgramData (as SYSTEM)")
     args = parser.parse_args(argv)
+    if args.command in ("selfcheck", "cleanup", "policy"):
+        from twinlab2_recorder import admin
+
+        if args.command == "selfcheck":
+            got = admin.selfcheck()
+            admin.print_json(got)
+            return 1 if got["failed"] else 0
+        if args.command == "cleanup":
+            got = admin.cleanup(all_users=args.all_users)
+            admin.print_json(got)
+            return 1 if got["failed"] else 0
+        admin.print_json(admin.policy_report(args.ca_bundle, args.proxy, args.url))
+        return 0
     cfg = st.Settings(st.data_dir(args.portable_data))
     cfg.portable = args.portable_data
+    if args.proxy:
+        cfg.values["proxy"] = args.proxy  # this run only (not saved)
 
     try:
         if args.command in (None, "gui"):
             gui(cfg, args.ca_bundle)
         elif args.command == "version":
             print(st.APP, st.VERSION, "contract", contract.CONTRACT_VERSION, json.dumps(_build_info()))
+            print("window:", window_parts())
         elif args.command == "pair":
-            portal = check_portal(args.portal)
-            doc = Portal(portal, ca_bundle=args.ca_bundle).pair(args.code, args.name)
+            from twinlab2_recorder import policy
+
+            office = policy.load()
+            if not (args.portal or office.portal_url):
+                raise SystemExit("give the portal's address (--portal); this PC's policy names none")
+            portal = check_portal(args.portal or office.portal_url)
+            policy.check_portal_allowed(office, portal)
+            doc = Portal(portal, ca_bundle=args.ca_bundle, proxy=args.proxy).pair(args.code, args.name)
             cfg.paired(portal, doc["machine_id"], doc["name"], doc["token"])
             print(f"paired as {doc['name']} (machine {doc['machine_id']}) with {portal}")
         elif args.command == "sessions":
@@ -1459,12 +677,34 @@ def main(argv: list[str] | None = None) -> int:
             args_line = " ".join(("--exe " + t["exe"]) if t.get("exe") else ("--origin " + t["origin"])
                                  if t.get("origin") else ("--tn3270 " + t["tn3270"]) for t in got["targets"])  # fmt: skip
             print(f"record with: record {args_line}" + (f" --browser {got['browser']}" if got["browser"] else ""))
+        elif args.command == "update":
+            from twinlab2_recorder import policy
+
+            office = policy.load()
+            portal = _portal(cfg, args.ca_bundle)
+            if office.updates == "off":
+                print("updates are off on this PC (policy): the office installs new versions")
+                return 0
+            offer = updater.check(portal, office)
+            if offer is None:
+                print(f"{st.APP} {st.VERSION} is the latest version")
+                return 0
+            print(updater.describe(offer, office))
+            if not args.install:
+                return 0
+            if not args.yes and input(f"Install {offer.version}? [y/N] ").strip().lower() != "y":
+                print("not installed")
+                return 1
+            msi = updater.download(portal, offer, cfg.folder)
+            print(updater.verify_signature(msi, office))
+            updater.install(msi, cfg.folder, quiet=updater.can_install_silently())
+            print(f"the installer is running (log in {cfg.folder / 'logs'})")
         elif args.command == "recover":
             from twinlab2_recorder.workstation.session import recover_all
 
             done = recover_all(cfg.recordings)
             print("recovered: " + (", ".join(done) if done else "nothing"))
-    except PortalError as exc:
+    except (PortalError, updater.UpdateRefused) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 0
