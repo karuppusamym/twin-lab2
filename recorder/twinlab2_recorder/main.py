@@ -1149,7 +1149,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(box, indent=1))
         elif args.command == "send":
             box = outbox(cfg, args.session_id)
-            print(describe(box))
+            print(describe(box, targets=session_targets(cfg, args.session_id)))
             if not args.yes and input("Send these references to the portal? [y/N] ").strip().lower() != "y":
                 print("not sent")
                 return 1
