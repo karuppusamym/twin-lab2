@@ -57,7 +57,7 @@ class NetworkLossTest(PortalCase):
         self.addCleanup(relay.stop)
         waits = []
         portal = Portal(relay.url, self.token, timeout=5, network=DIRECT, sleep=waits.append)
-        queue = UploadQueue(self.root / "recorder")
+        queue = UploadQueue(self.root / "recorder", destination={"portal": relay.url.rstrip("/"), "machine_id": 1})
         job = queue.add_session(session, SESSION)
         self.assertGreater(job["size"], 4 * CHUNK)
 
@@ -74,7 +74,7 @@ class NetworkLossTest(PortalCase):
         # the recorder restarts (a new queue object) and the network comes back
         relay.restore()
         relay.lines.clear()
-        queue = UploadQueue(self.root / "recorder")
+        queue = UploadQueue(self.root / "recorder", destination={"portal": relay.url.rstrip("/"), "machine_id": 1})
         job = queue.run(Portal(relay.url, self.token, timeout=5, network=DIRECT), force=True)[0]
         self.assertEqual(job["state"], "confirmed", job)
         puts = [line for line in relay.lines if line.startswith("PUT ")]
