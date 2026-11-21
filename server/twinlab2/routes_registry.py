@@ -61,7 +61,8 @@ def owned(app_ids):
 
 def agent_machine(scope="record"):
     """The paired, not revoked machine of the request's bearer token (401 otherwise), counted
-    against its rate limit (429) and holding `scope` (403; agentauth)."""
+    against its rate limit (429) and holding `scope` (403; agentauth). `scope=None`: any paired
+    machine (its own updates)."""
     request = g.request
     header = request.headers.get("Authorization", "")
     if not header.startswith("Bearer "):
@@ -74,7 +75,8 @@ def agent_machine(scope="record"):
     if row is None:
         fail(401)
     agentauth.limit(row["id"])
-    agentauth.require_scope(row, scope)
+    if scope is not None:
+        agentauth.require_scope(row, scope)
     with db():
         db().execute("UPDATE machines SET last_seen = ?, recorder = ? WHERE id = ?",
                      (now(), request.headers.get("X-TwinLab-Recorder", "")[:60], row["id"]))  # fmt: skip
@@ -336,14 +338,47 @@ def agent_apps():
         for r in rows]}  # fmt: skip
 
 
+@routes.get("/api/agent/update", auth.agent_token, response_model=m.RecorderUpdate)
+def agent_update(version: str = ""):
+    """The newest recorder release this portal offers (recorder_releases)."""
+    from twinlab2 import recorder_releases
+
+    agent_machine(scope=None)  # every paired machine may update itself, whatever its scopes
+    return recorder_releases.answer(version.strip()[:20] or None)
+
+
+@routes.get("/api/agent/update/{file}", auth.agent_token)
+def agent_update_file(file: str):
+    from fastapi.responses import FileResponse
+
+    from twinlab2 import recorder_releases
+
+    agent_machine(scope=None)
+    rel = recorder_releases.latest()
+    if rel is None or file != rel["file"]:
+        return agent_error("There is no such recorder release.", 404)
+    return FileResponse(rel["path"], media_type="application/octet-stream", filename=rel["file"],
+                        headers={"Cache-Control": "no-store"})  # fmt: skip
+
+
 # -- references -------------------------------------------------------------------------------------
+
+
+IDENTITY_FACTS = ("exe", "company", "product", "version", "toolkit")
 
 
 def app_for(item):
     """The catalog application of a recorded one: by identity key, by the target's catalog id,
     or by its executable name; else a new `discovered` one."""
     row = db().execute("SELECT app_id FROM app_identities WHERE key = ?", (item["key"],)).fetchone()
+    facts = {k: item[k] for k in IDENTITY_FACTS if k in item}
     if row is not None:
+        # An identity the owner added before anything was recorded has no facts yet: the first
+        # recording's fill them in (the toolkit the package names comes from here). Facts once
+        # known are kept.
+        if facts:
+            db().execute("UPDATE app_identities SET facts = ? WHERE key = ? AND facts IN ('', '{}')",
+                         (json.dumps(facts), item["key"]))  # fmt: skip
         return row["app_id"], False
     app_id = None
     shared_host = False
@@ -368,7 +403,6 @@ def app_for(item):
             (name, item["surface"]),
         ).fetchone()[0]
         created = True
-    facts = {k: item[k] for k in ("exe", "company", "product", "version", "toolkit") if k in item}
     db().execute("INSERT INTO app_identities(key, app_id, surface, facts) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                  (item["key"], app_id, item["surface"], json.dumps(facts)))  # fmt: skip
     readiness_cache.forget(db(), app_id)

@@ -18,7 +18,7 @@
 | Deployment `twinlab2` (2 replicas) | the portal (gunicorn on `127.0.0.1:8080`) and its `oauth-proxy` sidecar (`:8443`) |
 | PodDisruptionBudget `twinlab2` | keeps one portal pod serving during a node drain |
 | Deployment `twinlab2-worker` (1 replica) | the build worker (`python -m twinlab2.worker`), from the same image |
-| Service `twinlab2` | the proxy's port 8443, with an OpenShift serving certificate (`twinlab2-tls`) |
+| Service `twinlab2` | the proxy's port 8443, with an OpenShift serving certificate (`twinlab2-tls`), and the internal `metrics` port 9090 |
 | Route `twinlab2` | TLS re-encrypt to the Service; plain HTTP redirects |
 
 The portal keeps no state in the pod. PostgreSQL holds the catalog and the sign-in sessions, and S3
@@ -117,6 +117,18 @@ curl -sI https://<host>/api/v1/session | grep -i request-id
 Every portal log line has the request id in brackets. A problem response repeats it as
 `request_id`, so quote it when reporting an error.
 
+## Monitoring, logs and data
+
+- **Metrics**: the portal container serves `GET /metrics` on port 9090 only, not on the Route. Its Service has a
+  `metrics` port. Apply `deploy/openshift-monitoring.yaml` (a ServiceMonitor and the alerts) once user-workload
+  monitoring is on. To scrape from elsewhere, set `TWINLAB2_METRICS_TOKEN` and send it as a bearer token.
+- **Logs**: JSON lines (`TWINLAB2_LOG_FORMAT=json`, set in the image and the manifest) with `request_id`, `user`
+  and `app_id`. **Tracing** is opt-in: `TWINLAB2_OTEL=1` and `OTEL_EXPORTER_OTLP_ENDPOINT`.
+- **Encryption at rest**: `TWINLAB2_S3_SSE=AES256` is set in the manifest. Use `aws:kms` with
+  `TWINLAB2_S3_SSE_KMS_KEY_ID` for KMS, and enable default encryption on the bucket too.
+- **Retention, deletion, backups**: see [operations/](operations/README.md). Every operator task has a
+  runbook there.
+
 ## What only a real cluster can prove
 
 - The OAuth proxy passes `X-Forwarded-User` to the portal and the sign-in flow works with the
@@ -128,4 +140,5 @@ Every portal log line has the request id in brackets. A problem response repeats
   123456 in group 0 only.
 - Reaching S3 from the pods (role or keys, network egress) and PostgreSQL over `sslmode=require`.
 - Resource requests and limits under real use, including the worker during large builds.
+- The ServiceMonitor and alerts against the cluster's Prometheus, and SSE on the real bucket.
 - The `ose-oauth-proxy` tag and the native `preStop.sleep` on your cluster version.

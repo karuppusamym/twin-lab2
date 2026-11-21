@@ -11,6 +11,7 @@ import http.client
 import json
 from pathlib import Path
 import re
+import sys
 from urllib.parse import urlsplit, urlunsplit
 import urllib.request
 
@@ -367,6 +368,16 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
         reasons += twin.get("problems") or []
     if progress is not None:
         progress.stage("recording the results")
+    if twin is not None and plan.get("desktop"):
+        taken = commit_checks.accept_verifier(
+            gate, platform=sys.platform, opted_in=os.environ.get("TWINLAB2_DESKTOP_VERIFY") == "1",
+            release_commit=sha, built_commit=deployment["reported_commit"], desktop=plan["desktop"], twin=twin)
+        if taken is not gate:
+            gate = taken
+            reasons = [r for r in reasons if not r.startswith("Windows validation")]
+            audit.record(connection, user, "release.windows_validation", "release", release_id,
+                         app_id=release["app_id"], satisfied_by="verifier", commit=sha,
+                         verifier=sys.platform, executable=Path(plan["desktop"]).name)
     tested, scope = False, None
     platform = commit_checks.PLATFORMS.get(app["target_platform"], app["target_platform"]) if app["target_platform"] else ""
     if twin is not None:  # what the replay covered, Tested or not

@@ -188,16 +188,17 @@ class JobsTest(unittest.TestCase):
 
 # --- the window's code: nothing slow outside a background job ----------------------------------------
 
-SLOW_NAMES = {"send", "_portal", "preflight_checks", "wait_process", "sleep", "Portal"}
-SLOW_ATTRS = {"pair", "sessions", "apps", "send", "wait", "join", "sleep", "run", "upload_init", "add_session"}
+SLOW_NAMES = {"send", "_portal", "preflight_checks", "wait_process", "sleep", "Portal", "make_portal"}
+SLOW_ATTRS = {"pair", "sessions", "apps", "send", "wait", "join", "sleep", "run", "upload_init", "add_session",
+              "make_portal", "_portal", "preflight_checks"}
 BACKGROUND = {"run", "Thread", "UploadWorker"}  # jobs.run(...), threading.Thread(target=...), ui.UploadWorker(...)
 
 
 def slow_calls_on_the_window_thread(source: str) -> list[str]:
-    """Calls in main.build_window that reach the portal or wait, but are not inside a callable
-    handed to a background job (jobs.run, a Thread's target, the upload worker)."""
+    """Calls in app.RecorderApp (the window's code) that reach the portal or wait, but are not
+    inside a callable handed to a background job (jobs.run, a Thread's target, the upload worker)."""
     tree = ast.parse(source)
-    window = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build_window")
+    window = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "RecorderApp")
     parent = {}
     for node in ast.walk(window):
         for child in ast.iter_child_nodes(node):
@@ -223,7 +224,7 @@ def slow_calls_on_the_window_thread(source: str) -> list[str]:
         fn = node.func
         slow = (isinstance(fn, ast.Name) and fn.id in SLOW_NAMES) or (
             isinstance(fn, ast.Attribute) and fn.attr in SLOW_ATTRS
-            and not (fn.attr == "run" and getattr(fn.value, "id", None) == "jobs")
+            and not (fn.attr == "run" and "jobs" in (getattr(fn.value, "id", None), getattr(fn.value, "attr", None)))
             and not isinstance(fn.value, ast.Constant))  # fmt: skip - a string's join is no thread's
         if not slow:
             continue
@@ -231,26 +232,26 @@ def slow_calls_on_the_window_thread(source: str) -> list[str]:
         while up in parent and up not in background_nodes:
             up = parent[up]
         if up not in background_nodes:
-            out.append(f"main.py:{node.lineno} {ast.unparse(node)[:80]}")
+            out.append(f"app.py:{node.lineno} {ast.unparse(node)[:80]}")
     return out
 
 
 class WindowStructureTest(unittest.TestCase):
     def test_the_window_runs_portal_calls_and_waits_only_in_background_jobs(self):
-        self.assertEqual(slow_calls_on_the_window_thread((RECORDER / "main.py").read_text(encoding="utf-8")), [])
+        self.assertEqual(slow_calls_on_the_window_thread((RECORDER / "app.py").read_text(encoding="utf-8")), [])
 
     def test_the_check_catches_a_send_and_a_wait_on_the_window_thread(self):
         old = '''
-def build_window(cfg, ca_bundle, root):
-    def on_send():
-        result = send(cfg, s["id"], ca_bundle)
-    def on_close():
-        state["proc"].wait(120)
-    def ok():
-        jobs.run("send", lambda _r: send(cfg, sid, ca_bundle))
+class RecorderApp:
+    def on_send(self):
+        result = self.m.send(self.cfg, s["id"], self.ca_bundle)
+    def on_close(self):
+        self.state["proc"].wait(120)
+    def ok(self):
+        self.jobs.run("send", lambda _r: self.m.send(self.cfg, sid, self.ca_bundle))
 '''
         self.assertEqual(slow_calls_on_the_window_thread(old), [
-            'main.py:4 send(cfg, s[\'id\'], ca_bundle)', "main.py:6 state['proc'].wait(120)"])
+            "app.py:4 self.m.send(self.cfg, s['id'], self.ca_bundle)", "app.py:6 self.state['proc'].wait(120)"])
 
 
 if __name__ == "__main__":

@@ -101,8 +101,31 @@ def _cdp_version(cdp: str, timeout: float) -> dict:
         return json.loads(r.read().decode("utf-8"))
 
 
+def web_channel_missing() -> str | None:
+    """Why the web channel cannot run in this build, or None. The installer's web channel is an
+    optional feature (Playwright's driver, recorder/installer): a PC installed without it records
+    desktop and mainframe applications only."""
+    if not getattr(sys, "frozen", False):
+        return None
+    try:
+        from playwright._impl._driver import compute_driver_executable
+    except ImportError:
+        return "the web channel is not part of this build"
+    try:
+        node, cli = compute_driver_executable()
+    except Exception:  # noqa: BLE001 - Playwright raises when the driver (node.exe) is not there
+        node = cli = ""
+    if not (Path(node).is_file() and Path(cli).is_file()):
+        return ("the web channel is not installed on this PC (the installer's WebChannel feature): "
+                "only desktop and mainframe applications can be recorded")  # fmt: skip
+    return None
+
+
 def check_browser(browser: str | None = None, cdp: str | None = None,
                   timeout: float = TIMEOUT_S) -> dict:  # fmt: skip
+    missing = web_channel_missing()
+    if missing:
+        return _check("browser", False, missing)
     if cdp:
         try:
             info = _cdp_version(cdp, timeout)

@@ -1515,7 +1515,10 @@ class _Steps:
 
     def recorded(self, url: str, ts: str | None = None) -> bool:
         """Is this address recorded? Always, outside a session; in one, only a target origin
-        (a page with no web origin yet, about:blank, is kept: it carries no data)."""
+        (a page with no web origin yet, about:blank, is kept: it carries no data). Nothing is,
+        while the session is paused."""
+        if getattr(self, "paused", None) is not None and self.paused():
+            return False
         if getattr(self, "exclude", None) is not None and url and _excluded(self.exclude, url):
             return False
         if self.origins is None:
@@ -2361,6 +2364,8 @@ class _Har:
         return rows
 
     def _wanted(self, request) -> bool:
+        if getattr(self, "paused", None) is not None and self.paused():
+            return False
         try:
             page_url = request.frame.page.url
         except Exception:  # noqa: BLE001
@@ -2624,6 +2629,7 @@ def attach(
     journal=None,
     network_journal=None,
     exclude: Callable[[str], str | None] | None = None,
+    paused: Callable[[], bool] | None = None,
 ) -> Path:
     """Record a browser that is already running (a robot's Chrome or Edge started with
     `--remote-debugging-port=9222`): pass its address, for example `http://127.0.0.1:9222`.
@@ -2648,6 +2654,8 @@ def attach(
     steps.drop_late_pictures = True  # nothing holds the robot's next action for the picture
     har = _Har(origins, journal=network_journal, exclude=exclude)
     har.steps = steps
+    # A paused session (twinlab2_recorder.workstation.pause): no step and no HAR entry meanwhile.
+    steps.paused = har.paused = paused
     scripts = steps.scripts = _init_scripts(settle_ms)
     try:
         with sync_playwright() as pw:

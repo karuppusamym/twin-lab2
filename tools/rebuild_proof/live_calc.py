@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import EVIDENCE, ROOT, read_json, run, spawn, write_json  # noqa: E402
 import portal_api  # noqa: E402
 
-CASE = "live-calc"
+CASE = os.environ.get("LIVE_CALC_CASE") or "live-calc"  # live-calc-2: the rerun
 BASE = EVIDENCE / CASE
 EXE = ROOT / "dist" / "TwinLabRecorder" / "TwinLabRecorder.exe"
 DATA = BASE / "recorder-data"
@@ -87,7 +87,7 @@ def record() -> int:
     log = BASE / "logs" / "recorder-record.log"
     before = {p.name for p in recordings().glob("*")} if recordings().is_dir() else set()
     rec = spawn([str(EXE), "record", "--session", str(st["session"]["id"]), "--pictures", "--minutes", "10"],
-                log, extra_env={"LOCALAPPDATA": str(DATA)})
+                log, extra_env={"LOCALAPPDATA": str(DATA), "TWINLAB_DESKTOP_DEBUG": "1"})
     folder = None
     end = time.monotonic() + 120
     while folder is None and time.monotonic() < end:
@@ -202,22 +202,24 @@ def scenarios() -> list[dict]:
          "expected": "After 1 2 + 7 = the display shows 19 and the expression line above it shows "
                      "'12 + 7 ='. After x 3 = the display shows 57 ('19 x 3 ='). C sets the display back "
                      "to 0 and empties the expression line. Each finished calculation is added to the "
-                     "History list beside the keys (newest first): '12 + 7 =' 19 and '19 x 3 =' 57.",
+                     "Standard mode's History list beside the keys (newest first): '19 x 3 =' 57, then "
+                     "'12 + 7 =' 19.",
          "failures": "Not tried in this session (division by zero shows 'Cannot divide by zero' in the "
                      "real Calculator, but it was not recorded here).",
          "examples": "12 + 7 = 19; 19 x 3 = 57.",
          "notes": RUN},
         {"name": "Scientific mode: a square root, the history, back to Standard",
-         "starting": "Standard mode, display 0, two calculations in the history.",
+         "starting": "Standard mode, display 0, two calculations in Standard's history.",
          "actions": "Open the navigation and choose Scientific. Press 9 then the square root key. Look "
                     "at the Memory tab beside the keys, then the History tab. Open the navigation and "
                     "choose Standard again.",
          "expected": "Scientific mode shows the header 'Scientific' and the extra keys (trigonometry, "
                      "x², x^y, 10^x, log, ln, |x|, n!, ( ), mod, exp, π, e, 2nd, DEG/F-E). 9 then the "
-                     "square root shows 3, with 'sqrt(9)' on the expression line. The History tab lists "
-                     "'sqrt(9) =' 3 above the two earlier calculations; the Memory tab says there is "
-                     "nothing saved in memory. Choosing Standard brings back the Standard keys; the "
-                     "History tab still lists the three calculations.",
+                     "square root shows 3, with '√(9)' on the expression line. Each mode keeps a history "
+                     "of its own: Scientific's History tab says there is no history yet (a function "
+                     "alone, without =, is not added); the Memory tab says there is nothing saved in "
+                     "memory. Choosing Standard brings back the Standard keys, display 0, and Standard's "
+                     "history with its two calculations.",
          "failures": "Not tried: square root of a negative number ('Invalid input' in the real Calculator).",
          "examples": "sqrt(9) = 3.",
          "questions": "The navigation lists more modes (Graphing, Programmer, Date calculation and the "
@@ -225,6 +227,34 @@ def scenarios() -> list[dict]:
                       "without implementing them.",
          "notes": RUN},
     ]
+
+
+LAB_PORT = 19291
+
+
+def attach_pictures(p, app_id: int, steps: list[dict]) -> None:
+    """The owner's chosen pictures (L8): the recorder's own, data masked and checked
+    (desktop/pictures.json), one per distinct look the scenarios reach: the window as it opened,
+    the navigation open, Scientific after the square root, Standard again at the end. Reviewed
+    before attaching (kind Screen, share reviewed)."""
+    have = p.get(f"/api/v1/apps/{app_id}/evidence").get("attachments") or []
+    if any(a.get("kind") == "Screen" for a in have):
+        return
+    sid = read_json(BASE / "record" / "session.json")["session_id"]
+    desk = recordings() / sid / "desktop"
+    rows = lines(desk / "steps.jsonl")
+    labels = [(s, ((s.get("target") or {}).get("props") or {}).get("AutomationId")) for s in rows]
+    chosen = []
+    for title, pick in (("Calculator as it opens (Standard)", lambda s, a: s.get("action") == "window_open"),
+                        ("The navigation open (modes)", lambda s, a: a == "TogglePaneButton"),
+                        ("Scientific mode after the square root", lambda s, a: a == "squareRootButton"),
+                        ("Standard again at the end of the session", None)):
+        step = next((s for s, a in labels if pick and pick(s, a)), None) if pick else             next((s for s, _a in reversed(labels) if s.get("picture") and s.get("action") != "window_close"), None)
+        if step and step.get("picture") and (desk / step["picture"]).is_file():
+            chosen.append((title, desk / step["picture"], step["seq"]))
+    for title, path, seq in chosen:
+        p.attach(app_id, path, f"{title} (recorded picture {seq}, data masked)", "Screen", "reviewed")
+    print(f"attached {len(chosen)} pictures (kind Screen)")
 
 
 def owner() -> int:
@@ -249,6 +279,13 @@ def owner() -> int:
     if not (have.get("scenarios") if isinstance(have, dict) else have):
         for sc, linked in zip(scenarios(), links):
             p.post(f"/api/v1/apps/{app_id}/scenarios", json={**sc, "events": [f"{rec_id}#{e}" for e in linked]})
+    attach_pictures(p, app_id, app["steps"])
+    setup = p.get(f"/api/v1/apps/{app_id}/setup")
+    p.put(f"/api/v1/apps/{app_id}/verification-settings", json={
+        "required_checks": "", "target_platform": "windows-desktop", "windows_check_pattern": "",
+        "lab_url": f"http://127.0.0.1:{LAB_PORT}",
+        "launch": "Calculator.exe from the build folder (dotnet build -c Release), no arguments",
+        "expected_revision": (setup.get("app") or setup).get("revision")})
     draft = p.get(f"/api/v1/apps/{app_id}/package-draft")
     write_json(BASE / "packages" / "draft.json", draft)
     comp = draft.get("completeness") or {}
@@ -276,21 +313,42 @@ EXE_NAME = "Calculator.exe"
 SCIENTIFIC_ONLY = "uia:AutomationId=logBase10Button;ControlType=Button"
 
 
+DISPLAY = "uia:AutomationId=CalculatorResults;ControlType=Text"
+
+
 def acceptance(steps: list[dict]) -> dict:
-    by_label = [(s["seq"], (s.get("target") or {}).get("props", {}).get("AutomationId")) for s in steps]
-    after_sqrt = next((q for q, a in by_label if a == "squareRootButton"), "end")
-    after_clear = next((q for q, a in by_label if a == "clearButton"), "end")
+    """The owner's expected results, as judge-side cases (no builder sees them): each form is shown
+    where the recording showed it, and the display shows the result the scenario says, read from
+    the live control by Verify (`check: value`; the recording withholds the display as data)."""
+    by_label = [(s["seq"], ((s.get("target") or {}).get("props") or {}).get("AutomationId")) for s in steps]
+
+    def after(aid, nth=1):
+        hits = [q for q, a in by_label if a == aid]
+        return hits[nth - 1] if len(hits) >= nth else None
+
     window = (steps[0].get("window") or {}).get("selector")
-    cases = [
-        {"id": "main-window", "after": 1, "check": "window", "selector": window,
-         "note": "the Calculator window opens"},
-        {"id": "standard-keys", "after": after_clear, "check": "control",
-         "selector": "uia:AutomationId=equalButton;ControlType=Button", "note": "Standard mode has its keys"},
-        {"id": "standard-has-no-log", "after": after_clear, "check": "control", "selector": SCIENTIFIC_ONLY,
-         "expect": "absent", "note": "Standard mode does not show the scientific keys"},
-        {"id": "scientific-keys", "after": after_sqrt, "check": "control", "selector": SCIENTIFIC_ONLY,
-         "note": "after choosing Scientific, its keys (log) are shown"},
-        {"id": "history-tab", "after": "end", "check": "control",
+    cases = [{"id": "main-window", "after": 1, "check": "window", "selector": window,
+              "note": "the Calculator window opens"}]
+    for cid, step, contains, note in (("sum-19", after("equalButton", 1), "19", "1 2 + 7 = shows 19"),
+                                      ("product-57", after("equalButton", 2), "57", "x 3 = shows 57"),
+                                      ("clear-0", after("clearButton"), "0", "C shows 0"),
+                                      ("sqrt-3", after("squareRootButton"), "3", "9 then the square root shows 3")):
+        if step is not None:
+            cases.append({"id": cid, "after": step, "check": "value", "selector": DISPLAY, "contains": contains,
+                          "note": note})
+    clear, sqrt = after("clearButton"), after("squareRootButton")
+    if clear is not None:
+        cases.append({"id": "standard-has-no-log", "after": clear, "check": "control", "selector": SCIENTIFIC_ONLY,
+                      "expect": "absent", "note": "Standard mode does not show the scientific keys"})
+    if sqrt is not None:
+        cases.append({"id": "scientific-keys", "after": sqrt, "check": "control", "selector": SCIENTIFIC_ONLY,
+                      "note": "after choosing Scientific, its keys (log) are shown"})
+    # the last step before the window closed (after the close there is no window to judge)
+    last = max((s["seq"] for s in steps if s.get("action") not in ("window_close", "focus")), default="end")
+    cases += [
+        {"id": "standard-again", "after": last, "check": "control", "selector": SCIENTIFIC_ONLY, "expect": "absent",
+         "note": "after choosing Standard again, the scientific keys are gone"},
+        {"id": "history-tab", "after": last, "check": "control",
          "selector": "uia:AutomationId=HistoryLabel;ControlType=TabItem", "note": "History is beside the keys"},
     ]
     return {"version": 1, "cases": cases}
@@ -310,6 +368,38 @@ def judge_folder(rec_id: str, folder: Path) -> Path:
     (out / "acceptance.yaml").write_text(yaml.safe_dump(acceptance(steps), sort_keys=False), encoding="utf-8")
     (out / "bindings.yaml").write_text(yaml.safe_dump({"fields": {}}), encoding="utf-8")
     return root
+
+
+def lab_stand_in():
+    """The rebuild's lab agent, stood in by the harness (as tools/rebuild_proof/verify_portal.py
+    does for the web rebuilds): the rebuilt Calculator keeps nothing between starts (the owner's
+    run settings; its own --reset), so its data is no tables and a reset is the next start. The
+    reset check then compares an empty baseline with an empty state."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _json(self, body):
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            self._json({"tables": {}} if self.path == "/_lab/data/baseline" else {} if self.path == "/_lab/data"
+                       else {"ok": True})
+
+        def do_POST(self):
+            self._json({"reset": True})
+
+    server = ThreadingHTTPServer(("127.0.0.1", LAB_PORT), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 def verify() -> int:
@@ -350,6 +440,7 @@ def verify() -> int:
     release_id = next(r["id"] for r in p.get(f"/api/v1/apps/{app_id}")["releases"] if r["commit_sha"] == commit)
     out = BASE / "verify"
     out.mkdir(parents=True, exist_ok=True)
+    lab = lab_stand_in()
     worker = spawn([sys.executable, "-m", "twinlab2.worker", "--database", str(catalog), "--types", "verify",
                     "--idle", "0.5"], out / "worker.log",
                    extra_env={**extra, "TWINLAB2_RECORDINGS": str(judges), "TWINLAB2_LAB_TOKEN": "",
@@ -382,6 +473,7 @@ def verify() -> int:
                           "dimensions": {k: v.get("status") for k, v in (verification["dimensions"] or {}).items()},
                           "reasons": verification["reasons"]}, indent=1))
     finally:
+        lab.shutdown()
         if worker.poll() is None:
             worker.terminate()
             try:

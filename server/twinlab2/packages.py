@@ -21,6 +21,7 @@ before that are read from the old blob column (`artifacts.content`).
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import re
 import unicodedata
@@ -46,15 +47,27 @@ def migrate(db):
 # -- storage: the one place to switch to artifacts.put(kind="builder_package") -------------------
 
 
-def put_package(db, app_id, revision, data: bytes) -> str:
-    """Store the package bytes as a `builder_package` artifact (once per revision: the same
-    revision is the same bytes); returns the reference `open_package` takes."""
-    if db.execute("SELECT 1 FROM brief_packages WHERE revision = ?", (revision,)).fetchone() is None:
+def put_package(db, app_id, revision, data: bytes, manifest: str | None = None) -> str:
+    """Store the package bytes as a `builder_package` artifact, once per revision and bytes;
+    returns the reference `open_package` takes. The revision is the manifest's hash: the same
+    manifest packed by a newer portal (BUILD_TASK.md worded differently) is other bytes, kept
+    under `<revision>.<their sha-256>`, so an earlier revision's bytes are never served for it."""
+    key = revision
+    row = db.execute("SELECT archive, artifact_id FROM brief_packages WHERE revision = ?", (key,)).fetchone()
+    if row is not None and hashlib.sha256(artifacts.content(db, row, "archive")).hexdigest() !=             hashlib.sha256(data).hexdigest():
+        key = f"{revision}.{hashlib.sha256(data).hexdigest()[:16]}"
+        row = db.execute("SELECT 1 FROM brief_packages WHERE revision = ?", (key,)).fetchone()
+        if row is None:  # brief_packages.revision references briefs: the same brief under this key
+            if manifest is None:
+                manifest = db.execute("SELECT manifest FROM briefs WHERE revision = ?", (revision,)).fetchone()[0]
+            db.execute("INSERT INTO briefs(revision, app_id, manifest) VALUES (?, ?, ?) ON CONFLICT (revision) DO NOTHING",
+                       (key, app_id, manifest))
+    if row is None:
         ref = artifacts.save(db, artifacts.put(data, kind="builder_package", app_id=app_id,
                                                content_type="application/zip"))
         db.execute("INSERT INTO brief_packages(revision, archive, artifact_id) VALUES (?, ?, ?)",
-                   (revision, b"", ref.id))
-    return f"brief_packages:{revision}"
+                   (key, b"", ref.id))
+    return f"brief_packages:{key}"
 
 
 def stored_row(db, storage_ref: str):
@@ -235,7 +248,7 @@ def freeze(db, app_id, user, approved_sha256, note, version_path, override=None)
     at = audit.now()
     db.execute("INSERT INTO briefs(revision, app_id, manifest) VALUES (?, ?, ?) ON CONFLICT (revision) DO NOTHING",
                (current.revision, app_id, current.manifest))
-    ref = put_package(db, app_id, current.revision, current.package)
+    ref = put_package(db, app_id, current.revision, current.package, current.manifest)
     db.execute("""INSERT INTO builder_packages(app_id, rev, revision, sha256, size, storage_ref, approved_by,
                   approved_at, summary, diff, report, completeness, known_gaps) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                (app_id, rev, current.revision, current.sha256, len(current.package), ref, user, at,
