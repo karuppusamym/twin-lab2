@@ -88,7 +88,11 @@ jobs:
           Set-Content "$env:ProgramData\TwinLabRecorder\policy.json" "{}"
           $p = Start-Process msiexec -ArgumentList "/x `"$env:TWINLAB_MSI`" /qn /norestart /l*v `"$env:RUNNER_TEMP\uninstall.log`"" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\uninstall.log" -Tail 60; throw "uninstall exited $($p.ExitCode)" }
-          if (Test-Path "$env:ProgramFiles\TwinLab Recorder") { throw "program folder left behind" }
+          if (Test-Path "$env:ProgramFiles\TwinLab Recorder") {
+            Get-ChildItem "$env:ProgramFiles\TwinLab Recorder" -Recurse -Force | Select-Object -First 30 -ExpandProperty FullName | Write-Host
+            Get-Content "$env:RUNNER_TEMP\uninstall.log" | Select-String -Pattern "PurgeData|RemoveFiles|RemoveFolders|cleanup" | Select-Object -First 20 | Write-Host
+            throw "program folder left behind"
+          }
           if (Test-Path "HKLM:\SOFTWARE\Policies\TwinLab\Recorder") { throw "policy values left behind" }
           if (Test-Path "$env:LOCALAPPDATA\TwinLabRecorder") { throw "user data left behind" }
           if (Test-Path "$env:ProgramData\TwinLabRecorder") { throw "ProgramData left behind" }
