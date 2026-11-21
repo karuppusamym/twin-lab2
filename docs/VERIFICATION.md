@@ -1,0 +1,175 @@
+# Local verification
+
+Every result below is **Locally tested** (on the developer's Windows PC) unless it says otherwise; labels as in the README's *What works today*. **Nothing here is externally validated**: there has been no recorder trial on a live managed PC and no OpenShift deployment. The Orders-to-Billing milestone (next section) did a fresh blind rebuild from exported packs and a clean-container install, all on the same PC; the older Orders/Billing release replay below used previously built fixture apps.
+
+## Standalone: Twin Lab code absorbed, packages and folders (2026-11-21)
+
+TwinLab2 no longer downloads Twin Lab: the code it runs was copied from twin-lab 90bdd91 and trimmed to the paths it reaches ([UPSTREAM.md](UPSTREAM.md)), and the flat modules moved into `server/`, `recorder/` and `contract/`. Paths in the sections below are as they were at the time.
+
+| Area | Status | Result |
+|---|---|---|
+| Test suite, SQLite | Locally tested | `python -m pytest`: 225 passed, 3 skipped (the CaseDesk e2e and the two live-provider tests, all opt-in). 228 collected, as on `main` before: the 3 pin tests went, 3 tests for cut paths and the replay entry point came. No fetch step. |
+| Test suite, PostgreSQL 16 (UTF8) | Locally tested | 224 passed, 3 skipped; the one failure was a connection timeout during a run that was suspended for over two hours, and that test file passed on its own (15 passed). CI runs both. |
+| Replay copy against the milestone v3 build | Locally tested | `judge-recordings/ws-20261120T173343Z-fa325a22` against Orders 3.0.0 on its clean-machine image: the pinned labctl and `python -m twinlab2.replay` both give **PASS WITHIN DECLARED SCOPE**, 8/8 acceptance cases, 65 steps, the same report but for artifact paths. `independent.run` with the copy: scenario pass, outcome MET, reset pass ("reset restored the baseline (1 table(s))"), as Verify reported on 2026-11-20. |
+| Built program | Locally tested | `python recorder/build.py` (208 MB, unsigned); `_build.json` names Twin Lab 90bdd91 and the source commit. `--help` runs; a `--portable-data record` with a mainframe target ran its collector in a spawned process (ready, ended, complete, no restarts), and one with `--exe notepad.exe` passed preflight (UI Automation answers) and recorded 2 Notepad steps. |
+| CaseDesk end to end | Locally tested | `TWINLAB_AGENT_E2E=1 python -m pytest tests/recorder/test_agent_e2e.py`: passed (36 s). CaseDesk's sources still come from `../twin-lab`; its steps run with the copied desktop Driver (`tests/recorder/desktop_drive.py`). |
+| Portal image | Locally tested | `docker build -f deploy/Dockerfile .`, then gunicorn `twinlab2.portal:wsgi()`: `/` redirects to sign-in, `/static/portal.css` 200, signed in with the password the Applications page renders (templates from the installed package). The image does not have the browser replay. |
+
+## Orders-to-Billing milestone: record, freeze, blind rebuild, clean container, Tested (2026-11-20)
+
+Full report with every step, failure and cause: `../milestone-trial/REPORT.md` (beside this repository; not committed). Portal from this branch, Twin Lab pinned at 4385949.
+
+| Area | Status | Result |
+|---|---|---|
+| Recording through the portal | Locally tested | Request a recording, the recorder from source on its own Edge driven over DevTools: 65 web steps over two tabs (Orders, Billing), each with a UUIDv7 `event_id`; Recording details shows completeness (web and network complete), contract 1.1.0, Twin Lab 4385949; upload confirmed. "Production" apps: Twin Lab's in-memory fixture Orders/Billing. |
+| Owner workflow | Locally tested | Both applications confirmed, evidence reviewed, synthetic seed and reviewed screenshots attached, one guided scenario per app, pre-freeze report (it caught a redaction false positive), packages frozen (v1, v2, Orders v3) with stored change summaries and diffs; the downloads match the approved SHA-256. |
+| Blind rebuild from the packs alone | Locally tested | Three fresh Claude subagents (no API key, no Devin), each limited to a folder holding only the packs (plus the previous build for v2 and v3). Their transcripts were audited: none read anything outside its folder; side effects outside are listed in the report. |
+| Clean machine | Locally tested | Fresh `python:3.13-slim` containers with only the release ZIPs; dependencies installed inside; Twin Lab's lab agent beside each app for reset. An order made in Orders is billed in Billing, data survives a container restart, and reset returns both apps to the seed (7/7 checks on v1, 9/9 on v2 and v3). |
+| Release verification (Verify) | Locally tested | v1 1.0.0: business outcome met (7/7 acceptance cases), reset pass, but the DOM-fidelity replay failed on 47 steps (structure the pack did not describe): **Packaged**. v2 2.0.0 (changed requirement: invoices above 100.00 need approval, plus an owner interface-structure note): 8/8 cases, replay failed on one element state: **Packaged**. Orders v3 (the note adds disabled controls and row counts) → 3.0.0 for both: replay PASS WITHIN DECLARED SCOPE, 8/8, reset pass: **Tested**. No GitHub repository was used, so there was no CI gate; required checks cannot be local checks. |
+| Externally validated | No | Same PC throughout; fixture apps, not a production system; builders were subagents given the ZIPs, not the portal's build sessions; no managed PC, desktop or mainframe capture, OpenShift or real GitHub checks. |
+
+Fixed on the way: Verify no longer makes a release Tested when a scenario failed or was not run or the reset failed (the release keeps the results and stays Packaged); a recording linked to several scenarios is replayed once per verification (a second replay started from the first one's data); the README's PostgreSQL test container now uses UTF8.
+
+Since 2026-11-20 the portal calls offering a session **Request a recording** (the stored session status is still `offered`) and a confirmed application **Confirmed application** (stored status `known`). The results below keep the wording of the day they were run.
+
+| Check | Result |
+|---|---|
+| Live Chromium recorder | Attached to a local Chromium session with CDP and recorded nine events across tabs, including interactions. The session retained the upstream commit and stable event IDs. |
+| Mixed-source recovery | Automated fixture combined web and Windows channel logs, recovered an incomplete final line, reimported without deleting later events, and kept the original event linked. |
+| Catalog and Git releases | Automated tests verified many-to-many recording assignments, reviewed attachments, immutable older build packs, packaging from the committed tree, running the extracted ZIP, earlier release downloads and deployment registration. |
+| Orders/Billing release replay | Imported the existing 108-event recording, exported separate briefs, packaged the previously built fixture apps from temporary Git commits, downloaded both ZIPs and launched both extracted apps. The existing judge replayed all 107 executable steps. All 16 acceptance cases passed within the declared scope. |
+| OpenShift | Implemented only. Manifest wiring was checked locally. Cluster rollout, image registry access, and route behavior need a target OpenShift project. |
+
+The live capture used a browser. The mixed desktop test used recorded input fixtures. A fresh enterprise desktop capture, fresh agent rebuild, and clean-machine dependency installation were outside this test run. Interface evidence for direct API, database and utility calls is supplied through reviewed attachments.
+
+Run `python -m unittest discover -s tests -v` from the project directory to repeat the automated catalog, recovery and release checks.
+
+## Pin moved to Twin Lab 90bdd91: the desktop Driver waits itself (2026-11-20)
+
+All **Locally tested** (Windows 11, Edge, .NET 6). Twin Lab #64 moved the waits that `tests/test_agent_e2e.py` had added around the Driver (foreground lock, a covered point, a drop-down list still filling) into `labctl.desktop.drive`, so the test's `to_front()` and `patient_driver()` are gone. Upstream changed only `desktop/drive.py` and `desktop/win.py`.
+
+| Check | Result |
+|---|---|
+| Pin | Tree digest `8eea5b58…` from a clean detached worktree of twin-lab `90bdd91`; `fetch` agrees. |
+| Click-driving end to end (`TWINLAB_AGENT_E2E=1`), no test-side workarounds | Pass, 3 runs in a row. |
+| Suite | `python -m pytest`: 225 passed, 3 skipped (opt-in e2e and two live-provider tests). |
+
+## Pin moved to Twin Lab 4385949: contract 1.1 collectors (2026-11-20)
+
+Windows 11, Python 3.13, PyInstaller 6, Twin Lab `4385949` (twin-lab #61, #62, #63). All **Locally tested**.
+
+| Check | Result |
+|---|---|
+| Pin | Tree digest `f6cae981…` from a clean detached worktree of twin-lab `4385949`; `fetch` and `verify` agree. No new third-party dependencies upstream (`requirements-recorder.txt` unchanged). |
+| Fixture references | Rebuilt by the pinned collectors from `tests/fixtures/workstation-session/`: the only differences are two added fields, `contract_version` (1.1.0) and `completeness`, so the fixture was regenerated within contract 1.x. That session was recorded before event ids: its steps carry none, and the recorder now sends it as 1.0.0 without `completeness` (the portal derives stable ids). A recording in which only some steps carry ids is refused (`test_a_recording_with_event_ids_on_only_some_steps_is_refused`). |
+| Suite | `python -m pytest`: 202 passed, 1 skipped (the opt-in click-driving end to end). |
+| Built program | `python agent/build.py` (249 MB), `_build.json`: pinned, `4385949`, contract 1.1.0. Collectors now run in "spawn" processes, so `agent/main.py` calls `multiprocessing.freeze_support()`. A one-minute `--portable-data record --exe notepad.exe` with the frozen program: the desktop collector ran in its own process and stopped at its time limit, both steps carry UUIDv7 `event_id`s and `channel`, `completeness` is `complete` (desktop complete, others not requested, loss window 2 s), and `contract_references` accepts the outbox as 1.1.0. |
+| Click-driving end to end (`TWINLAB_AGENT_E2E=1`) | **Fails, and fails the same way on the previous pin** (`430dfe5`, `main` at `8cbf770`): the CaseDesk flow records the login steps but not `btnSave`. Not caused by this pin; still to be investigated. |
+
+Not run: capture preflight. Twin Lab's `workstation/preflight.py` exists at this pin, but the recorder does not call it yet, so recordings carry no `preflight` block. Not sent to a live portal with the frozen program.
+
+## Build sessions: providers, chat, isolation (2026-11-20)
+
+| Check | Status | Result |
+|---|---|---|
+| Devin port onto the provider interface (`providers/devin_provider.py`) | Locally tested | Every Build with Devin test passes against the fake Devin and GitHub APIs (`tests/test_builds.py`): pack upload and binding, an uncertain create found by its tag and never repeated, a lost create made again only after checking, a worker killed mid-create, cancel (also during the check), an expired key, a later build's change summary. |
+| Sessions, chat and coordination (`tests/test_sessions.py`, an in-memory fake provider) | Locally tested | Duplicate clicks return the request's session and New session starts another; two parallel sessions on one package keep their own branch, workspace and conversation; an improvement session starts from another session's commit; a lost reply, a worker that died mid-send and a reply never acknowledged are all Delivery uncertain and never resent; a scope change is held, sent nowhere, and becomes revision 2 only after the owner approves it; tool approvals; interrupt and cancel; a worker restart binds the session its predecessor started; one publish per application (409 while held, taken over when expired); a session cannot take over another session's release; Compare results runs the release checks on each candidate commit; the migration turns Devin builds into Devin sessions. |
+| PostgreSQL | Locally tested | The session, build, roles and verification tests pass on PostgreSQL 16 (Docker) as well as SQLite. |
+| Claude sessions (`tests/test_claude_sessions.py`) | Locally tested | The real runner process and git against a local bare repository, with a fake agent, a fake Messages API and the fake GitHub: review question, answer acknowledged, agreed text in the agent's prompt, commit pushed to the session's branch, pull request opened, cost in USD; the default model `claude-opus-5-5` and `CLAUDE_MODEL`; only BUILD_TASK.md and evidence.json sent; a dropped Messages API answer is Delivery uncertain and not resent; an agent question and a denied tool approval through the chat; interrupt then continue; cancel stops the runner; a killed runner is started again and resumes without repeating the review; the agent never sees the GitHub token. |
+| Copilot sessions | Locally tested (fake agent only) | The same runner flow with the Copilot backend and a fake agent; off without `TWINLAB2_ENABLE_COPILOT`. The Copilot SDK itself, its authentication and its deployment are **not validated**. |
+| Claude Agent SDK and Messages API for real | Not run | `tests/test_live_providers.py` is skipped: no Anthropic key was used and nothing was spent. The agent entry point (`providers/agents.py`) follows `claude-agent-sdk` 0.2.186's documented types but has not run against the real SDK. |
+| Real Devin sessions | Not run | No Devin API call was made: everything ran against the fakes. Nothing is externally validated. |
+
+## Workstation recorder and portal references (2026-11-19)
+
+Windows 11, Edge 142, .NET 6 SDK, Python 3.13, Twin Lab `labctl.workstation` (twin-lab branch `claude/new-session-6114b2`).
+
+| Check | Result |
+|---|---|
+| Portal: pairing, tokens, agent API, mapping (`tests/test_registry.py`) | Pass. Codes are single use, expire, and are refused after 20 failures in 10 minutes; tokens and codes are stored as SHA-256 only; a revoked machine gets 401; references create `discovered` applications, map by identity on a resend, link the automation of an offered session, and refuse unknown keys, a timeline naming an application not sent, and another machine's session. |
+| Portal sign-in (`tests/test_registry.py`) | Pass. Without a password or the proxy only this machine is served; password sign-in; `X-Forwarded-User` only with `TWINLAB2_TRUST_PROXY_USER=1`. |
+| Recorder client (`tests/test_agent.py`) | Pass. HTTPS required except for this machine; targets from the portal kept to a fixed shape; the token is DPAPI-protected in `settings.json`; pair, list and send against a real portal server. |
+| End to end with Python (`tests/test_agent_e2e.py`, `TWINLAB_AGENT_E2E=1`) | Pass. Portal on 127.0.0.1; pairing code; an offered session targeting a web application with an automation; the recorder records it with CaseDesk added as its own target, in a real Edge and the real CaseDesk (WinForms), with Notepad used in between; references sent. The portal shows the recording mapped to the web application and to CaseDesk (registered as discovered), both linked to the automation, Notepad only as "Other applications", and no typed value. |
+| End to end with the built program | Pass. `python agent/build.py` (PyInstaller, one folder, 248 MB); the folder copied to another directory and run with `--portable-data`, with no Python directory on `PATH` and no `PYTHONPATH`/`TWINLAB_PATH`: `version`, `pair`, `sessions`, `record --session 1 --exe CaseDesk.exe` (stopped with the `stop` file), `send --yes`, against `portal.py` running as its own process. The portal mapped the web application, registered CaseDesk as discovered, showed other applications unnamed, held no typed value; the session browser's profile was deleted. |
+| The window | Opened from the built program; shows the pairing state and the three tabs. Its actions call the same functions as the command line; they were not clicked through. |
+
+| Portal image | `docker build` of `Dockerfile`, run as an arbitrary UID in group 0 (as OpenShift runs it): `/healthz` answers, a page without `X-Forwarded-User` is refused (401) and served with it, the agent API refuses a wrong pairing code (403). |
+
+Not verified: a second PC or clean VM; a signed build; endpoint protection or AppLocker on a managed PC; `deploy/openshift-portal.yaml` on a cluster (the OAuth proxy sidecar, the route, the volume).
+
+## UiPath readiness: mainframe, browser options and the second review (2026-11-19)
+
+| Check | Result |
+|---|---|
+| Built program, with the portal, all three surfaces | Pass. A copy of the folder, no Python on `PATH`: paired, offered session for the web application, `record --session 1 --exe CaseDesk.exe --tn3270 127.0.0.1:<demo host>`; real Edge, real CaseDesk, the synthetic mainframe through the proxy. The portal mapped the web application and registered CaseDesk and the mainframe as discovered, with labels such as `USERID`; no typed value, no account number. CaseDesk: 37 steps (typing through UI Automation). |
+| Built program, without a portal | Pass. A fresh copy, never paired: `record --exe CaseDesk.exe --tn3270 …`, CaseDesk started outside the session and recorded from its first step, `show` lists both applications. |
+| Mainframe proxy (`test_workstation_mainframe.py`) | Pass. Sign-on with a wrong then a right password, two account inquiries, PF3: screens, fields by label, keys; password fields keep nothing; no value in steps or screen files; the same map with other data is one screen id. Synthetic host only: no real mainframe or emulator was used. |
+| Browser modes (`test_workstation_gui.py`) | Pass. Attached to a browser started elsewhere (left running); a kept profile used by two sessions in a row. |
+| Fresh process hears UI Automation | Pass (`test_a_fresh_process_hears_ui_automation_events`). |
+| Twin Lab suite | 1584 passed, 27 skipped, 1 failed: `test_pagerules.py::test_no_typed_value_and_no_script_is_in_the_package`, which types the date 2026-11-20 and finds it in the package's own timestamp on that date (not related to this work). The recorder tests were run again after the review fixes. |
+
+Not checked: a real UiPath robot, a real mainframe or emulator, Chrome with UiPath's extension.
+
+## A real recording through the portal (2026-11-20)
+
+The built recorder, paired with the portal on this PC, recorded an offered session for the automation "Demo: form, calculator and mainframe":
+
+| Surface | Application | Recorded | Sent to the portal |
+|---|---|---|---|
+| Web | the public Selenium test form, https://www.selenium.dev/selenium/web/web-form.html (synthetic text, a select, a check box, a radio button, submitted) | 11 steps, HAR of that origin only | `my-text-id`, `my-textarea`, `my-select`, submit; route `/selenium/{id}/{id}` |
+| Desktop | Windows Calculator (a UWP app behind ApplicationFrameHost), 128 × 4 = | 8 steps | `clearButton`, `One`, `Two`, `Eight`, `multiplyButton`, `Four`, `equalButton` |
+| Mainframe | the synthetic TN3270 host through the proxy | 16 steps | `USERID`, `PASSWORD`, `ACCOUNT NO`, `Enter`, `PF3`, screens by title |
+
+example.com, visited in the session's browser, left no step and no HAR entry; the other applications in front appear as "Other applications". No typed text, result or account number reached the portal. The first run lost the web steps (the built recorder announced its browser before Playwright had attached its listeners); the session now announces the browser only once it listens, and the second run recorded them.
+
+Not checked: a real UiPath robot, a real mainframe or emulator, a second PC, a signed build.
+
+## Release states and deployment verification (2026-11-20)
+
+Locally tested by `tests/test_release_states.py` (unit tests against the Flask test client, a temporary Git repo and SQLite catalog):
+
+| Check | Result |
+|---|---|
+| Packaged | Pass. A newly registered release is Packaged; **Publish** is refused (400) and it is not shown in the catalog as a tested release. |
+| Packaged → Tested refusals | Pass. Refused, with nothing stored, for: another commit, an abbreviated commit, no platform, no launch instructions, no or invalid reset check, a brief scenario without a result, an unknown result value, a result for a scenario not in the brief. A brief without scenarios cannot be tested. |
+| Packaged → Tested → Published | Pass. Results linked to the brief's scenarios (from linked recordings, and from an explicit `scenarios` list) are stored and shown; a re-test replaces them; publishing a Tested release succeeds; testing or publishing a Published release again is refused; the ZIP still downloads. |
+| Catalog card | Pass. Shows the latest Tested release (not a newer Packaged one), its pass/fail/not-run counts and platform, **Open demo** only with a deployment, and **Download tested release**. |
+| Version check | Pass. A stub HTTP server on 127.0.0.1 and an OS-chosen free port: `{"commit": <release commit>}` at `<URL>/.twinlab/version` → Verified; another commit (after **Check version again**) → Registered URL (not verified) naming the commit it serves; 404, HTML, a JSON list, an abbreviated commit, and a stopped server → Registered URL (not verified), on the release page and the catalog. |
+| Migration | Pass. A catalog with the earlier `releases` and `deployments` tables opens twice; its release becomes Packaged and its deployment an unverified registered URL. |
+| Whole suite | `python -m unittest discover -s tests`: 27 tests, OK, 1 skipped (the Edge/CaseDesk end-to-end test, which needs `TWINLAB_AGENT_E2E=1`). |
+
+Not verified: a real deployment (OpenShift route) answering `/.twinlab/version`, a version check through a proxy or with a private certificate authority, and the pages in a browser (checked through the rendered HTML only).
+
+## Evidence integrity: resend, merge, web identity by path (2026-11-20)
+
+Windows 11, Python 3.13. Locally tested with automated tests on temporary databases (`tests/test_integrity.py`); not tried by hand in a browser, not run with the recorder.
+
+| Check | Result |
+|---|---|
+| Resend keeps the owner's selection | Pass. Select only event 1 of a recording, send it again: the selection stays `[1]` (it became `[1, 2]` before). An event new in a resend is stored as a suggestion, shown as "new, not yet reviewed" on the recording and the application, and left out of the build pack until the owner saves it. A link the owner has not reviewed still follows the resend. |
+| Merge | Pass. An application with an exported brief merges (it failed with `IntegrityError: FOREIGN KEY constraint failed` before); the brief and its package download from the surviving application, byte for byte. The preview lists what moves and what is combined; the merge needs the preview's confirmation and refuses one made before the applications changed. Two reviewed links to one recording become the union of the selections with both notes; an unreviewed link adds suggestions only. Rows in a table the merge does not move (attachments, releases) block it. |
+| Web identity by path | Pass. `https://example.test/orders` and `/billing` are two identities; one host's steps go to Orders, Billing, a longer `/orders/lines` and a host-only identity by the longest matching path; steps no path claims go to a discovered application, not to a path target; the owner's whole-host override; a second claim on the same host and path is refused. Path identities are not sent to the recorder as deny keys. |
+| Migration | Pass. A catalog without the new columns opens; its links count as reviewed and keep their selection and notes; a host-only identity stored before still maps references; migrating twice is harmless. |
+
+## The onboarding journey (2026-11-20)
+
+| Check | Result |
+|---|---|
+| Journey stage, missing information and one next action (`tests/test_journey.py`) | Pass. The first step not done is the stage; a discovered application asks for a scope decision; examples need an identity, then a paired machine; Verify is done once the latest release is Tested and Open or download once it is Published; a not-replicated application is out of the journey. |
+| Pages (`tests/test_journey.py`) | Pass. Each catalog card shows owner, purpose, stage, missing information and exactly one action; identities and the Git repository are on the Setup / Advanced page; machines are reached from Setup / Advanced, not the main navigation; the application page's forms no longer overwrite each other's fields. |
+| Local render | The catalog, an application page, its Setup / Advanced page, Request a recording and Setup / Advanced rendered from `python portal.py --port 8791` with a sample catalog. |
+
+Not checked: onboarding with real users.
+
+## Recorder contract 1.0.0 and the pinned Twin Lab (2026-11-20)
+
+| Check | Result |
+|---|---|
+| Contract tests (`tests/test_contract.py`) | Pass. The schema is valid JSON Schema 2020-12. The small validator agrees with `jsonschema` 4.25 on every sample. Payloads at 1.0.0 and at a newer minor (1.7.3, with an unknown field) pass. A missing version, 0.9.0, 0.3.1 and 2.0.0 are refused on pairing and on upload (426) with what to update, the recorder or the portal. A refused pairing does not use up the code. A wrong shape at a supported version gets 400 with field paths. Each recording keeps its contract version, recorder, recorder version and Twin Lab commit, and its page shows them. |
+| Fixture built by the real collectors | Pass. `tests/fixtures/workstation-session/` (synthetic CaseDesk, a web application and the demo mainframe) was built with the pinned commit's `labctl.workstation.timeline`, and the result conforms. The test rebuilds it with the vendored pin and compares, and it skips that step when nothing is vendored. |
+| Real recordings on this PC | All four sessions recorded on 2026-11-20 (`%LOCALAPPDATA%\TwinLabRecorder\recordings`), including the web, Calculator and mainframe run above, conform after the recorder's stamping. They were checked in place and not copied into the repository. |
+| Pin | One tree digest from GitHub's archive of `430dfe5`, from `git archive` of a local clone and from the Windows checkout with autocrlf. `fetch` refuses a different digest, and `verify` refuses a copy edited after fetching. |
+| Built program from the pin | `python agent/build.py` with no `TWINLAB_PATH` (248 MB). `_build.json` has `"pinned": true`, the commit, the tree digest and contract 1.0.0, and the schema is bundled. Run from a copied folder with only `C:\Windows\System32` on `PATH`, against a live portal: `pair` and `send --yes` of the fixture's references worked. The portal recorded TwinLabRecorder 0.2.0, contract 1.0.0 and Twin Lab `430dfe538965`. |
+| The previous build (0.1.0, `dist/TwinLabRecorder-new`) against the new portal | `pair` is refused: "this recorder does not declare a contract_version … Update TwinLabRecorder to 0.2.0 or later". The same code then paired the 0.2.0 build. (The older `dist/TwinLabRecorder` 0.1.0 folder fails before it reaches the portal, with `LookupError: unknown encoding: idna`. That fault is in the old build itself.) |
+
+Not run: the click-driving end to end (`TWINLAB_AGENT_E2E=1`) and a new recording with the 0.2.0 build. `capture.py` was checked only up to starting the pinned `labctl.cli`.

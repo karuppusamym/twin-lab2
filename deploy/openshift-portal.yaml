@@ -56,10 +56,10 @@ items:
               resources:
                 requests: {cpu: 50m, memory: 128Mi}
                 limits: {memory: 512Mi}
-            # the build worker (worker.py): works the job queue in the same database
+            # the build worker (python -m twinlab2.worker): works the job queue in the same database
             - name: worker
               image: REGISTRY/twinlab2-portal:TAG
-              command: ["python", "worker.py"]
+              command: ["python", "-m", "twinlab2.worker"]
               env:
                 - name: DATABASE_URL
                   valueFrom: {secretKeyRef: {name: twinlab2, key: database-url}}

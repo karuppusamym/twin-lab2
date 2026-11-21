@@ -11,28 +11,27 @@ before it can merge. By taking part you agree to follow the [Code of Conduct](CO
   environment and are never shown or stored in the catalog.
 - **Be honest about status.** A capability is *Implemented*, *Locally tested* or *Externally
   validated* (see the README); raise a label only with the evidence it needs, and record it in
-  [VERIFICATION.md](VERIFICATION.md).
+  [VERIFICATION.md](docs/VERIFICATION.md).
 - **Do not loosen a test to make it pass.** If a test is wrong, fix it in its own pull request
   and say why.
-- The recorder comes from Twin Lab at the pinned commit in `twinlab.lock.json`. Changes to the
-  collectors themselves go to [Twin Lab](https://github.com/karuppusamym/twin-lab); a new pin is
-  its own pull request here (see [UPSTREAM.md](UPSTREAM.md)). Changes to what crosses between
-  portal and recorder follow the versioned [recorder contract](RECORDER-CONTRACT.md).
+- The recorder's collectors, the recording format and Verify's replay were copied from Twin Lab
+  at 90bdd91 and are this repository's code now ([docs/UPSTREAM.md](docs/UPSTREAM.md) lists what
+  came from where). A change taken from Twin Lab says which upstream commit it came from. Changes to what crosses between
+  portal and recorder follow the versioned [recorder contract](docs/RECORDER-CONTRACT.md).
 
 ## Getting set up
 
 You need Python 3.13.
 
 ```bash
-python -m pip install -r requirements.txt -r requirements-test.txt
+python -m pip install -r requirements-test.txt
 ```
 
-```bash
-python -m agent.twinlab fetch
-```
+That installs `contract/`, `server/` (with its test and replay extras) and `recorder/` as
+editable packages. Run the tests with `python -m pytest` (`tests/server`, `tests/recorder`).
 
 ```bash
-python portal.py
+python -m twinlab2.portal
 ```
 
 The portal opens on http://127.0.0.1:8765. The README explains the database and artifact

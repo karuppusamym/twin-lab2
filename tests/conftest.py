@@ -1,9 +1,13 @@
-"""The portal modules sit at the repository root and the tests import each other by name."""
+"""The test helpers (support, fakes, and test modules other tests import) are imported by name
+from tests/, tests/server and tests/recorder. The packages themselves come from the editable
+installs (`pip install -r requirements-test.txt`), or else from the checkout's folders."""
 
 from pathlib import Path
 import sys
 
-for path in (Path(__file__).resolve().parent, Path(__file__).resolve().parent.parent):
+TESTS = Path(__file__).resolve().parent
+ROOT = TESTS.parent
+for path in (ROOT / "contract", ROOT / "recorder", ROOT / "server", TESTS / "recorder", TESTS / "server", TESTS):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 

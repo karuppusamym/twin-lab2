@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "twinlab2-recorder"
+version = "0.2.0"
+description = "TwinLabRecorder: records a workstation session across web, desktop and mainframe applications"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+# twinlab2-contract is this repository's contract/: install both at once,
+#   pip install -e ./contract -e ./recorder
+dependencies = [
+    "twinlab2-contract",
+    "playwright>=1.44",
+    "comtypes>=1.4; sys_platform == 'win32'",
+    "pydantic>=2.6",
+    "pypdf>=4.0",
+    "pillow>=10",
+]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6"]
+
+[project.scripts]
+TwinLabRecorder = "twinlab2_recorder.main:main"
+
+[tool.setuptools.packages.find]
+include = ["twinlab2_recorder*"]

@@ -7,7 +7,7 @@
 # only the database, copy, then start the portal:
 #
 #   docker compose -f deploy/docker-compose.yaml up -d postgres
-#   python migrations.py copy .state/catalog.db postgresql://twinlab2:twinlab2@127.0.0.1:55433/twinlab2
+#   python -m twinlab2.migrations copy .state/catalog.db postgresql://twinlab2:twinlab2@127.0.0.1:55433/twinlab2
 #   (and copy .state/artifacts into the `artifacts` volume, as the copy reminds you)
 #   docker compose -f deploy/docker-compose.yaml up --build portal
 name: twinlab2
@@ -27,7 +27,7 @@ services:
       interval: 2s
       retries: 30
   portal:
-    build: {context: .., dockerfile: Dockerfile}
+    build: {context: .., dockerfile: deploy/Dockerfile}
     depends_on:
       postgres: {condition: service_healthy}
     environment:
@@ -39,17 +39,17 @@ services:
       TWINLAB2_SECURE_COOKIES: "0"
       TWINLAB2_HOSTS: 127.0.0.1
     # no OAuth proxy here: listen on the container's interface and sign in with the password
-    command: ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "portal:wsgi()"]
+    command: ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "twinlab2.portal:wsgi()"]
     ports: ["127.0.0.1:8766:8080"]
     volumes: [artifacts:/artifacts]
   worker:
-    build: {context: .., dockerfile: Dockerfile}
+    build: {context: .., dockerfile: deploy/Dockerfile}
     depends_on:
       postgres: {condition: service_healthy}
     environment:
       DATABASE_URL: postgresql://twinlab2:twinlab2@postgres:5432/twinlab2
       TWINLAB2_ARTIFACT_DIR: /artifacts
-    command: ["python", "worker.py"]
+    command: ["python", "-m", "twinlab2.worker"]
     volumes: [artifacts:/artifacts]
 volumes:
   postgres:

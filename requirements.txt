@@ -1,8 +1,5 @@
-Flask>=3.1,<4
-PyYAML>=6
-boto3>=1.34
-httpx>=0.27,<1
-# PostgreSQL for a shared deployment (DATABASE_URL=postgresql://...); SQLite needs nothing extra
-psycopg[binary]>=3.2,<4
-# Claude build sessions: the clarification conversation (Messages API)
-anthropic>=0.75,<1
+# The portal (server/) and what it shares with the recorder (contract/), from the repository root:
+#   pip install -r requirements.txt     (the same as: pip install -e ./contract -e ./server)
+# Dependencies are declared in server/pyproject.toml and contract/pyproject.toml.
+-e ./contract
+-e ./server

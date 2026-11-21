@@ -1,7 +1,7 @@
 # Provider adapter experiment
 
-> The production version is `providers/` (see the README's *Build sessions*): `providers/clarify.py` is this
-> probe on the official `anthropic` SDK, and Claude sessions run the Agent SDK in `providers/runner.py`.
+> The production version is `twinlab2/providers/` (see the README's *Build sessions*): `twinlab2/providers/clarify.py` is this
+> probe on the official `anthropic` SDK, and Claude sessions run the Agent SDK in `twinlab2/providers/runner.py`.
 > This folder is kept as the record of the experiment.
 
 This is an isolated package-review and clarification probe, not an enabled portal builder.

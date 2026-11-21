@@ -29,7 +29,7 @@ so it can be removed and the secret revoked.
   tamper with stored artifacts without the SHA-256 checks noticing.
 - Weaknesses in the deployment files under `deploy/` or the build runners.
 
-A flaw in the pinned recorder collectors themselves belongs to
-[Twin Lab](https://github.com/karuppusamym/twin-lab/security); report it there, or here if you
-are unsure. Demo apps are meant to be look-alike copies with synthetic data; that they resemble
+The recorder's collectors were copied from Twin Lab ([docs/UPSTREAM.md](docs/UPSTREAM.md)): report
+a flaw in them here, and to [Twin Lab](https://github.com/karuppusamym/twin-lab/security) if it
+is in Twin Lab too. Demo apps are meant to be look-alike copies with synthetic data; that they resemble
 a real application is by design and not a vulnerability.
