@@ -373,7 +373,9 @@ class Recorder:
                  session: bool = False, levels: dict[int, str] | None = None,
                  admit: Callable[[int], str | None] | None = None,
                  unfocused_values: bool = False, journal=None,
-                 resume: bool = False) -> None:  # fmt: skip
+                 resume: bool = False,
+                 exclude_window: Callable[[int], str | None] | None = None,
+                 exclusion_masks: Callable[[int], list | None] | None = None) -> None:  # fmt: skip
         require()
         from twinlab2_recorder.desktop import win
 
@@ -392,6 +394,13 @@ class Recorder:
         # moment its first input or event arrives (a robot acts before any poll would see it).
         self.admit = admit
         self.refused: set[int] = set()
+        # The PC's exclude list (twinlab2_recorder.workstation.exclude), in a session that has one:
+        # exclude_window(hwnd) names the entry a window falls under (its program or its title),
+        # and such a window gets no event, tree or picture; exclusion_masks(hwnd) gives where
+        # excluded windows cover a picture of hwnd (None: the picture is not kept).
+        self.exclude_window = exclude_window
+        self.exclusion_masks = exclusion_masks
+        self.excluded_events = 0  # counted, never described
         # A robot (UiPath's Simulate input) sets values without the keyboard focus: in a session
         # recording one, such a change is a step too.
         self.unfocused_values = unfocused_values
@@ -778,9 +787,29 @@ class Recorder:
         """Event ids captured, not yet written or dropped."""
         return self.__dict__.setdefault("_marked", set())
 
+    def _excluded(self, hwnd) -> bool:
+        """Is this window excluded? A window once excluded stays so until it closes (its close
+        is not a step either), even when its title changes."""
+        if self.exclude_window is None or not hwnd:
+            return False
+        seen = self.__dict__.setdefault("excluded_hwnds", set())
+        if int(hwnd) in seen:
+            return True
+        try:
+            hit = self.exclude_window(int(hwnd)) is not None
+        except Exception:  # noqa: BLE001 - a window gone while it was read is not excluded
+            return False
+        if hit:
+            seen.add(int(hwnd))
+        return hit
+
     def _add(self, action: dict) -> None:
         from twinlab2_recorder.workstation import journal as capture
 
+        hwnd = action.get("hwnd") or (action.get("desc") or {}).get("window")
+        if getattr(self, "exclude_window", None) is not None and self._excluded(hwnd):
+            self.excluded_events += 1  # in an excluded window: no event, step or journal line
+            return
         if "event_id" not in action:  # captured now: its id is permanent from here on
             when = datetime.fromtimestamp(action.get("t") or time.time(), UTC)
             marker = capture.stamp({"action": action.get("kind"), "ts": when.isoformat(
@@ -1116,6 +1145,8 @@ class Recorder:
         win = self.win
         if not hwnd or (self.frame_pid.get(hwnd) or win.window_pid(hwnd)) not in self.pids:
             return None
+        if getattr(self, "exclude_window", None) is not None and self._excluded(hwnd):
+            return None  # excluded on this PC (its title): no tree, no picture
         raw = win.capture(hwnd)
         if raw is None or not win.user32.IsWindowVisible(hwnd):
             # Gone while it was read: a window that is closing gives a tree without its
@@ -1125,12 +1156,23 @@ class Recorder:
             from twinlab2_recorder.desktop import winlook
 
             try:
-                raw["_pixels"] = winlook.grab(hwnd)
+                masks = self._exclusion(hwnd)  # where excluded windows are, at this moment
+                raw["_pixels"] = winlook.grab(hwnd) if masks is not None else None
+                raw["_exclusion"] = masks
                 winlook.mark_message_icon(raw)  # which standard icon a message box shows
             except (OSError, ValueError):
                 pass
         clean = privacy.clean(raw, self.known, self.structure)
         return raw, clean
+
+    def _exclusion(self, hwnd: int) -> list | None:
+        """exclusion_masks(hwnd): [] without an exclude list; None when the picture is skipped."""
+        if getattr(self, "exclusion_masks", None) is None:
+            return []
+        try:
+            return self.exclusion_masks(hwnd)
+        except Exception:  # noqa: BLE001 - not known where excluded windows are: no picture
+            return None
 
     def _locate(self, desc: dict, snaps: list[tuple[dict, dict] | None]) -> dict:
         """The target's locator in the first snapshot that holds it (before, then after)."""
@@ -1285,7 +1327,10 @@ class Recorder:
             clean = json.loads(json.dumps(tree_snap[1]))
             (self.out / rel).write_text(json.dumps(clean, ensure_ascii=False), encoding="utf-8")
             step["tree"] = rel
-            if self.screenshots and kind != "window_close":
+            shot_hwnd = hwnd if kind != "menu_open" else a["hwnd"]
+            if self.screenshots and kind != "window_close" and (
+                tree_snap[0]["_exclusion"] if "_exclusion" in tree_snap[0] else self._exclusion(shot_hwnd)
+            ) == []:  # a raw screenshot only when no excluded window is anywhere over it
                 shot = f"screens/{seq:04d}.png"
                 if win.screenshot(hwnd if kind != "menu_open" else a["hwnd"], self.out / shot):
                     step["screenshot"] = shot
@@ -1293,6 +1338,8 @@ class Recorder:
                 pic = self._picture(hwnd if kind != "menu_open" else a["hwnd"], tree_snap, seq)
                 if pic:
                     step["picture"] = pic
+                elif tree_snap[0].get("_exclusion", []) is None:
+                    step["picture_note"] = "not kept: an excluded window covered it"
         self._emit(step)
 
     def _emit(self, step: dict) -> None:
@@ -1309,11 +1356,18 @@ class Recorder:
         from twinlab2_recorder.desktop import pictures
         from twinlab2_recorder.desktop import winlook
 
+        from twinlab2_recorder.workstation import exclude
+
         try:
             raw, clean = snap
-            found = pictures.places(raw, clean)
+            masks = raw["_exclusion"] if "_exclusion" in raw else self._exclusion(hwnd)
+            if masks is None:
+                return None  # mostly under excluded windows: no picture at all
+            found = pictures.places(raw, clean) + exclude.mask_places(masks)
             fonts: dict[int, bytes | None] = {}
             for p in found:  # the fonts now, while the controls exist; the drawing comes later
+                if p.get("excluded"):
+                    continue  # an excluded window's place: filled, nothing drawn in it
                 h = p.get("hwnd") or 0
                 if h not in fonts:
                     fonts[h] = winlook.logfont_bytes(h)

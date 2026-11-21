@@ -5,7 +5,7 @@ TwinLab2 has two HTTP APIs with separate versions:
 | API | Paths | Who calls it | Versioned by | Contract |
 | --- | --- | --- | --- | --- |
 | Portal API | `/api/v1/...` | the web app (`web/`) and scripts | the path (`v1`) and `info.version` of the spec | [api/openapi.yaml](../api/openapi.yaml) |
-| Recorder agent API | `/api/agent/...`, `/api/uploads...` | the Windows recorder | the recorder contract version (`CONTRACT_VERSION`, now 1.3.0) | [RECORDER-CONTRACT.md](RECORDER-CONTRACT.md) |
+| Recorder agent API | `/api/agent/...`, `/api/uploads...` | the Windows recorder | the recorder contract version (`CONTRACT_VERSION`, now 1.4.0) | [RECORDER-CONTRACT.md](RECORDER-CONTRACT.md) |
 
 ## What `/api/v1` guarantees
 
@@ -19,7 +19,7 @@ working:
 - **Not within v1:** removing or renaming an operation or member, making an optional request member
   required, narrowing what a request member accepts, changing a member's type or meaning, or
   changing a success status. Any of these needs `/api/v2`, served next to v1 for a transition that
-  is announced in the README.
+  is announced in the README and in [design.md](design.md).
 - **Relaxing is additive:** a required request member may become optional. For example, the build
   operations' `request_key` became optional when `Idempotency-Key` arrived.
 - **Deprecation:** a member or operation that has a replacement is marked `deprecated: true` in the

@@ -228,8 +228,9 @@ SPEC: tuple[Item, ...] = (
          "3270 screen; without them the builder places them and the copy looks different.", "recordings",
          "Record the host screens again with a recorder that sends protected fields (contract 1.4).",
          capture_gap="Recorder contract 1.3 sends only unprotected fields; protected output fields appear only as "
-                     "the label of the field after them. The pack renders a layout table once protected fields "
-                     "with row, column and length arrive (`protected: true`, `text` or `shape`)."),
+                     "the label of the field after them. From contract 1.4 the recorder sends every protected "
+                     "field (the state's `texts`: row, column, length, text or shape) and the pack renders a "
+                     "layout table."),
     Item("mainframe.aid", "surface", "AID keys (Enter, PF keys, Clear)", "critical", ("mainframe",),
          "A host transaction moves on an AID key; a step without it cannot be replayed.", "recordings",
          "Record the AID steps again."),
@@ -623,10 +624,12 @@ class _Checker:
         if not self.screens:
             return ["The package has no host screen structure, so no protected field positions (labels, messages, "
                     "key line)."]
+        from twinlab2.buildpack import host_fields  # buildpack imports this module
+
         out = []
         for name in sorted(self.touched & set(self.screens)):
             states = self.screens[name].get("states") or []
-            if not any(c.get("protected") for st in states for c in st.get("controls") or []):
+            if not any(c.get("protected") for st in states for c in host_fields(st)):
                 out.append(f"Host screen `{name}` has no protected field with its position (labels, messages, "
                            "key line).")
         return out

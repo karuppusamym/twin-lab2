@@ -8,7 +8,8 @@ contract 1.1.0.
      "channels": {"web|desktop|mainframe|network": {"status": "complete|interrupted|missing|
                   not_requested", "gaps": [{"from", "to", "reason"}], "notes": [str]}},
      "network_evidence": "complete|incomplete|none",
-     "recovered": bool, "loss_window_seconds": number | null}
+     "recovered": bool, "loss_window_seconds": number | null,
+     "local_exclusions": {"count", "names", "entries", "managed"}}  (contract 1.5, optional)
 
 A channel is requested when a target needs it (a web origin: `web` and `network`; a desktop
 executable or identity: `desktop`; a TN3270 host: `mainframe`); a session says which in
@@ -30,6 +31,11 @@ judged by the recordings present, and `loss_window_seconds` is null.
 A collector supervisor that watches the collectors (heartbeats, exits) may know more than the
 journal: whatever it reports per channel, in `session.json` `channel_status` (the same shape
 as a channel here), is merged in; the worse status wins and the gaps and notes are added.
+
+`local_exclusions` (contract 1.5) says how many applications this PC's exclude list kept out of the
+recording (twinlab2_recorder.workstation.exclude): the names of the entries that matched, never a
+title, address or time. They are not gaps: an excluded application was never meant to be recorded,
+and a channel is not less complete for it.
 """
 
 from __future__ import annotations
@@ -185,7 +191,12 @@ def manifest(folder: Path, meta: dict) -> dict:
             state = from_journal(capture.read(capture.path_of(folder, ch)), ch)
         else:
             state = _legacy(folder, ch, meta)
-        channels[ch] = _fit_channel(_merge(state, supervised.get(ch)))
+        state = _merge(state, supervised.get(ch))
+        if ch == "web":
+            note = picture_note(folder)
+            if note:
+                state = dict(state, notes=[note, *(state.get("notes") or [])])  # first: never cut
+        channels[ch] = _fit_channel(state)
     statuses = [channels[c]["status"] for c in want]
     if all(s == "complete" for s in statuses):
         overall = "complete"
@@ -202,9 +213,65 @@ def manifest(folder: Path, meta: dict) -> dict:
         evidence = "incomplete"
     else:
         evidence = "none"
-    return {"overall": overall, "channels": channels, "network_evidence": evidence,
-            "recovered": bool(meta.get("recovered") or meta.get("state") == "recovered"),
-            "loss_window_seconds": capture.LOSS_WINDOW_S if journaled else None}  # fmt: skip
+    out = {"overall": overall, "channels": channels, "network_evidence": evidence,
+           "recovered": bool(meta.get("recovered") or meta.get("state") == "recovered"),
+           "loss_window_seconds": capture.LOSS_WINDOW_S if journaled else None}  # fmt: skip
+    local = local_exclusions(folder, meta)
+    if local is not None:
+        out["local_exclusions"] = local
+    return out
+
+
+def local_exclusions(folder: Path, meta: dict) -> dict | None:
+    """What this PC's exclude list kept out (exclude.summary), from the journal's `excluded`
+    rows (names only) and session.json `local_policy`."""
+    from twinlab2_recorder.workstation import exclude
+    from twinlab2_recorder.workstation.timeline import read_jsonl
+
+    policy = meta.get("local_policy") if isinstance(meta.get("local_policy"), dict) else {}
+    names = [r.get("name") for r in read_jsonl(Path(folder) / "journal.jsonl") if r.get("kind") == "excluded"]
+    entries = policy.get("entries") if isinstance(policy.get("entries"), int) else 0
+    return exclude.summary(names, entries, bool(policy.get("managed")))
+
+
+def picture_note(folder: Path) -> str | None:
+    """What the web recordings' pictures are: how many steps have one, how many the recorder
+    dropped (the next action had begun: `picture_dropped`), and how many a step names that are
+    not in the folder (removed after recording). A visual comparison then knows a missing
+    picture was never a recorder failure to write it. None when there is no web step."""
+    import json
+
+    steps = kept = dropped = missing = 0
+    for part in [folder / "web", *sorted(folder.glob("web-*"))]:
+        try:
+            lines = (part / "steps.jsonl").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                step = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(step, dict):
+                continue
+            steps += 1
+            shot = step.get("screenshot")
+            if isinstance(shot, str) and shot:
+                if (part / shot).is_file():
+                    kept += 1
+                else:
+                    missing += 1
+            elif step.get("picture_dropped"):
+                dropped += 1
+    if not steps:
+        return None
+    note = f"pictures: {kept} of {steps} steps have one"
+    if dropped:
+        note += f"; {dropped} dropped by the recorder (the next action had begun before it could be taken)"
+    if missing:
+        note += (f"; {missing} named by a step are not in the recording folder (removed after recording, "
+                 "not compared)")
+    return note
 
 
 def _has_har(folder: Path) -> bool:

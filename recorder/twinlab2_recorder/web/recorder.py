@@ -1217,6 +1217,13 @@ def mark_unsettled_pictures(steps: list[dict], drop_in: Path | None = None) -> i
     return marked
 
 
+def _excluded(exclude: Callable[[str], str | None], url: str) -> bool:
+    try:
+        return bool(url) and exclude(url) is not None
+    except Exception:  # noqa: BLE001 - an address the list cannot read is not excluded by it
+        return False
+
+
 def _origin(url: str) -> str:
     from urllib.parse import urlsplit
 
@@ -1454,8 +1461,13 @@ class _Steps:
         origins: set[str] | None = None,
         outside: Callable | None = None,
         journal=None,
+        exclude: Callable[[str], str | None] | None = None,
     ):
         self.out_dir = out_dir
+        # The PC's exclude list (twinlab2_recorder.workstation.exclude): `exclude(url)` names the
+        # entry an address falls under; such a page is not recorded and not even reported as
+        # `outside` (Session.excluded_url keeps the entry's name).
+        self.exclude = exclude
         self.seq = 0
         # A workstation session's capture journal (twinlab2_recorder.workstation.journal): each step's event
         # line the moment it is numbered, the step once it is written, and what close() folds.
@@ -1504,6 +1516,8 @@ class _Steps:
     def recorded(self, url: str, ts: str | None = None) -> bool:
         """Is this address recorded? Always, outside a session; in one, only a target origin
         (a page with no web origin yet, about:blank, is kept: it carries no data)."""
+        if getattr(self, "exclude", None) is not None and url and _excluded(self.exclude, url):
+            return False
         if self.origins is None:
             return True
         origin = _origin(url or "").lower()
@@ -2317,8 +2331,12 @@ class _Har:
     """A HAR 1.2 log built from network events, for a browser Twin Lab did not start (an
     existing context cannot be told to record a HAR). Bodies are embedded as text or base64."""
 
-    def __init__(self, origins: set[str] | None = None, journal=None) -> None:
+    def __init__(self, origins: set[str] | None = None, journal=None,
+                 exclude: Callable[[str], str | None] | None = None) -> None:  # fmt: skip
         self.entries: list[dict] = []
+        # The PC's exclude list: a request to an excluded address, or made by an excluded page,
+        # is not kept (not in the HAR, not in the network journal).
+        self.exclude = exclude
         # A workstation session's network journal: each entry as it is kept, with the values
         # typed so far taken out (`steps` holds them), linked to the last web event before it.
         self.journal = journal
@@ -2343,12 +2361,19 @@ class _Har:
         return rows
 
     def _wanted(self, request) -> bool:
-        if self.origins is None:
-            return True
         try:
             page_url = request.frame.page.url
         except Exception:  # noqa: BLE001
             page_url = request.url
+        if getattr(self, "exclude", None) is not None:
+            try:
+                own = request.url
+            except Exception:  # noqa: BLE001
+                own = ""
+            if _excluded(self.exclude, own) or _excluded(self.exclude, page_url):
+                return False
+        if self.origins is None:
+            return True
         origin = _origin(page_url or "").lower()
         return bool(origin) and origin in self.origins
 
@@ -2598,6 +2623,7 @@ def attach(
     on_ready: Callable[[], None] | None = None,
     journal=None,
     network_journal=None,
+    exclude: Callable[[str], str | None] | None = None,
 ) -> Path:
     """Record a browser that is already running (a robot's Chrome or Edge started with
     `--remote-debugging-port=9222`): pass its address, for example `http://127.0.0.1:9222`.
@@ -2610,15 +2636,17 @@ def attach(
     recorded; an action elsewhere is not written, `outside(origin, ts)` is told of it, and the
     HAR keeps only the requests that pages of these origins made. `journal` and
     `network_journal` (twinlab2_recorder.workstation.journal.Journal) receive each step and each HAR entry
-    as it is captured, so a session that dies keeps them.
+    as it is captured, so a session that dies keeps them. `exclude(url)` (the PC's exclude list,
+    twinlab2_recorder.workstation.exclude): an address it names is neither recorded nor in the HAR.
     """
     from playwright.sync_api import sync_playwright
 
     out_dir = Path(out_dir)
     (out_dir / "dom").mkdir(parents=True, exist_ok=True)
-    steps = _Steps(out_dir, screenshots, origins=origins, outside=outside, journal=journal)
+    steps = _Steps(out_dir, screenshots, origins=origins, outside=outside, journal=journal,
+                   exclude=exclude)  # fmt: skip
     steps.drop_late_pictures = True  # nothing holds the robot's next action for the picture
-    har = _Har(origins, journal=network_journal)
+    har = _Har(origins, journal=network_journal, exclude=exclude)
     har.steps = steps
     scripts = steps.scripts = _init_scripts(settle_ms)
     try:

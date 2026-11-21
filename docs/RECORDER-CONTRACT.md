@@ -1,4 +1,4 @@
-# Recorder contract 1.4.0
+# Recorder contract 1.5.0
 
 What a workstation recorder sends to the TwinLab2 portal, and how the two sides agree on a version. The
 machine-checkable form is [`contract/twinlab2_contract/recorder-contract.schema.json`](contract/twinlab2_contract/recorder-contract.schema.json)
@@ -30,8 +30,8 @@ MINOR is accepted because the portal ignores fields it does not know.
 A refusal answers with this JSON:
 
 ```json
-{"error": "this recorder speaks contract 2.0.0, newer than this portal's 1.3.0 (supported >=1.0.0 <2.0.0). Update the portal, or use a recorder for contract 1.x.",
- "update": "portal", "contract": {"portal": "1.3.0", "supported": ">=1.0.0 <2.0.0"}}
+{"error": "this recorder speaks contract 2.0.0, newer than this portal's 1.4.0 (supported >=1.0.0 <2.0.0). Update the portal, or use a recorder for contract 1.x.",
+ "update": "portal", "contract": {"portal": "1.4.0", "supported": ">=1.0.0 <2.0.0"}}
 ```
 
 The portal checks the version before anything else. An outdated recorder hears what to update,
@@ -105,7 +105,7 @@ one, the steps as labels. The recording itself stays on the PC unless the person
 | `control` | no | the **control reference**: the control's type, such as `Button`, `Edit`, `input`, `select`, `field` (a 3270 input field), `key` or `screen` |
 | `label` | no | the control's **label**: its automation id or name (`btnSave`, `txtSearch`), a web element's id or name, a 3270 field's label (`USERID`) or a key's name (`PF3`) |
 | `screen` | no | the **screen reference**: a desktop window's automation id or title, a web route with ids replaced by `{id}` (`https://host/cases/{id}`), or a 3270 screen's title (or its layout id when there is none) |
-| `key` | no | a named key pressed in the step (`Enter`, `Tab`, `F1`…`F12`) |
+| `key` | no | a named key pressed in the step (`Enter`, `Tab`, `Esc`, `Delete`, `Backspace`, `F1`…`F24`), and on a 3270 step every attention key (AID): `Enter`, `PF1`…`PF24`, `PA1`…`PA3`, `Clear`. A key's name is no data though it holds a digit |
 
 A step never holds a typed value, the content of a screen or field, or a picture. The portal stores
 only these six fields and drops any other field. It drops text over 160 characters or with control
@@ -149,6 +149,7 @@ recorder's `preflight`:
 | `completeness.network_evidence` | yes | `complete`, `incomplete` or `none` |
 | `completeness.recovered` | yes | `true` when the recording was rebuilt from its journal after the recorder stopped unexpectedly |
 | `completeness.loss_window_seconds` | no | a number ≥ 0, or `null`: at most this many seconds before the interruption may be lost |
+| `completeness.local_exclusions` | no (1.5) | applications this PC's own exclude list kept out: `count`, `names[]` (the names of the exclude entries that matched, up to 50 of up to 80 characters), `entries` (how long the list was), `managed` (an office policy file was part of it). See *Contract 1.5* below. |
 | `preflight.checks[]` | with `preflight` | `name` (text up to 80), `ok` (boolean), optional `detail` (up to 300) |
 | `preflight.ready` | with `preflight` | whether the recorder was ready to record |
 
@@ -247,10 +248,37 @@ portal still accepts 1.0.x to 1.3.x. What changed, from the blind-rebuild proof'
 | web route templates (`twinlab2_recorder.workstation.flow.route_template`) | a segment of two to 24 lower-case letters is kept as itself (`/orders/new/items`, `/billing/lookup`), except right after a segment that names people or accounts (`users`, `customers`, `accounts`, `u`, ... `flow.PEOPLE`), where a lower-case word may be a username slug (`/users/jdoe` stays `/users/{id}`). Digits, upper case, separators, e-mail addresses, UUIDs and longer words stay `{id}`; a typed value in a whole segment is its shape before this rule runs |
 | desktop screens | a message box (`#32770`, which has no AutomationId) is named by its title when that is plain and at most four words |
 | desktop combo boxes | a drop-down's `options` and `option_texts` come from its expand step's list (the tree is read while the list is closed), under the code-list rule |
+| 3270 keys (no schema change; a 1.4 portal before this keeps them too) | an `aid` step's `key` is any AID (`PF3`, `PA1`, `Clear`), not only `Enter` and `F1`…`F12`, in the flow and on its transition (`twinlab2_contract.structure.key_name`: a transition's `key`, and a 3270 key step's `label`, may be a key name with digits). A key that leaves a 3270 screen in the same state (`Clear` redrawing it, a key the host ignores) is a transition from that state to itself |
+| web pictures (no schema change) | the web channel's first `completeness` note says how many steps have a picture, how many the recorder dropped (`picture_dropped`: the next action had begun) and how many a step names that are not in the folder (removed after recording), so a missing picture is not read as one the recorder failed to write |
 
 Privacy of the route rule: a lower-case single word after another route word that is not something
 the person typed is taken as the route's own name. A username slug in that place (`/projects/jdoe`,
 where `projects` is not in `PEOPLE`) would be kept; that is the risk accepted, and the list can grow.
+
+#### Contract 1.5: applications excluded on this PC
+
+1.5.0 is a minor version with no new requirement; the portal still accepts 1.0.x to 1.4.x.
+
+The recorder keeps an exclude list of its own (`twinlab2_recorder.workstation.exclude`): programs
+(`WINWORD.EXE`), window-title patterns (`* - Excel`, `Personal`) and web hosts or address prefixes
+(`mail.google.com`, `https://intranet.example.test/hr/`). It is seeded with Office, Outlook, Teams
+and password managers, edited in the recorder's window, and an office can lock entries with a
+managed policy file (`%ProgramData%\TwinLabRecorder\policy.json`). It is applied as events are
+captured, before anything is stored, and it wins over the portal's targets and `deny_keys`: an
+excluded application gets no UI Automation tree, no event or step, no presence row, no picture
+(an excluded window over a target is painted over, and a picture mostly covered is not kept) and
+no HAR or network-journal entry.
+
+What the references say about it is only `completeness.local_exclusions`:
+
+```json
+{"local_exclusions": {"count": 2, "names": ["Microsoft Excel", "Microsoft Word"], "entries": 24, "managed": false}}
+```
+
+`names` are the exclude entries' own names (or patterns), never a window title, an address or a
+time. An exclusion is not a gap: `overall` and the channels' statuses do not change for it, and the
+portal shows "N applications excluded on this PC" beside the recording's completeness instead of
+treating the missing activity as a failure.
 
 #### Event ids in the portal
 

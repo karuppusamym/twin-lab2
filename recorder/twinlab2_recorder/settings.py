@@ -103,6 +103,22 @@ class Settings:
     def token(self) -> str | None:
         return unprotect(self.values.get("token"))
 
+    # -- the exclude list (twinlab2_recorder.workstation.exclude) ---------------------------------
+
+    def exclude_policy(self, managed: Path | None = None):
+        """This PC's exclude list: the managed policy file's locked entries, then the person's own
+        (the defaults until they change it)."""
+        from twinlab2_recorder.workstation import exclude
+
+        return exclude.load(self.values, managed)
+
+    def set_exclude_rules(self, rules) -> None:
+        """Keep the person's own entries (managed ones come from their file, never from here)."""
+        from twinlab2_recorder.workstation import exclude
+
+        exclude.store(self.values, list(rules))
+        self.save()
+
     def forget(self) -> None:
         for k in ("portal", "machine_id", "machine", "token"):
             self.values.pop(k, None)

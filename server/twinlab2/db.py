@@ -14,7 +14,7 @@ both engines:
 - DDL passed through `ddl()` may use `{id}` (an integer primary key the database assigns) and
   `{blob}` (BLOB / BYTEA).
 
-The SQL itself must stay portable: see "Portable SQL rules" in the README.
+The SQL itself must stay portable: see "Portable SQL rules" in docs/design.md.
 """
 
 from __future__ import annotations

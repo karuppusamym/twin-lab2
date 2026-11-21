@@ -422,7 +422,8 @@ def masked_picture(hwnd: int, places: list[dict], font_for,
     the window as `grab` read it when its tree was read (else it is printed now).
 
     `places`: `{"rect": [x, y, w, h] (window-relative), "text": shape or "", "hwnd": the
-    control's own or nearest window or 0, "align": "left"|"centre"}`. `font_for(hwnd)` gives a
+    control's own or nearest window or 0, "align": "left"|"centre", "fill": a COLORREF to paint
+    with instead of the place's own background (an excluded window's place)}`. `font_for(hwnd)` gives a
     font handle (0: the system message font). Returns None when the window cannot be printed.
     The second value lists, per place, the background and text colours sampled before
     painting (`#rrggbb`), which are the application's colours, not data."""
@@ -447,6 +448,8 @@ def masked_picture(hwnd: int, places: list[dict], font_for,
             r = (x, y, x + pw, y + ph)
             bg, fg = _colours(before, w, h, r)
             seen.append({"background": hex_colour(bg), "text": hex_colour(fg)})
+            if isinstance(p.get("fill"), int):  # a fixed colour (an excluded window's place)
+                bg = p["fill"]
             if bg is None:
                 bg = 0xFFFFFF
             brush = gdi32.CreateSolidBrush(bg)

@@ -223,6 +223,101 @@ class HiddenWindowTest(unittest.TestCase):
         warnings = [d for _, d in self.dialogs if "did not finish" in d]
         self.assertEqual(len(warnings), 1, self.dialogs)
 
+    # -- the exclude list and the window's states ---------------------------------------------------
+
+    def _no_office_policy(self, doc=None):
+        path = self.tmp / "policy.json"
+        if doc is not None:
+            path.write_text(json.dumps(doc), encoding="utf-8")
+        patcher = mock.patch.dict(os.environ, {"TWINLAB_RECORDER_POLICY": str(path)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _rows(self, w):
+        return [w.ex_table.item(i, "values") for i in w.ex_table.get_children()]
+
+    def test_the_exclude_list_is_edited_in_the_window_and_kept(self):
+        from twinlab2_recorder.workstation import exclude
+
+        self._no_office_policy()
+        w = self.window()
+        self.assertEqual(len(self._rows(w)), len(exclude.DEFAULTS))
+        self.assertIn(("Program", "WINWORD.EXE", "Microsoft Word", "Default"), self._rows(w))
+        self.assertEqual(str(w.ex_remove_btn.cget("state")), "disabled")  # nothing selected
+        w.ex_kind.set("Window title")
+        w.exclude_kind_changed()
+        self.assertIn("* - Excel", w.ex_hint.get())
+        w.ex_pattern.set("Personal")
+        w.exclude_add()
+        self.assertEqual(self._rows(w)[-1], ("Window title", "Personal", "", "Added on this PC"))
+        self.assertEqual(w.ex_pattern.get(), "")
+        excel = next(i for i in w.ex_table.get_children() if w.ex_table.item(i, "values")[1] == "EXCEL.EXE")
+        w.ex_table.selection_set(excel)
+        w.exclude_selection()
+        self.assertEqual(str(w.ex_remove_btn.cget("state")), "normal")
+        w.exclude_remove()
+        kept = st.Settings(self.tmp).exclude_policy()
+        self.assertIsNone(kept.process("EXCEL.EXE"))
+        self.assertIsNotNone(kept.title("Personal budget"))
+        w.exclude_defaults()
+        self.assertIsNotNone(st.Settings(self.tmp).exclude_policy().process("EXCEL.EXE"))
+        with mock.patch.object(exclude, "running_programs", lambda: ["CaseDesk.exe", "Slack.exe", "WINWORD.EXE"]),                 mock.patch.object(agent_main, "choose_from_list", lambda _r, _t, _p, items: self.offered.extend(items)
+                                  or ["Slack.exe"]):  # fmt: skip
+            self.offered = []
+            w.exclude_pick()
+        self.assertEqual(self.offered, ["CaseDesk.exe", "Slack.exe"])  # Word is excluded already
+        self.assertIsNotNone(st.Settings(self.tmp).exclude_policy().process("slack.exe"))
+        conf = w.options()
+        self.assertIsNotNone(exclude.Policy.from_session(conf["exclude"]).process("slack.exe"))
+
+    def test_an_office_policy_locks_its_entries_in_the_window(self):
+        self._no_office_policy({"exclude": [{"kind": "web", "pattern": "mail.google.com", "name": "Gmail"}]})
+        w = self.window()
+        self.assertEqual(self._rows(w)[0], ("Web site", "mail.google.com", "Gmail", "Office policy (locked)"))
+        self.assertIn("set by your office's policy", w.ex_note.get())
+        w.ex_table.selection_set(w.ex_table.get_children()[0])
+        w.exclude_selection()
+        self.assertEqual(str(w.ex_remove_btn.cget("state")), "disabled")
+        self._no_office_policy({"exclude": [], "allow_user_changes": False})
+        w.refresh_exclude()
+        self.assertEqual(str(w.ex_add_btn.cget("state")), "disabled")
+        self.assertIn("cannot be changed here", w.ex_note.get())
+
+    def test_buttons_are_enabled_only_when_they_can_act(self):
+        self._no_office_policy()
+        w = self.window()
+        for b in (w.start_offered, w.send_btn, w.details_btn, w.upload_btn, w.retry_btn):
+            self.assertEqual(str(b.cget("state")), "disabled", b.cget("text"))
+        self.assertEqual(str(w.start_own.cget("state")), "normal")
+        self.assertIn("Pair with the portal", w.offered_note.get())
+        self.assertIn("Not paired", w.done_note.get())
+        s1 = {"id": 1, "name": "Billing", "automation_id": None, "targets": [{"name": "ERP", "level": "full"}]}
+        w.apply({"sessions": [s1], "deny_keys": []}, {"apps": [], "deny_keys": []}, None)
+        self.assertEqual(str(w.start_offered.cget("state")), "disabled")
+        w.offered_list.selection_set(0)
+        w.refresh_buttons()
+        self.assertEqual(str(w.start_offered.cget("state")), "normal")
+        self.assertEqual(w.own_empty.cget("text"), "The portal's catalog has no application yet.")
+        app = {"app_id": 4, "name": "Billing Desk", "target": {"exe": "Billing.exe"}}
+        w.apply({"sessions": [s1], "deny_keys": []}, {"apps": [app], "deny_keys": []}, None)
+        self.assertEqual([a["name"] for _, a, _ in w.own_vars], ["Billing Desk"])
+        self.assertEqual(w.own_empty.winfo_manager(), "")  # the empty note is gone, not destroyed
+        folder = self.cfg.recordings / SESSION
+        folder.mkdir(parents=True)
+        shutil.copy(FIXTURES / "references-ten-apps.json", folder / "portal-outbox.json")
+        (folder / "session.json").write_text(json.dumps({"name": "Month-end close", "state": "stopped"}),
+                                             encoding="utf-8")  # fmt: skip
+        w.refresh_done()
+        self.assertEqual(w.done_list.get(0), "Month-end close  ·  finished  ·  not sent yet")
+        w.done_list.selection_set(0)
+        w.show_done()
+        self.assertEqual(str(w.details_btn.cget("state")), "normal")
+        self.assertEqual(str(w.send_btn.cget("state")), "disabled")  # not paired: nowhere to send
+        self.cfg.paired("http://127.0.0.1:9", 3, "Workstation 7", "tok")
+        w.refresh_status()
+        self.assertEqual(str(w.send_btn.cget("state")), "normal")
+        self.assertEqual(w.pair_btn.cget("text"), "Pair again…")
+
 
 if __name__ == "__main__":
     unittest.main()
