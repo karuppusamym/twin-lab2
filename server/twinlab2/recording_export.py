@@ -1,5 +1,8 @@
 """One download for every application a recording covers: their builder-approved packages.
 
+Plain functions over a database connection and the caller's user name: no web framework, so
+any route layer (Flask today, FastAPI next) can serve it.
+
 A workstation recording can cover many applications (web, desktop, mainframe); each has its own
 builder package (`packages`, `buildpack`). `export(db, recording_id, user)` builds one ZIP:
 
@@ -25,12 +28,12 @@ from dataclasses import dataclass
 import hashlib
 import json
 
-from twinlab2 import auth
 from twinlab2 import buildpack
 from twinlab2 import packages
 
 FORMAT = "twinlab2-recording-export/1"
 KINDS = ("web", "desktop", "mainframe")
+BUILDS = ("builder", "owner")  # the roles that are given builder packages
 INCLUDED, NOT_AVAILABLE, NO_PACKAGE = "included", "not_available", "no_package"
 NOTES = {INCLUDED: "The latest builder-approved package.",
          NOT_AVAILABLE: "Not available to you: you are not a builder of this application.",
@@ -57,8 +60,12 @@ def kind_of(db, app):
 
 
 def is_builder(db, app_id, user):
-    role = auth.role_of(db, app_id, user) if user else None
-    return role is not None and auth.RANK[role] >= auth.RANK["builder"]
+    """Whether `user` holds builder or owner on the application (`app_roles`, as auth.ROLES ranks
+    them). Read here rather than through `auth`, so the module needs no web framework."""
+    if not user:
+        return False
+    row = db.execute("SELECT role FROM app_roles WHERE app_id = ? AND user_name = ?", (app_id, user)).fetchone()
+    return row is not None and row[0] in BUILDS
 
 
 def export(db, recording_id: str, user: str) -> Export:

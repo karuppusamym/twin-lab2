@@ -3,6 +3,9 @@ filtered by the caller's role. Built on the ten-application recording of test_te
 
 import io
 import json
+from pathlib import Path
+import subprocess
+import sys
 import unittest
 from unittest import mock
 from zipfile import ZipFile
@@ -129,6 +132,16 @@ class RecordingExportTest(ten.TenAppRecordingTest):
                 recording_export.export(self.db, RECORDING, OWNER)
         with self.assertRaises(LookupError):
             recording_export.export(self.db, "ws-nothing", OWNER)
+
+
+class FrameworkFreeTest(unittest.TestCase):
+    def test_the_module_imports_no_web_framework(self):
+        root = Path(__file__).resolve().parents[2]
+        code = ("import sys; sys.path[:0] = [%r, %r]; import twinlab2.recording_export; "
+                "print(sorted(m for m in ('flask', 'werkzeug', 'fastapi', 'starlette') if m in sys.modules))"
+                % (str(root / "server"), str(root / "contract")))
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
+        self.assertEqual(out.strip(), "[]")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,10 @@ The test drives only the agent API over HTTP (pairing, the offered session, the 
 owner's part (the catalog applications with their web addresses, scenarios, attachments, the
 approval of each package) goes through the modules the portal's routes call, so it does not
 depend on the pages.
+
+Only `pair`, `send`, the offered-session read in `record` and the download-route test use the
+HTTP test client; `assignment`, `prepare`, `freeze` and every package assertion read the
+database and the domain modules, so moving the routes to another framework changes only those.
 """
 
 import io

@@ -252,6 +252,18 @@ def merge_references(old, new):
     return out
 
 
+def discovered_name(db, item, shared_host=False):
+    """The name a newly discovered application is registered under: what the recorder calls it
+    (its display name, else its product, else its key), made unique by `unique_name`. With
+    `shared_host` (steps on a web origin outside every path application on it) the recorder's
+    display name is that of a path target, so the application is named after its host instead."""
+    if shared_host:
+        base = web_parts(item["key"])[0].split("://", 1)[-1]
+    else:
+        base = item.get("display") or item.get("product") or item["key"].split(":", 1)[-1]
+    return unique_name(db, base, item)
+
+
 def unique_name(db, base, item):
     """A name for a newly discovered application that no other application has (ignoring case),
     so that each one's package, folder and BUILD_TASK say which application it is: `base`, else
@@ -587,7 +599,7 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         if row is not None:
             return row["app_id"], False
         app_id = None
-        display = item.get("display")
+        shared_host = False
         if item.get("app_id") and db().execute("SELECT 1 FROM apps WHERE id = ?", (item["app_id"],)).fetchone():
             app_id = item["app_id"]
             if item["key"].startswith("web:"):
@@ -595,16 +607,14 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                 origin = web_parts(item["key"])[0]
                 if any(other == app_id for _, other, prefix in web_identities(origin) if prefix):
                     app_id = None
-                    # the recorder named the origin after that target: the rest of the host is
-                    # not that application, so it is named after its host
-                    display = origin.split("://", 1)[-1]
+                    shared_host = True
         if app_id is None and item.get("exe"):
             row = db().execute("SELECT app_id FROM app_identities WHERE key = ?",
                                ("exe:" + item["exe"].lower(),)).fetchone()  # fmt: skip
             app_id = row["app_id"] if row else None
         created = False
         if app_id is None:
-            name = unique_name(db(), display or item.get("product") or item["key"].split(":", 1)[-1], item)
+            name = discovered_name(db(), item, shared_host)
             app_id = db().execute(
                 "INSERT INTO apps(name, git_url, requirements, status, surface) VALUES (?, '', '', 'discovered', ?) RETURNING id",
                 (name, item["surface"]),
