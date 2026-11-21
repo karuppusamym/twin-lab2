@@ -23,7 +23,7 @@ dependencies = [
     # PostgreSQL for a shared deployment (DATABASE_URL=postgresql://...); SQLite needs nothing extra
     "psycopg[binary]>=3.2,<4",
     # Claude build sessions: the clarification conversation (Messages API)
-    "anthropic>=0.75,<1",
+    "anthropic>=0.75,<3",
     # /metrics (observability.py), multiprocess-safe under gunicorn
     "prometheus-client>=0.20,<1",
     # envelope encryption of local artifact files (crypto.py)
