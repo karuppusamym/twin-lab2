@@ -87,6 +87,7 @@ def data_targets(all_users: bool, profiles: list[Path] | None = None, program_da
                         profile / "AppData" / "Local" / "Temp" / "twinlab-ocr.ps1"]  # fmt: skip
         base = program_data or Path(os.environ.get("ProgramData") or r"C:\ProgramData")
         targets.append(base / st.APP)
+        targets.append(st.program_dir() / "data")  # a portable run's data beside the program
     else:
         base = local or Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
         targets.append(base / st.APP)
