@@ -5,7 +5,8 @@
 
 The folder is the program: copy it to a Windows PC and run TwinLabRecorder.exe (no install, no
 administrator rights). It carries Python, the recorder and its collectors (`twinlab2_recorder`:
-workstation session, desktop, web, mainframe), the recording format and recorder contract it
+workstation session, desktop, web, mainframe), the window's page (`twinlab2_recorder/ui`, shown
+in Edge WebView2 through pywebview), the recording format and recorder contract it
 shares with the portal (`twinlab2_contract`, with the contract's schema), UI Automation's
 wrapper generated beforehand (comtypes.gen: the program's folder may be read-only), Playwright's
 driver, and `_build.json` (the recorder and contract versions, the Twin Lab commit the
@@ -67,6 +68,11 @@ def main() -> int:
         "--hidden-import", "comtypes.gen.UIAutomationClient", "--collect-submodules", "comtypes.gen",
         "--collect-data", "playwright", "--collect-binaries", "playwright",
         "--add-data", f"{PACKAGE / '_build.json'}{os.pathsep}.",
+        # the window: its page, and Edge WebView2 through pywebview (pythonnet; hooks-contrib
+        # brings WebView2's loader DLLs). Tk is not used any more.
+        "--add-data", f"{PACKAGE / 'ui'}{os.pathsep}twinlab2_recorder/ui",
+        "--hidden-import", "webview.platforms.edgechromium", "--hidden-import", "webview.platforms.winforms",
+        "--exclude-module", "tkinter", "--exclude-module", "_tkinter",
         "--exclude-module", "matplotlib", "--exclude-module", "IPython", "--exclude-module", "pytest",
     ]  # fmt: skip
     print(" ".join(args))

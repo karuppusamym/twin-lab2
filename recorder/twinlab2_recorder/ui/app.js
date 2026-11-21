@@ -113,7 +113,7 @@ function offeredTab(s) {
   if (!o.sessions.length) return html + `<div class="list"><div class="empty">No session is offered to this PC right now.</div></div>`;
   html += `<div class="list" role="radiogroup" aria-label="Offered sessions">` + o.sessions.map((x) => `
     <label class="item${o.selected === x.id ? " selected" : ""}"><input type="radio" name="offered" data-act="offered" data-arg="${x.id}"${o.selected === x.id ? " checked" : ""}>
-      <span class="body"><h3>${esc(x.name)}</h3><span class="apps">${x.targets.map((t) => `<span class="tag">${surfaceIcon(t.surface)}<b>${esc(t.name || "?")}</b>${esc(t.surface)}</span>`).join("")}</span></span></label>`).join("") + `</div>`;
+      <span class="body"><span class="title">${esc(x.name)}</span><span class="apps">${x.targets.map((t) => `<span class="tag">${surfaceIcon(t.surface)}<b>${esc(t.name || "?")}</b>${esc(t.surface)}</span>`).join("")}</span></span></label>`).join("") + `</div>`;
   const chosen = o.sessions.find((x) => x.id === o.selected);
   html += `<div class="row mt"><button class="btn primary big" data-act="start-offered"${dis(s.can.start_offered)}>${ICON("rec")}${chosen ? `Start recording “${esc(chosen.name)}”` : "Start recording"}</button>
     <span class="small muted">${chosen ? "Each application is checked first (a few seconds)." : "Choose a session first."}</span></div>`;
@@ -142,7 +142,7 @@ function recordingView(s) {
   if (r.mode === "stopping") sub = `${esc(r.name)} · finishing… ${r.stop_waited || 0} s${r.stop_limit ? ` of ${r.stop_limit} s before the window closes` : ""}`;
   const icon = r.mode === "recording" ? ICON("rec", "") : r.mode === "stopping" ? ICON("stop", "") : '<span class="spin" style="width:26px;height:26px;border-width:3px" aria-hidden="true"></span>';
   let html = `<div class="page"><div class="hero ${r.mode}"><div class="big">${icon}</div>
-    <div><div class="kicker">${kicker}</div>${r.elapsed ? `<div class="timer" aria-label="Elapsed ${esc(r.elapsed)}">${esc(r.elapsed)}</div>` : ""}<div class="small muted">${sub}</div></div>
+    <div><h1 class="kicker">${kicker}</h1>${r.elapsed ? `<div class="timer" aria-label="Elapsed ${esc(r.elapsed)}">${esc(r.elapsed)}</div>` : ""}<div class="small muted">${sub}</div></div>
     <div class="acts">${r.mode === "recording" ? `<button class="btn stop big" data-act="stop"${dis(s.can.stop)}>${ICON("stop")}Stop and save</button>` : ""}</div></div>`;
   if (r.mode === "recording") {
     if (r.health === "trouble") {
@@ -187,7 +187,7 @@ function pageRecordings(s) {
   if (!d.rows.length) return html + `<div class="list"><div class="empty" id="done-note">${esc(d.note)}</div></div></div>`;
   html += `<p class="small muted" id="done-note">${esc(d.note)}</p><div class="split"><div class="list" role="radiogroup" aria-label="Recordings">` + d.rows.map((r) => `
     <label class="item${d.selected === r.id ? " selected" : ""}" style="padding:var(--space-3) var(--space-4)"><input type="radio" name="rec" data-act="recording" data-arg="${esc(r.id)}"${d.selected === r.id ? " checked" : ""}>
-      <span class="body"><h3>${esc(r.name)}</h3><span class="row" style="gap:.35rem;margin-top:.2rem"><span class="chip ${r.tone}">${esc(r.state)}</span><span class="chip ${r.sent ? "off" : "warn"}">${r.sent ? "Sent" : "Not sent"}</span></span></span></label>`).join("") + `</div>`;
+      <span class="body"><span class="title">${esc(r.name)}</span><span class="row" style="gap:.35rem;margin-top:.2rem"><span class="chip ${r.tone}">${esc(r.state)}</span><span class="chip ${r.sent ? "off" : "warn"}">${r.sent ? "Sent" : "Not sent"}</span></span></span></label>`).join("") + `</div>`;
   const sel = d.rows.find((r) => r.id === d.selected);
   if (!sel || !d.review) {
     html += `<div class="card muted">Choose a recording to see what sending it would give the portal.</div>`;
@@ -411,7 +411,7 @@ const ACTIONS = {
 
 document.addEventListener("click", (e) => {
   const el = e.target.closest("button[data-act]");
-  if (!el || el.disabled || el.type === "submit") return;
+  if (!el || el.disabled || el.closest("form")) return;  // a form's own button submits it
   const fn = ACTIONS[el.dataset.act];
   if (fn) { e.preventDefault(); fn(el.dataset.arg); }
 });

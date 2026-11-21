@@ -388,6 +388,31 @@ def _hide_own_console() -> None:
             ctypes.windll.user32.ShowWindow(window, 0)
 
 
+def window_parts() -> str:
+    """Whether this build can show its window (pywebview, its WebView2 backend, the page), without
+    opening one: `TwinLabRecorder version` prints it."""
+    from twinlab2_recorder import webwindow
+
+    if not (webwindow.UI / "index.html").is_file():
+        return "missing: the page (twinlab2_recorder/ui)"
+    try:
+        import webview
+    except ImportError as exc:
+        return f"missing: pywebview ({exc})"
+    if sys.platform == "win32":
+        try:
+            import webview.platforms.edgechromium  # noqa: F401 - loads pythonnet and WebView2's loader
+        except Exception as exc:  # noqa: BLE001 - reported
+            return f"missing: Edge WebView2 support ({type(exc).__name__}: {exc})"
+    from importlib import metadata
+
+    try:
+        version = metadata.version("pywebview")
+    except metadata.PackageNotFoundError:  # frozen: no package metadata
+        version = getattr(webview, "__version__", "")
+    return f"pywebview {version}".strip() + f", page {webwindow.UI.name}/index.html"
+
+
 def gui(cfg: st.Settings, ca_bundle: str | None) -> None:
     """The window: twinlab2_recorder.app (what it does) in WebView2 (twinlab2_recorder.webwindow)."""
     from twinlab2_recorder import webwindow
@@ -455,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
             gui(cfg, args.ca_bundle)
         elif args.command == "version":
             print(st.APP, st.VERSION, "contract", contract.CONTRACT_VERSION, json.dumps(_build_info()))
+            print("window:", window_parts())
         elif args.command == "pair":
             portal = check_portal(args.portal)
             doc = Portal(portal, ca_bundle=args.ca_bundle).pair(args.code, args.name)

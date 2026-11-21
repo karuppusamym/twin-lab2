@@ -1,11 +1,13 @@
 # Recorder: checks for the "go desktop" batch
 
-The window's logic is tested headlessly (`tests/recorder/test_ui_threads.py`, `test_ui_model.py`,
-and `test_window_headless.py` on a Tk root that is never shown, with `TWINLAB_TK_HEADLESS=1`).
-These checks need the visible window, a person at the PC and real applications. Run them in one
-sitting, with nothing else in the foreground.
+The window is a local page (`recorder/twinlab2_recorder/ui`) shown in Microsoft Edge WebView2.
+Its logic is tested without a window (`tests/recorder/test_ui_threads.py`, `test_ui_model.py`,
+`test_window_headless.py`) and the page itself in headless Chromium with axe-core
+(`test_window_page.py`). These checks need the visible window, a person at the PC and real
+applications. Run them in one sitting, with nothing else in the foreground.
 
 **Setup.** Build (`python recorder/build.py`) and run `dist\TwinLabRecorder\TwinLabRecorder.exe`.
+`TwinLabRecorder.exe version` must end with a `window: pywebview …` line (not `missing: …`).
 Start a local portal (see the README) with one web application in the catalog and a pairing code
 on its Machines page. Have a target ready: CaseDesk, Calculator, or a web page on the portal's
 catalog.
@@ -14,104 +16,108 @@ Each check: what to do → what you should see. Mark ✅ or ❌, and note anythi
 
 ## 1. Pair
 
-1. **Pair with portal…**, enter the portal address, the code and a machine name.
-   → The status line shows *Connecting: pairing with http://…* at once; the window can be moved
-   and resized while it pairs. Then *Paired as <name> with <portal>*, and within ~20 s the
-   **Offered sessions** and **My own session** tabs fill from the portal.
-2. Pair again with a wrong code.
-   → *Not paired: …* in an error dialog with the portal's reason; the window stays usable;
-   **Pair** is enabled again.
+1. Unpaired, the **Record** page says *Connect this PC to your portal*. Press **Pair this PC**,
+   enter the portal address, the code and a name for the PC, **Pair this PC**.
+   → The button reads *Pairing…* and the bottom line *Connecting: pairing with https://…* at once;
+   the window can be moved and resized while it pairs. Then a *Paired* message, the top bar
+   reads *Paired as <name> · <portal>*, and within ~20 s **Offered to me** and **My own
+   session** fill from the portal.
+2. Pair again (Settings → **Pair again…**) with a wrong code.
+   → A red *Not paired: …* message with the portal's reason; the window stays usable; the
+   button is enabled again.
 3. Pair with `http://example.com` (not HTTPS, not this machine).
-   → An error at once: the portal must be reached over HTTPS; no *Connecting* line.
+   → A red message at once: the portal must be reached over HTTPS; no *Connecting* line.
 
 ## 2. Offered sessions keep the selection
 
-1. Offer two sessions to the machine on the portal. Select the second one in the list.
-   → After the next poll (15-20 s) it is still selected.
-2. Rename the selected session on the portal, or change its targets.
-   → Within one poll its row shows the new name/targets, in the same place, still selected.
-     **Start selected session** records the new targets.
-3. Withdraw the selected session on the portal.
-   → Its row goes; nothing is selected (Start asks you to choose).
+1. Offer two sessions to the machine on the portal. Choose the second one in the list.
+   → After the next poll (15-20 s) it is still chosen; the button reads *Start recording
+     "<name>"*.
+2. Rename the chosen session on the portal, or change its targets.
+   → Within one poll its row shows the new name/targets, in the same place, still chosen.
+     **Start recording** records the new targets.
+3. Withdraw the chosen session on the portal.
+   → Its row goes; nothing is chosen and **Start recording** is greyed out.
 
 ## 3. Record
 
 1. Start a session with a web target and a desktop target (CaseDesk or Calculator).
-   → *Checking that each channel can start…*, then the indicator below the status shows
-     **● RECORDING 00:00:0x <name>** in red, *Targets: …*, *Channels: starting…*, then
-     *Channels: desktop ok · web ok*. The time counts every second.
+   → The top bar's pill reads **CHECKING**, then **● RECORDING 00:00:0x** in red; the Record
+     page shows the red recording panel with the timer and **Stop and save**, and *Live status*
+     lists each application: *Starting*, then *Recording*. The time counts every second.
 2. Wait for *The browser is ready*, work in the targets for a minute.
-   → The indicator stays visible on every tab; the elapsed time keeps counting.
+   → The pill stays in the top bar on every page; the elapsed time keeps counting.
 3. Kill one collector process (Task Manager: the `TwinLabRecorder.exe` child running the desktop
    channel), or block the web target.
-   → The indicator turns orange: the channel shows *failed* / *restarting*, then *ok (restarted 1×)*,
-     or *(1 gap)*.
-4. **Stop recording**.
-   → **■ STOPPING** and *Finishing the recording… (n s)*, then *Recording saved on this PC*;
-     **Recordings on this PC** opens with the session selected.
+   → An amber *An application's recorder had trouble* panel; the application's status reads
+     *Failed* / *Restarting*, then *Recording · restarted 1×* or *· 1 gap*.
+4. **Stop and save**.
+   → The pill reads **FINISHING** with the seconds waited, then **Recordings** opens with
+     *Recording saved on this PC* and the session chosen.
 
 ## 4. Close during recording
 
 1. Start a recording, then close the window (X).
-   → It asks *A recording is running. Stop it and close?* Answer **Yes**.
-   → The window stays open and responsive (move it, switch tabs); the indicator shows
-     **■ STOPPING** and the seconds waited *of 120 s*; the status says *Stopping: finishing the
+   → The page asks *A recording is running* with **Stop and close**. Press it.
+   → The window stays open and responsive (move it, switch pages); the pill reads **FINISHING**
+     with the seconds waited *of 120 s*; the bottom line says *Stopping: finishing the
      recording before the window closes*. Closing again says *Still finishing…*. When the
-     recording is finished the window closes by itself, with no dialog.
-2. Start again, then close and answer **No**.
+     recording is finished the window closes by itself, with no message.
+2. Start again, then close and press **Cancel**.
    → Nothing changes; the recording goes on.
 3. Make finishing take long (a hung target application, or pause the recording process with
    Resource Monitor → Suspend), then close.
-   → After 120 s a dialog explains: *The recording did not finish within 120 seconds…* and that the
-     next start finishes it. The window closes. Start the recorder again → the session appears in
-     **Recordings on this PC** (recovered).
+   → After 120 s a Windows message box explains: *The recording did not finish within 120
+     seconds…* and that the next start finishes it. The window closes. Start the recorder again
+     → the session appears in **Recordings** (*Recovered after a crash*).
 
 ## 5. Portal offline
 
 1. With the machine paired, stop the portal.
-   → Within one poll the status line reads *Paired as <name>: the portal cannot be reached: …*
-     (not stuck on the old text; no error dialog; the window stays usable).
-2. Select a recording and **Send references to the portal**.
+   → Within one poll the top bar reads *portal not reachable* with an amber dot, and the Record
+     and Recordings pages show *We can't reach <portal>* with **Try again now** (no pop-up; the
+     window stays usable).
+2. Choose a recording and **Send summary to the portal**, then **Send summary**.
    → *Sending: references of <name>*, then *Retrying: … (attempt 2) — the portal cannot be
-     reached: …*, up to attempt 4, then an error dialog *The references were not sent: …*. The
-     window responds throughout.
+     reached: …*, up to attempt 4, then a red *Not sent: …* message. The window responds
+     throughout.
 3. Start the portal again.
-   → The next poll restores *Paired as <name> with <portal>*; sending now works (*Sent. The portal
-     mapped it as …*).
+   → The next poll (or **Try again now**) clears the banner; sending now works (*Sent. It is
+     recording n on the portal.*).
 
 ## 6. Send review
 
-1. Select a recording in **Recordings on this PC**.
-   → A summary, not JSON: *Session*, *Destination: <portal> (as <machine>)*, *Applications (n)*
-     with steps per app, *Evidence sent* (steps by surface, screen structure, timeline, checks,
-     completeness), *Withheld (stays on this PC)* (other applications used n times, not named;
+1. Choose a recording under **Recordings**.
+   → A summary, not JSON: destination *<portal> (as <machine>)*, *Applications (n)* with steps
+     per app, **Sent to the portal** (steps by surface, screen structure, timeline, checks,
+     completeness) beside **Stays on this PC** (other applications used n times, not named;
      typed values, page contents, HAR, pictures, raw journals), and the notes.
-2. **Details (JSON)**.
-   → The references JSON appears below the summary; the button reads **Hide details**.
+2. **Show what is sent (JSON)**.
+   → The references JSON appears below the summary; the button reads **Hide what is sent**.
 
 ## 7. Upload queue
 
-1. Select a recording, **Upload the recording…**, answer **Yes**.
-   → The **Uploads** tab opens; the row goes *sending* with the percentage and *x MB of y MB*
-     rising, then *done 100%*.
+1. Choose a recording, **Upload the full recording…**, then **Upload**.
+   → **Uploads** opens; the row reads *Sending* with a progress bar and *x MB of y MB* rising,
+     then *Done* at 100 %.
 2. Upload a larger recording and stop the portal half way.
-   → The row shows *retrying*, *next try in n s: the portal cannot be reached…*, the percentage
-     kept. Start the portal; **Retry selected** → it continues from that percentage (not from 0)
-     and ends *done*.
+   → The row reads *Retrying*, *next try in n s: the portal cannot be reached…*, the bar kept.
+     Start the portal; **Retry now** → it continues from that percentage (not from 0) and ends
+     *Done*.
 3. Queue an upload with the portal stopped, close the recorder, start the portal, start the
    recorder.
-   → Without pressing anything the upload resumes and ends *done*.
+   → Without pressing anything the upload resumes and ends *Done*.
 4. With the machine unpaired (or the token revoked on the portal), queue an upload.
-   → The note under the list says *Not sending: …not paired…*; the job stays *queued*; after
+   → *Not sending right now: …not paired…* above the list; the job stays *Queued*; after
      pairing it goes.
 
 ## 8. DPI scaling
 
 Repeat 3.1, 6.1 and 7.1 with Windows display scaling at 100 %, 150 % and 200 % (Settings →
 Display → Scale), and with the window on a second monitor at a different scale.
-→ Nothing is cut off: the status and indicator lines wrap at the window's width; the Uploads
-  columns and buttons fit at the minimum window size (600×460); the text is sharp, not blurred
-  (if it is blurred, note it: the program does not declare DPI awareness yet).
+→ Nothing is cut off: at the minimum window size (600×460) the menu shrinks to icons, the
+  recording panel's buttons move under the timer, and nothing scrolls sideways; the text is
+  sharp at every scale (WebView2 follows Windows' scaling).
 
 ## 9. The console
 

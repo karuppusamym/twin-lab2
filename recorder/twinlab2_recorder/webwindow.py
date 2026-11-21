@@ -32,7 +32,9 @@ class Bridge:
 
     # what to draw
     def snapshot(self, since: int = -1):
-        return self._do(lambda: None if self._app.version == since else self._app.snapshot())
+        return self._do(
+            lambda: None if self._app.version == since else self._app.snapshot()
+        )
 
     def pair_defaults(self):
         return self._do(self._app.pair_defaults)
@@ -92,7 +94,9 @@ class Bridge:
     def propose(self):
         folder = None
         if self._host is not None and hasattr(self._host, "choose_folder"):
-            folder = self._host.choose_folder("The UiPath project folder (with Main.xaml)")  # waits: not on the loop
+            folder = self._host.choose_folder(
+                "The UiPath project folder (with Main.xaml)"
+            )  # waits: not on the loop
         self._do(self._app.on_propose, folder)
 
     # the exclude list
@@ -160,7 +164,9 @@ def message_box(text: str, warning: bool = False) -> None:
     if sys.platform == "win32":
         import ctypes
 
-        ctypes.windll.user32.MessageBoxW(None, text, "TwinLab Recorder", 0x30 if warning else 0x10)
+        ctypes.windll.user32.MessageBoxW(
+            None, text, "TwinLab Recorder", 0x30 if warning else 0x10
+        )
     else:
         print(text, file=sys.stderr)
 
@@ -182,7 +188,11 @@ def run(cfg: st.Settings, ca_bundle: str | None) -> None:
     host.window = window
     window.events.closing += host.closing
     try:
-        webview.start(gui="edgechromium", private_mode=True, storage_path=str(cfg.folder / "webview"))
+        webview.start(
+            gui="edgechromium",
+            private_mode=True,
+            storage_path=str(cfg.folder / "webview"),
+        )
     except Exception as exc:  # noqa: BLE001 - no WebView2 runtime on this PC
         message_box(f"TwinLab Recorder needs the Microsoft Edge WebView2 Runtime, which is part of Windows 10 "
                     f"and 11 (it may have been removed on this PC). Ask IT to install it ({WEBVIEW2_URL}).\n\n"

@@ -14,6 +14,8 @@ dependencies = [
     "twinlab2-contract",
     "playwright>=1.44",
     "comtypes>=1.4; sys_platform == 'win32'",
+    # the window: Microsoft Edge WebView2 (twinlab2_recorder.webwindow)
+    "pywebview>=5.3; sys_platform == 'win32'",
     "pydantic>=2.6",
     "pypdf>=4.0",
     "pillow>=10",

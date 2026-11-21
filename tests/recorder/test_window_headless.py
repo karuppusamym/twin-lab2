@@ -57,7 +57,9 @@ class SlowPortal:
                 outer.got.append(self.path)
                 self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 if self.path == "/api/agent/pair":
-                    self._answer({"token": "tok", "machine_id": 3, "name": "Workstation 7"})
+                    self._answer(
+                        {"token": "tok", "machine_id": 3, "name": "Workstation 7"}
+                    )
                 else:
                     self._answer({"recording_id": 5, "url": "/recordings/5"})
 
@@ -81,8 +83,18 @@ class FakeHost:
         self.warnings.append(message)
 
 
-S1 = {"id": 1, "name": "Billing", "automation_id": None, "targets": [{"name": "ERP", "level": "full"}]}
-S2 = {"id": 2, "name": "Orders", "automation_id": None, "targets": [{"name": "Shop", "level": "full"}]}
+S1 = {
+    "id": 1,
+    "name": "Billing",
+    "automation_id": None,
+    "targets": [{"name": "ERP", "level": "full"}],
+}
+S2 = {
+    "id": 2,
+    "name": "Orders",
+    "automation_id": None,
+    "targets": [{"name": "Shop", "level": "full"}],
+}
 NO_APPS = {"apps": [], "deny_keys": []}
 
 
@@ -105,7 +117,9 @@ class WindowLogicTest(unittest.TestCase):
         self.loop.thread.join(5)
 
     def window(self) -> RecorderApp:
-        self.app = self.loop.call(lambda: RecorderApp(self.cfg, None, self.loop, self.host).start())
+        self.app = self.loop.call(
+            lambda: RecorderApp(self.cfg, None, self.loop, self.host).start()
+        )
         return self.app
 
     def do(self, fn, *args):
@@ -133,8 +147,12 @@ class WindowLogicTest(unittest.TestCase):
     def _recorded(self, name="Month-end close"):
         folder = self.cfg.recordings / SESSION
         folder.mkdir(parents=True, exist_ok=True)
-        shutil.copy(FIXTURES / "references-ten-apps.json", folder / "portal-outbox.json")
-        (folder / "session.json").write_text(json.dumps({"name": name, "state": "stopped"}), encoding="utf-8")
+        shutil.copy(
+            FIXTURES / "references-ten-apps.json", folder / "portal-outbox.json"
+        )
+        (folder / "session.json").write_text(
+            json.dumps({"name": name, "state": "stopped"}), encoding="utf-8"
+        )
         return folder
 
     # -- the portal --------------------------------------------------------------------------------
@@ -144,8 +162,12 @@ class WindowLogicTest(unittest.TestCase):
         w = self.window()
         self.do(w.poll_portal)
         self.assertTrue(self.pump(lambda: "cannot be reached" in w.status), w.status)
-        self.assertTrue(w.status.startswith("Paired as Workstation 7: the portal cannot be reached"))
-        self.assertIn("cannot be reached", self.snap()["pairing"]["error"])  # the page's banner
+        self.assertTrue(
+            w.status.startswith("Paired as Workstation 7: the portal cannot be reached")
+        )
+        self.assertIn(
+            "cannot be reached", self.snap()["pairing"]["error"]
+        )  # the page's banner
 
     def test_pairing_and_sending_keep_the_window_responsive(self):
         portal = SlowPortal(delay=1.0)
@@ -153,12 +175,18 @@ class WindowLogicTest(unittest.TestCase):
         w = self.window()
         began = time.monotonic()
         self.assertTrue(self.do(w.on_pair, portal.url, "123-456", "Workstation 7"))
-        self.assertLess(time.monotonic() - began, 0.3)  # the portal takes 1 s: not on this thread
+        self.assertLess(
+            time.monotonic() - began, 0.3
+        )  # the portal takes 1 s: not on this thread
         self.assertTrue(self.snap()["pairing"]["busy"])
-        self.assertTrue(self.pump(lambda: w.activity.startswith("Connecting: pairing with")))
+        self.assertTrue(
+            self.pump(lambda: w.activity.startswith("Connecting: pairing with"))
+        )
         self.assertTrue(self.pump(lambda: self.cfg.values.get("token")))
         self.assertIn("Paired as Workstation 7", w.status)
-        self.assertTrue(self.pump(lambda: any(n["title"] == "Paired" for n in w.notices)))
+        self.assertTrue(
+            self.pump(lambda: any(n["title"] == "Paired" for n in w.notices))
+        )
 
         folder = self._recorded()
         self.do(w.refresh_done)
@@ -174,8 +202,13 @@ class WindowLogicTest(unittest.TestCase):
         began = time.monotonic()
         self.do(w.answer, dialog["id"], True, [])
         self.assertLess(time.monotonic() - began, 0.3)
-        self.assertTrue(self.pump(lambda: w.activity.startswith("Sending: references of")))
-        self.assertTrue(self.pump(lambda: any("Sent." in n["text"] for n in w.notices)), (w.notices, w.activity))
+        self.assertTrue(
+            self.pump(lambda: w.activity.startswith("Sending: references of"))
+        )
+        self.assertTrue(
+            self.pump(lambda: any("Sent." in n["text"] for n in w.notices)),
+            (w.notices, w.activity),
+        )
         self.assertIn("/api/agent/references", portal.got)
         self.assertTrue((folder / "sent.json").is_file())
 
@@ -190,11 +223,18 @@ class WindowLogicTest(unittest.TestCase):
         w = self.window()
         self.do(w.apply, {"sessions": [S1, S2], "deny_keys": []}, NO_APPS, None)
         self.do(w.select_offered, 2)
-        self.do(w.apply, {"sessions": [dict(S2, name="Orders (EU)")], "deny_keys": []}, NO_APPS, None)
+        self.do(
+            w.apply,
+            {"sessions": [dict(S2, name="Orders (EU)")], "deny_keys": []},
+            NO_APPS,
+            None,
+        )
         offered = self.snap()["offered"]
         self.assertEqual(offered["selected"], 2)
         self.assertEqual(offered["sessions"][0]["label"], "Orders (EU)  ·  Shop")
-        self.do(w.apply, {"sessions": [S1], "deny_keys": []}, NO_APPS, None)  # withdrawn
+        self.do(
+            w.apply, {"sessions": [S1], "deny_keys": []}, NO_APPS, None
+        )  # withdrawn
         self.assertIsNone(self.snap()["offered"]["selected"])
         self.assertFalse(self.snap()["can"]["start_offered"])
 
@@ -203,15 +243,25 @@ class WindowLogicTest(unittest.TestCase):
     def _recording(self, w, seconds, targets=None):
         folder = self.cfg.recordings / SESSION
         folder.mkdir(parents=True, exist_ok=True)
-        proc = subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({seconds})"])
+        proc = subprocess.Popen(
+            [sys.executable, "-c", f"import time; time.sleep({seconds})"]
+        )
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
-        conf = {"id": SESSION, "name": "Month-end close", "targets": targets or [], "preflight": {"ready": True}}
+        conf = {
+            "id": SESSION,
+            "name": "Month-end close",
+            "targets": targets or [],
+            "preflight": {"ready": True},
+        }
         self.do(lambda: (w.state.update(proc=proc), w.watch_recording(conf)))
         return proc
 
     def test_the_recording_indicator_follows_the_journal(self):
         w = self.window()
-        targets = [{"name": "Ledger", "origin": "https://ledger.example.test"}, {"name": "CaseDesk", "exe": "CaseDesk.exe"}]
+        targets = [
+            {"name": "Ledger", "origin": "https://ledger.example.test"},
+            {"name": "CaseDesk", "exe": "CaseDesk.exe"},
+        ]
         self._recording(w, 3, targets)
         rec = self.snap()["recording"]
         self.assertEqual(rec["mode"], "recording")
@@ -220,12 +270,19 @@ class WindowLogicTest(unittest.TestCase):
         journal = self.cfg.recordings / SESSION / "journal.jsonl"
         rows = [{"kind": "channel", "channel": "web", "event": "ready"}, {"kind": "channel", "channel": "desktop", "event": "ready"},
                 {"kind": "browser"}, {"kind": "channel", "channel": "desktop", "event": "restarted"}]  # fmt: skip
-        journal.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-        self.assertTrue(self.pump(lambda: w.snapshot()["recording"]["health"] == "trouble"))
+        journal.write_text(
+            "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8"
+        )
+        self.assertTrue(
+            self.pump(lambda: w.snapshot()["recording"]["health"] == "trouble")
+        )
         rec = self.snap()["recording"]
         self.assertTrue(rec["browser_ready"])
         self.assertEqual(rec["apps"][0]["status"], "Recording")
-        self.assertEqual((rec["apps"][1]["status"], rec["apps"][1]["tone"]), ("Restarting · restarted 1×", "warn"))
+        self.assertEqual(
+            (rec["apps"][1]["status"], rec["apps"][1]["tone"]),
+            ("Restarting · restarted 1×", "warn"),
+        )
         self.assertTrue(self.snap()["can"]["stop"])
         self.assertFalse(self.snap()["can"]["start_own"])
         self.do(w.on_stop)
@@ -239,7 +296,10 @@ class WindowLogicTest(unittest.TestCase):
 
     def test_failed_checks_ask_before_recording(self):
         w = self.window()
-        block = {"checks": [{"name": "web", "ok": False, "detail": "no answer"}], "ready": False}
+        block = {
+            "checks": [{"name": "web", "ok": False, "detail": "no answer"}],
+            "ready": False,
+        }
         launched = []
         with mock.patch.object(w.m, "preflight_checks", lambda cfg, conf: block), \
                 mock.patch.object(w, "launch", launched.append):  # fmt: skip
@@ -248,14 +308,20 @@ class WindowLogicTest(unittest.TestCase):
             dialog = self.snap()["dialog"]
             self.assertEqual(dialog["lines"], ["web: no answer"])
             self.do(w.answer, dialog["id"], False, [])
-            self.assertEqual(self.snap()["note"]["title"], "Not recording: fix the failed checks, then press Start again")
+            self.assertEqual(
+                self.snap()["note"]["title"],
+                "Not recording: fix the failed checks, then press Start again",
+            )
             self.assertEqual(launched, [])
             self.do(w.on_start_own, "Mine", [], "https://shop.example.test")
             self.assertTrue(self.pump(lambda: w.dialog is not None))
             self.do(w.answer, w.dialog["id"], True, [])
         self.assertEqual(len(launched), 1)
         self.assertTrue(launched[0]["override_preflight"])
-        self.assertEqual(launched[0]["targets"], [{"origin": "https://shop.example.test", "level": "full"}])
+        self.assertEqual(
+            launched[0]["targets"],
+            [{"origin": "https://shop.example.test", "level": "full"}],
+        )
 
     def test_nothing_to_record_is_explained(self):
         w = self.window()
@@ -277,9 +343,15 @@ class WindowLogicTest(unittest.TestCase):
         self.do(w.answer, dialog["id"], True, [])
         self.assertLess(time.monotonic() - began, 0.3)
         self.assertTrue((self.cfg.recordings / SESSION / "stop").is_file())
-        self.assertTrue(self.pump(lambda: w.activity.startswith("Stopping: finishing the recording")))
+        self.assertTrue(
+            self.pump(
+                lambda: w.activity.startswith("Stopping: finishing the recording")
+            )
+        )
         self.assertEqual(self.snap()["recording"]["stop_limit"], app_module.STOP_WAIT_S)
-        self.assertFalse(self.do(w.on_close))  # pressed again: told to wait, not a second stop
+        self.assertFalse(
+            self.do(w.on_close)
+        )  # pressed again: told to wait, not a second stop
         self.assertIn("Still finishing", w.activity)
         self.assertTrue(self.pump(lambda: w.state.get("destroyed")))
         self.assertTrue(self.host.closed)
@@ -301,44 +373,78 @@ class WindowLogicTest(unittest.TestCase):
             self.do(w.on_close)
             self.do(w.answer, w.dialog["id"], True, [])
             self.assertTrue(self.pump(lambda: w.state.get("destroyed")))
-        self.assertEqual(len([m for m in self.host.warnings if "did not finish" in m]), 1, self.host.warnings)
+        self.assertEqual(
+            len([m for m in self.host.warnings if "did not finish" in m]),
+            1,
+            self.host.warnings,
+        )
 
     # -- the exclude list and the window's states ---------------------------------------------------
 
     def _rows(self):
-        return [(r["kind"], r["pattern"], r["name"], r["source"]) for r in self.snap()["exclude"]["rows"]]
+        return [
+            (r["kind"], r["pattern"], r["name"], r["source"])
+            for r in self.snap()["exclude"]["rows"]
+        ]
 
     def test_the_exclude_list_is_edited_in_the_window_and_kept(self):
         from twinlab2_recorder.workstation import exclude
 
         w = self.window()
         self.assertEqual(len(self._rows()), len(exclude.DEFAULTS))
-        self.assertIn(("Program", "WINWORD.EXE", "Microsoft Word", "Default"), self._rows())
+        self.assertIn(
+            ("Program", "WINWORD.EXE", "Microsoft Word", "Default"), self._rows()
+        )
         self.do(w.exclude_kind, "Window title")
         self.assertIn("* - Excel", self.snap()["exclude"]["hint"])
         self.assertTrue(self.do(w.exclude_add, "Personal"))
-        self.assertEqual(self._rows()[-1], ("Window title", "Personal", "", "Added on this PC"))
+        self.assertEqual(
+            self._rows()[-1], ("Window title", "Personal", "", "Added on this PC")
+        )
         excel = next(i for i, r in enumerate(self._rows()) if r[1] == "EXCEL.EXE")
         self.do(w.exclude_remove, [excel])
         kept = st.Settings(self.tmp).exclude_policy()
         self.assertIsNone(kept.process("EXCEL.EXE"))
         self.assertIsNotNone(kept.title("Personal budget"))
         self.do(w.exclude_defaults)
-        self.assertIsNotNone(st.Settings(self.tmp).exclude_policy().process("EXCEL.EXE"))
-        with mock.patch.object(exclude, "running_programs", lambda: ["CaseDesk.exe", "Slack.exe", "WINWORD.EXE"]):
+        self.assertIsNotNone(
+            st.Settings(self.tmp).exclude_policy().process("EXCEL.EXE")
+        )
+        with mock.patch.object(
+            exclude,
+            "running_programs",
+            lambda: ["CaseDesk.exe", "Slack.exe", "WINWORD.EXE"],
+        ):
             self.do(w.exclude_pick)
         dialog = self.snap()["dialog"]
-        self.assertEqual(dialog["items"], ["CaseDesk.exe", "Slack.exe"])  # Word is excluded already
+        self.assertEqual(
+            dialog["items"], ["CaseDesk.exe", "Slack.exe"]
+        )  # Word is excluded already
         self.do(w.answer, dialog["id"], True, ["Slack.exe", "not-offered.exe"])
-        self.assertIsNotNone(st.Settings(self.tmp).exclude_policy().process("slack.exe"))
-        self.assertIsNone(st.Settings(self.tmp).exclude_policy().process("not-offered.exe"))
+        self.assertIsNotNone(
+            st.Settings(self.tmp).exclude_policy().process("slack.exe")
+        )
+        self.assertIsNone(
+            st.Settings(self.tmp).exclude_policy().process("not-offered.exe")
+        )
         conf = self.do(w.options)
-        self.assertIsNotNone(exclude.Policy.from_session(conf["exclude"]).process("slack.exe"))
+        self.assertIsNotNone(
+            exclude.Policy.from_session(conf["exclude"]).process("slack.exe")
+        )
 
     def test_an_office_policy_locks_its_entries_in_the_window(self):
-        self._no_office_policy({"exclude": [{"kind": "web", "pattern": "mail.google.com", "name": "Gmail"}]})
+        self._no_office_policy(
+            {
+                "exclude": [
+                    {"kind": "web", "pattern": "mail.google.com", "name": "Gmail"}
+                ]
+            }
+        )
         w = self.window()
-        self.assertEqual(self._rows()[0], ("Web site", "mail.google.com", "Gmail", "Office policy (locked)"))
+        self.assertEqual(
+            self._rows()[0],
+            ("Web site", "mail.google.com", "Gmail", "Office policy (locked)"),
+        )
         self.assertTrue(self.snap()["exclude"]["rows"][0]["locked"])
         self.assertIn("set by your office's policy", self.snap()["exclude"]["note"])
         self.do(w.exclude_remove, [0])
@@ -362,16 +468,28 @@ class WindowLogicTest(unittest.TestCase):
         self.assertFalse(self.snap()["can"]["start_offered"])
         self.do(w.select_offered, 1)
         self.assertTrue(self.snap()["can"]["start_offered"])
-        self.assertEqual(self.snap()["own"]["empty"], "The portal's catalog has no application yet.")
+        self.assertEqual(
+            self.snap()["own"]["empty"], "The portal's catalog has no application yet."
+        )
         app = {"app_id": 4, "name": "Billing Desk", "target": {"exe": "Billing.exe"}}
-        self.do(w.apply, {"sessions": [S1], "deny_keys": []}, {"apps": [app], "deny_keys": []}, None)
+        self.do(
+            w.apply,
+            {"sessions": [S1], "deny_keys": []},
+            {"apps": [app], "deny_keys": []},
+            None,
+        )
         own = self.snap()["own"]
-        self.assertEqual([(a["name"], a["surface"]) for a in own["apps"]], [("Billing Desk", "desktop")])
+        self.assertEqual(
+            [(a["name"], a["surface"]) for a in own["apps"]],
+            [("Billing Desk", "desktop")],
+        )
         self.assertIsNone(own["empty"])
         self._recorded()
         self.do(w.refresh_done)
         rows = self.snap()["recordings"]["rows"]
-        self.assertEqual(rows[0]["row"], "Month-end close  ·  finished  ·  not sent yet")
+        self.assertEqual(
+            rows[0]["row"], "Month-end close  ·  finished  ·  not sent yet"
+        )
         self.assertEqual((rows[0]["state"], rows[0]["sent"]), ("Finished", False))
         self.do(w.select_recording, SESSION)
         self.assertTrue(self.snap()["can"]["details"])
@@ -383,14 +501,19 @@ class WindowLogicTest(unittest.TestCase):
 
     def test_settings_are_kept_and_go_with_the_next_session(self):
         w = self.window()
-        self.do(w.set_settings, {"browser": "chrome", "pictures": True, "cdp": " http://127.0.0.1:9222 "})
+        self.do(
+            w.set_settings,
+            {"browser": "chrome", "pictures": True, "cdp": " http://127.0.0.1:9222 "},
+        )
         again = st.Settings(self.tmp)
         self.assertEqual((again.values["browser"], again.values["pictures"], again.values["cdp"]),
                          ("chrome", True, "http://127.0.0.1:9222"))  # fmt: skip
         self.do(w.set_settings, {"browser": "firefox"})
         self.assertEqual(self.snap()["settings"]["browser"], "edge")
         opts = self.do(w.options)
-        self.assertEqual((opts["cdp"], opts["pictures"]), ("http://127.0.0.1:9222", True))
+        self.assertEqual(
+            (opts["cdp"], opts["pictures"]), ("http://127.0.0.1:9222", True)
+        )
 
     def test_the_bridge_answers_only_when_something_changed(self):
         w = self.window()

@@ -31,7 +31,15 @@ import time
 from twinlab2_recorder import settings as st
 from twinlab2_recorder import ui_model as ui
 from twinlab2_recorder.client import Portal, PortalError, check_portal
-from twinlab2_recorder.uithread import Dispatcher, Job, Jobs, clear_ui_thread, mark_ui_thread, on_ui_thread, wait_process
+from twinlab2_recorder.uithread import (
+    Dispatcher,
+    Job,
+    Jobs,
+    clear_ui_thread,
+    mark_ui_thread,
+    on_ui_thread,
+    wait_process,
+)
 from twinlab2_recorder.upload_queue import UploadQueue
 
 STOP_WAIT_S = 120  # how long closing the window waits for a recording to finish
@@ -43,7 +51,7 @@ EXCLUDE_HINTS = {
     "Program": "A program's file name, such as WINWORD.EXE or EXCEL.EXE (* matches anything: adobe*.exe).",
     "Window title": "Words in a window's title, such as Personal; or a whole title with *, such as * - Excel.",
     "Web site": "A host, such as mail.google.com (its subdomains too), or an address prefix, such as "
-                "https://intranet.example.com/hr/.",
+    "https://intranet.example.com/hr/.",
 }
 CHANNEL_WORDS = {"starting": ("Starting", "active"), "ok": ("Recording", "ok"), "restarting": ("Restarting", "warn"),
                  "failed": ("Failed", "bad"), "ended": ("Ended", "off"), "ended early": ("Ended early", "bad"),
@@ -66,7 +74,9 @@ class Loop:
 
     def after(self, ms: float, fn: Callable, *args) -> None:
         with self._lock:
-            heapq.heappush(self._timers, (time.monotonic() + ms / 1000, next(self._seq), fn, args))
+            heapq.heappush(
+                self._timers, (time.monotonic() + ms / 1000, next(self._seq), fn, args)
+            )
 
     def step(self) -> None:
         self.dispatcher.drain()
@@ -91,7 +101,9 @@ class Loop:
             clear_ui_thread()
 
     def start(self) -> Loop:
-        self.thread = threading.Thread(target=self.run_forever, name="tl-window", daemon=True)
+        self.thread = threading.Thread(
+            target=self.run_forever, name="tl-window", daemon=True
+        )
         self.thread.start()
         return self
 
@@ -154,11 +166,15 @@ class RecorderApp:
         self.portal_error: str | None = None
         self.activity = ""
         self.activity_state: str | None = None
-        self.note: dict | None = None  # the Record page's note after a recording / failed checks
+        self.note: dict | None = (
+            None  # the Record page's note after a recording / failed checks
+        )
         self.dialog: dict | None = None
         self.notices: list[dict] = []
         self.upload_rows: list[dict] = []
-        self.upload_note = "Uploads continue in the background and resume after a restart."
+        self.upload_note = (
+            "Uploads continue in the background and resume after a restart."
+        )
         self.upload_error: str | None = None
         self.own_fill = {"seq": 0, "extra": ""}
         self.ex_kind = EXCLUDE_KINDS[0]
@@ -191,7 +207,11 @@ class RecorderApp:
         return bool(self.cfg.values.get("portal") and self.cfg.values.get("token"))
 
     def idle(self) -> bool:
-        return self.state["proc"] is None and not self.state.get("checking") and not self.state["closing"]
+        return (
+            self.state["proc"] is None
+            and not self.state.get("checking")
+            and not self.state["closing"]
+        )
 
     def snapshot(self) -> dict:
         s, now = self.state, time.monotonic()
@@ -205,36 +225,78 @@ class RecorderApp:
             "version": self.version,
             "app": {"name": "TwinLab Recorder", "version": st.VERSION},
             "page": self.page,
-            "pairing": {"paired": self.paired(), "machine": self.cfg.values.get("machine"),
-                        "portal": self.cfg.values.get("portal"), "status": self.status,
-                        "error": self.portal_error, "busy": bool(s.get("pairing"))},  # fmt: skip
+            "pairing": {
+                "paired": self.paired(),
+                "machine": self.cfg.values.get("machine"),
+                "portal": self.cfg.values.get("portal"),
+                "status": self.status,
+                "error": self.portal_error,
+                "busy": bool(s.get("pairing")),
+            },  # fmt: skip
             "activity": {"text": self.activity, "state": self.activity_state},
             "recording": self._recording_view(rec, mode, now),
             "note": self.note,
             "record_tab": self.record_tab,
-            "offered": {"note": self.offered_note(), "selected": self.offered_selected,
-                        "sessions": [{"id": o["id"], "name": o.get("name") or "Session",
-                                      "label": ui.session_label(o),
-                                      "targets": [{"name": ui.target_name(t), "surface": surface_of(t)}
-                                                  for t in o.get("targets") or []]} for o in self.offered]},  # fmt: skip
-            "own": {"apps": [{"app_id": a["app_id"], "name": a.get("name"),
-                              "surface": surface_of(a.get("target") or {})} for a in self.apps],
-                    "empty": None if self.apps else ("The portal's catalog has no application yet." if self.catalog_known
-                                                     else "None yet: the catalog appears here once this PC is "
-                                                          "paired with the portal."),
-                    "fill": self.own_fill},  # fmt: skip
-            "recordings": {"note": self.done_note(), "selected": self.recording_selected,
-                           "rows": [self._recording_row(r) for r in s["done"]],
-                           "review": self._review(selected), "details": s["details"],
-                           "busy": bool(s.get("sending"))},  # fmt: skip
-            "uploads": {"rows": self.upload_rows, "note": self.upload_note, "error": self.upload_error},
+            "offered": {
+                "note": self.offered_note(),
+                "selected": self.offered_selected,
+                "sessions": [
+                    {
+                        "id": o["id"],
+                        "name": o.get("name") or "Session",
+                        "label": ui.session_label(o),
+                        "targets": [
+                            {"name": ui.target_name(t), "surface": surface_of(t)}
+                            for t in o.get("targets") or []
+                        ],
+                    }
+                    for o in self.offered
+                ],
+            },  # fmt: skip
+            "own": {
+                "apps": [
+                    {
+                        "app_id": a["app_id"],
+                        "name": a.get("name"),
+                        "surface": surface_of(a.get("target") or {}),
+                    }
+                    for a in self.apps
+                ],
+                "empty": None
+                if self.apps
+                else (
+                    "The portal's catalog has no application yet."
+                    if self.catalog_known
+                    else "None yet: the catalog appears here once this PC is "
+                    "paired with the portal."
+                ),
+                "fill": self.own_fill,
+            },  # fmt: skip
+            "recordings": {
+                "note": self.done_note(),
+                "selected": self.recording_selected,
+                "rows": [self._recording_row(r) for r in s["done"]],
+                "review": self._review(selected),
+                "details": s["details"],
+                "busy": bool(s.get("sending")),
+            },  # fmt: skip
+            "uploads": {
+                "rows": self.upload_rows,
+                "note": self.upload_note,
+                "error": self.upload_error,
+            },
             "exclude": self._exclude_view(),
             "settings": dict(self.settings),
-            "can": {"start_offered": self.idle() and self.offered_selected is not None,
-                    "start_own": self.idle(), "stop": bool(rec) and s.get("stop_asked") is None,
-                    "send": has_box and self.paired() and not busy_send, "details": has_box,
-                    "upload": selected is not None and self.paired() and not s["closing"],
-                    "pair": not s.get("pairing") and not s["closing"], "settings": self.idle()},  # fmt: skip
+            "can": {
+                "start_offered": self.idle() and self.offered_selected is not None,
+                "start_own": self.idle(),
+                "stop": bool(rec) and s.get("stop_asked") is None,
+                "send": has_box and self.paired() and not busy_send,
+                "details": has_box,
+                "upload": selected is not None and self.paired() and not s["closing"],
+                "pair": not s.get("pairing") and not s["closing"],
+                "settings": self.idle(),
+            },  # fmt: skip
             "dialog": self.dialog,
             "notices": self.notices,
         }
@@ -266,14 +328,20 @@ class RecorderApp:
                 if extra:
                     label += " · " + " · ".join(extra)
                     tone = "warn" if tone == "ok" else tone
-                if ch.get("reason") and ch["state"] in ("failed", "ended early", "cut off"):
+                if ch.get("reason") and ch["state"] in (
+                    "failed",
+                    "ended early",
+                    "cut off",
+                ):
                     label += f": {ch['reason']}"
             out["apps"].append({"name": ui.target_name(t) or surface, "surface": surface,
                                 "channel": surface, "status": label, "tone": tone})  # fmt: skip
         return out
 
     def _recording_row(self, r: dict) -> dict:
-        label, tone = STATE_CHIPS.get(str(r.get("state") or ""), (str(r.get("state") or "unknown"), "off"))
+        label, tone = STATE_CHIPS.get(
+            str(r.get("state") or ""), (str(r.get("state") or "unknown"), "off")
+        )
         return {"id": r["id"], "name": r.get("name") or r["id"], "state": label, "tone": tone,
                 "sent": bool(r.get("sent")), "row": ui.recording_row(r)}  # fmt: skip
 
@@ -282,7 +350,11 @@ class RecorderApp:
             return None
         box = self.state.get("box")
         if box is None:
-            return {"error": self.state.get("box_error") or "", "summary": None, "json": None}
+            return {
+                "error": self.state.get("box_error") or "",
+                "summary": None,
+                "json": None,
+            }
         summary = ui.review_summary(box, self.m.session_notes(self.cfg, selected["id"]),
                                     self.cfg.values.get("portal"), self.cfg.values.get("machine"))  # fmt: skip
         return {"error": None, "summary": summary,
@@ -322,7 +394,9 @@ class RecorderApp:
         self._changed()
         return self.dialog
 
-    def answer(self, dialog_id: int, yes: bool, chosen: list[str] | None = None) -> None:
+    def answer(
+        self, dialog_id: int, yes: bool, chosen: list[str] | None = None
+    ) -> None:
         if not self.dialog or self.dialog["id"] != dialog_id:
             return
         items = self.dialog.get("items")
@@ -376,12 +450,16 @@ class RecorderApp:
 
     def refresh_done(self) -> None:
         self.state["done"] = self.m.sessions_list(self.cfg)
-        if self.recording_selected and not any(r["id"] == self.recording_selected for r in self.state["done"]):
+        if self.recording_selected and not any(
+            r["id"] == self.recording_selected for r in self.state["done"]
+        ):
             self.recording_selected, self.state["box"] = None, None
         self._changed()
 
     def selected_done(self) -> dict | None:
-        return next((r for r in self.state["done"] if r["id"] == self.recording_selected), None)
+        return next(
+            (r for r in self.state["done"] if r["id"] == self.recording_selected), None
+        )
 
     def select_recording(self, session_id: str | None) -> None:
         self.recording_selected = session_id
@@ -409,7 +487,11 @@ class RecorderApp:
         self.poll_portal()
 
     def poll_portal(self) -> None:
-        if self.state["polling"] or not self.cfg.values.get("token") or self.state.get("destroyed"):
+        if (
+            self.state["polling"]
+            or not self.cfg.values.get("token")
+            or self.state.get("destroyed")
+        ):
             return
         self.state["polling"] = True
 
@@ -441,7 +523,9 @@ class RecorderApp:
         self._changed()
 
     def select_offered(self, session_id: int | None) -> None:
-        self.offered_selected = session_id if any(o["id"] == session_id for o in self.offered) else None
+        self.offered_selected = (
+            session_id if any(o["id"] == session_id for o in self.offered) else None
+        )
         self._changed()
 
     # -- settings --------------------------------------------------------------------------------
@@ -450,7 +534,11 @@ class RecorderApp:
         for key in ("browser", "keep_browser_profile", "cdp", "pictures"):
             if key in values:
                 v = values[key]
-                self.settings[key] = bool(v) if key in ("keep_browser_profile", "pictures") else str(v or "").strip()
+                self.settings[key] = (
+                    bool(v)
+                    if key in ("keep_browser_profile", "pictures")
+                    else str(v or "").strip()
+                )
         if self.settings["browser"] not in ("edge", "chrome"):
             self.settings["browser"] = "edge"
         self.cfg.values.update(self.settings)
@@ -460,7 +548,9 @@ class RecorderApp:
     def options(self) -> dict:
         cdp = self.settings["cdp"].strip()
         if cdp and not cdp.startswith(("http://127.0.0.1:", "http://localhost:")):
-            raise ValueError("attach only to a browser on this PC, for example http://127.0.0.1:9222")
+            raise ValueError(
+                "attach only to a browser on this PC, for example http://127.0.0.1:9222"
+            )
         self.cfg.values.update(keep_browser_profile=self.settings["keep_browser_profile"], cdp=cdp,
                                browser=self.settings["browser"], pictures=self.settings["pictures"])  # fmt: skip
         self.cfg.save()
@@ -498,14 +588,24 @@ class RecorderApp:
         if self.state["closing"]:
             return
         if error:
-            self.note = {"tone": "bad", "title": "Not recording: the checks could not run", "text": error, "lines": []}
+            self.note = {
+                "tone": "bad",
+                "title": "Not recording: the checks could not run",
+                "text": error,
+                "lines": [],
+            }
             return
         conf["preflight"] = block
         if block["ready"]:
             self.launch(conf)
             return
         failed = self.m.failed_checks(block)
-        self.note = {"tone": "warn", "title": "Not ready", "text": "These checks failed:", "lines": failed}
+        self.note = {
+            "tone": "warn",
+            "title": "Not ready",
+            "text": "These checks failed:",
+            "lines": failed,
+        }
 
         def anyway():
             conf["override_preflight"] = True
@@ -526,7 +626,9 @@ class RecorderApp:
         cfg_path = cfg.folder / "next-session.json"
         cfg_path.write_text(json.dumps(conf), encoding="utf-8")
         main_py = Path(self.m.__file__).resolve()
-        cmd = [sys.executable] + ([] if getattr(sys, "frozen", False) else [str(main_py)])
+        cmd = [sys.executable] + (
+            [] if getattr(sys, "frozen", False) else [str(main_py)]
+        )
         cmd += ["run-session", "--config", str(cfg_path), "--parent", str(os.getpid())]
         cmd += ["--portable-data"] if cfg.portable else []
         (cfg.folder / "logs").mkdir(exist_ok=True)
@@ -542,7 +644,9 @@ class RecorderApp:
         s = self.state
         s["session"] = conf["id"]
         s["targets"] = list(conf.get("targets") or [])
-        rec = ui.RecordingStatus(conf.get("name") or "Session", conf.get("targets") or [], time.monotonic())
+        rec = ui.RecordingStatus(
+            conf.get("name") or "Session", conf.get("targets") or [], time.monotonic()
+        )
         s["recording"] = rec
         pre = conf.get("preflight") or {"ready": True}
         s["extra_lines"] = ([] if pre.get("ready") else ["Recording anyway, with failed checks."]) + \
@@ -617,9 +721,19 @@ class RecorderApp:
         if o is None:
             self.tell("Choose a session", "Choose a session in the list first.")
             return
-        self.begin(self.m.session_config(o["targets"], self.state["deny"], o["name"], o["id"], o.get("automation_id")))
+        self.begin(
+            self.m.session_config(
+                o["targets"],
+                self.state["deny"],
+                o["name"],
+                o["id"],
+                o.get("automation_id"),
+            )
+        )
 
-    def on_start_own(self, name: str = "", app_ids: list | None = None, extra: str = "") -> None:
+    def on_start_own(
+        self, name: str = "", app_ids: list | None = None, extra: str = ""
+    ) -> None:
         chosen = set(app_ids or [])
         targets = [dict(a["target"]) for a in self.apps if a["app_id"] in chosen]
         for line in str(extra or "").splitlines():
@@ -634,7 +748,11 @@ class RecorderApp:
             self.tell("Nothing to record", "Tick at least one application from the catalog, or type one in the "
                       "box below it.", "warn")  # fmt: skip
             return
-        self.begin(self.m.session_config(targets, self.state["deny"], str(name or "").strip() or "My session"))
+        self.begin(
+            self.m.session_config(
+                targets, self.state["deny"], str(name or "").strip() or "My session"
+            )
+        )
 
     # -- sending references ------------------------------------------------------------------------
 
@@ -653,12 +771,20 @@ class RecorderApp:
 
         def sent(result):
             self.state["sending"] = False
-            self.tell("Sent", f"Sent. It is recording {result.get('recording_id')} on the portal.", "ok")
+            self.tell(
+                "Sent",
+                f"Sent. It is recording {result.get('recording_id')} on the portal.",
+                "ok",
+            )
             self.refresh_done()
 
         def not_sent(reason):
             self.state["sending"] = False
-            self.tell("Not sent", f"Not sent: {reason}. The recording is still on this PC; try again later.", "bad")
+            self.tell(
+                "Not sent",
+                f"Not sent: {reason}. The recording is still on this PC; try again later.",
+                "bad",
+            )
 
         self.jobs.run("send", lambda _r: self.m.send(self.cfg, session_id, self.ca_bundle), state="sending",
                       label=f"references of {s['name']}", retries=3, on_done=sent, on_failed=not_sent)  # fmt: skip
@@ -670,9 +796,17 @@ class RecorderApp:
         the address is refused at once; the pairing itself runs in the background."""
         if self.state.get("pairing"):
             return False
-        url, code, name = str(url or "").strip(), str(code or "").strip(), str(name or "").strip()
+        url, code, name = (
+            str(url or "").strip(),
+            str(code or "").strip(),
+            str(name or "").strip(),
+        )
         if not url or not code or not name:
-            self.tell("Not paired", "Fill in the portal address, the pairing code and a name for this PC.", "warn")
+            self.tell(
+                "Not paired",
+                "Fill in the portal address, the pairing code and a name for this PC.",
+                "warn",
+            )
             return False
         try:
             url = check_portal(url)
@@ -747,12 +881,18 @@ class RecorderApp:
 
     def on_profile(self) -> None:
         if self.state["proc"] is not None:
-            self.tell("Stop the recording first", "The kept profile can be opened when nothing is recording.")
+            self.tell(
+                "Stop the recording first",
+                "The kept profile can be opened when nothing is recording.",
+            )
             return
         from twinlab2_recorder.workstation.session import open_profile
 
         try:
-            open_profile(self.m.browser_profile(self.cfg), url="https://microsoftedge.microsoft.com/addons/search/uipath")
+            open_profile(
+                self.m.browser_profile(self.cfg),
+                url="https://microsoftedge.microsoft.com/addons/search/uipath",
+            )
         except RuntimeError as exc:
             self.tell("The browser did not open", str(exc), "bad")
             return
@@ -795,14 +935,18 @@ class RecorderApp:
         self.state["exclude_can_edit"] = pol.allow_user_changes
         locked = sum(1 for r in rows if r["rule"].locked)
         if not pol.allow_user_changes:
-            self.ex_note = "Your office manages this list on this PC: it cannot be changed here."
+            self.ex_note = (
+                "Your office manages this list on this PC: it cannot be changed here."
+            )
         elif locked:
             self.ex_note = (f"{locked} entr{'y is' if locked == 1 else 'ies are'} set by your office's policy and "
                             "cannot be removed here. The rest are yours to change.")  # fmt: skip
         elif not rows:
             self.ex_note = "The list is empty: every application may be recorded as a session's target or as having been used."
         else:
-            self.ex_note = f"{len(rows)} entries. Changes apply to the next session you start."
+            self.ex_note = (
+                f"{len(rows)} entries. Changes apply to the next session you start."
+            )
         self._changed()
 
     def exclude_kind(self, kind: str) -> None:
@@ -813,7 +957,9 @@ class RecorderApp:
     def _own_rules(self):
         return [r["rule"] for r in self.state["exclude_rows"] if not r["rule"].locked]
 
-    def exclude_add(self, pattern: str | None = None, kind: str | None = None, rule=None) -> bool:
+    def exclude_add(
+        self, pattern: str | None = None, kind: str | None = None, rule=None
+    ) -> bool:
         from twinlab2_recorder.workstation import exclude
 
         if not self.state.get("exclude_can_edit", True):
@@ -821,11 +967,21 @@ class RecorderApp:
         if rule is None:
             text = str(pattern or "").strip()
             if not text:
-                self.tell("Nothing to add", "Type a program, a window title or a web site to exclude.", "warn")
+                self.tell(
+                    "Nothing to add",
+                    "Type a program, a window title or a web site to exclude.",
+                    "warn",
+                )
                 return False
-            rule = exclude.clean_rule({"kind": EXCLUDE_KIND_OF[kind or self.ex_kind], "pattern": text})
+            rule = exclude.clean_rule(
+                {"kind": EXCLUDE_KIND_OF[kind or self.ex_kind], "pattern": text}
+            )
             if rule is None:
-                self.tell("Not added", "That entry would exclude every application: name one.", "bad")
+                self.tell(
+                    "Not added",
+                    "That entry would exclude every application: name one.",
+                    "bad",
+                )
                 return False
         if any(r["rule"].key() == rule.key() for r in self.state["exclude_rows"]):
             return True
@@ -836,9 +992,17 @@ class RecorderApp:
     def exclude_remove(self, indices: list[int]) -> None:
         drop = {int(i) for i in indices}
         rows = self.state["exclude_rows"]
-        if not self.state.get("exclude_can_edit", True) or any(rows[i]["locked"] for i in drop if i < len(rows)):
+        if not self.state.get("exclude_can_edit", True) or any(
+            rows[i]["locked"] for i in drop if i < len(rows)
+        ):
             return
-        self.cfg.set_exclude_rules([r["rule"] for i, r in enumerate(rows) if i not in drop and not r["rule"].locked])
+        self.cfg.set_exclude_rules(
+            [
+                r["rule"]
+                for i, r in enumerate(rows)
+                if i not in drop and not r["rule"].locked
+            ]
+        )
         self.refresh_exclude()
 
     def exclude_defaults(self) -> None:
@@ -855,12 +1019,17 @@ class RecorderApp:
         names = [n for n in exclude.running_programs()
                  if not any(r["rule"].matches_process(n) for r in self.state["exclude_rows"])]  # fmt: skip
         if not names:
-            self.tell("Nothing to pick", "Every program with a window open now is already excluded, or none is open.")
+            self.tell(
+                "Nothing to pick",
+                "Every program with a window open now is already excluded, or none is open.",
+            )
             return
 
         def chosen(items):
             for name in items:
-                self.exclude_add(rule=exclude.clean_rule({"kind": "process", "pattern": name}))
+                self.exclude_add(
+                    rule=exclude.clean_rule({"kind": "process", "pattern": name})
+                )
 
         self.ask("Exclude running apps", "Programs with a window open now. Choose the ones to exclude:", chosen,
                  yes="Exclude selected", items=names)  # fmt: skip
@@ -902,7 +1071,10 @@ class RecorderApp:
             return
         s["closing"] = True
         self.on_stop()
-        self.activity, self.activity_state = "Finishing the recording before the window closes…", "stopping"
+        self.activity, self.activity_state = (
+            "Finishing the recording before the window closes…",
+            "stopping",
+        )
         self._changed()
 
         def finished(code):
