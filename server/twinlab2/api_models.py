@@ -15,7 +15,161 @@ class Model(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
 
-ErrorCode = Literal['invalid_request', 'idempotency_key_mismatch', 'signed_out', 'wrong_credentials', 'forbidden', 'csrf', 'role', 'restricted', 'not_found', 'method_not_allowed', 'conflict', 'state_conflict', 'draft_changed', 'unchanged', 'incomplete_package', 'plan_changed', 'publish_locked', 'idempotency_in_progress', 'too_large', 'unsupported_media_type', 'idempotency_key_reused', 'internal', 'bad_gateway', 'unavailable', 'error']
+RetentionDays = int | None
+
+
+class RetentionPolicyInput(Model):
+    raw_recordings: RetentionDays | None = None
+    evidence: RetentionDays | None = None
+    frozen_packages: RetentionDays | None = None
+    build_logs: RetentionDays | None = None
+    audit: RetentionDays | None = None
+    schedule: Literal['off', 'daily'] | None = None
+
+
+class RetentionPolicy(Model):
+    raw_recordings: RetentionDays
+    evidence: RetentionDays
+    frozen_packages: RetentionDays
+    build_logs: RetentionDays
+    audit: RetentionDays
+    schedule: Literal['off', 'daily']
+    updated_by: str | None = None
+    updated_at: str | None = None
+
+
+class RetentionPlanItem(Model):
+    days: int | None
+    count: int
+    bytes: int
+    freed_bytes: int | None = None
+
+
+class RetentionPlan(Model):
+    raw_recordings: RetentionPlanItem
+    evidence: RetentionPlanItem
+    frozen_packages: RetentionPlanItem
+    build_logs: RetentionPlanItem
+    audit: RetentionPlanItem
+
+
+class RetentionRunInput(Model):
+    dry_run: bool | None = None
+
+
+Timestamp = str
+
+
+class RetentionRun(Model):
+    id: int
+    requested_by: str
+    dry_run: bool
+    state: Literal['queued', 'running', 'done', 'failed']
+    policy: dict[str, Any]
+    result: RetentionPlan | Any
+    error: str | None
+    created_at: Timestamp
+    finished_at: str | None
+
+
+class Operations_Metrics(Model):
+    port: int | None
+    token: bool
+
+
+class Operations(Model):
+    storage: dict[str, Any]
+    metrics: Operations_Metrics
+    tracing: bool
+    log_format: Literal['json', 'text']
+    policy: RetentionPolicy
+    plan: RetentionPlan
+    runs: list[RetentionRun]
+    queue: dict[str, int]
+
+
+class Tombstone(Model):
+    id: int
+    at: Timestamp
+    actor: str
+    reason: Literal['retention', 'owner_request', 'purge']
+    object_type: str
+    object_id: str
+    app_id: int | None
+    recording_id: str | None
+    sha256: str | None
+    size: int | None
+    details: dict[str, Any]
+
+
+class TombstoneList(Model):
+    tombstones: list[Tombstone]
+
+
+Sha256 = str
+
+
+class FileLocations_ArtifactsItem(Model):
+    id: int
+    kind: str
+    app_id: int | None
+    size: int
+    created_at: str
+
+
+class FileLocations_InsideItem(Model):
+    id: int
+    kind: str
+    app_id: int | None
+    size: int
+    members: list[str]
+
+
+class FileLocations(Model):
+    sha256: Sha256
+    artifacts: list[FileLocations_ArtifactsItem]
+    inside: list[FileLocations_InsideItem]
+
+
+class PurgeInput(Model):
+    note: str
+
+
+class PurgeResult_ContainersDeletedItem(Model):
+    id: int
+    kind: str
+    members: list[str]
+
+
+class PurgeResult(Model):
+    sha256: Sha256
+    tombstone_id: int
+    artifacts_deleted: int
+    containers_deleted: list[PurgeResult_ContainersDeletedItem]
+    other_versions_deleted: int
+    freed_bytes: int
+
+
+class RecordingDeletionInput(Model):
+    reason: str
+    purge_packages: bool | None = None
+
+
+class RecordingDeletion_PackagesDeletedItem(Model):
+    app_id: int
+    rev: int
+
+
+class RecordingDeletion(Model):
+    recording_id: str
+    tombstone_id: int
+    apps: list[int]
+    uploads_deleted: int
+    packages_deleted: list[RecordingDeletion_PackagesDeletedItem]
+    freed_bytes: int
+
+
+ErrorCode = Literal['invalid_request', 'idempotency_key_mismatch', 'signed_out', 'wrong_credentials', 'forbidden', 'csrf', 'role', 'restricted', 'not_found', 'method_not_allowed', 'conflict', 'state_conflict', 'draft_changed', 'unchanged', 'incomplete_package', 'plan_changed', 'publish_locked', 'idempotency_in_progress', 'too_large', 'unsupported_media_type', 'idempotency_key_reused', 'internal', 'bad_gateway', 'unavailable', 'gone', 'error']
 
 
 Role = Literal['viewer', 'builder', 'owner']
@@ -40,6 +194,7 @@ class Problem(Model):
     requested_role: Role | None = None
     errors: list[Problem_ErrorsItem] | None = None
     current: dict[str, Any] | None = None
+    tombstone_id: int | None = None
 
 
 class Page(Model):
@@ -71,12 +226,6 @@ BuildState = Literal['queued', 'starting', 'checking_started', 'running', 'waiti
 class Choice(Model):
     value: str
     label: str
-
-
-Timestamp = str
-
-
-Sha256 = str
 
 
 GitSha = str
@@ -1767,6 +1916,7 @@ Event.model_rebuild()
 EventChoice.model_rebuild()
 EvidenceLink.model_rebuild()
 EvidencePreview.model_rebuild()
+FileLocations.model_rebuild()
 FlowStep.model_rebuild()
 FreezeInput.model_rebuild()
 Gap.model_rebuild()
@@ -1792,6 +1942,7 @@ NewApp.model_rebuild()
 NewAutomation.model_rebuild()
 NewBuild.model_rebuild()
 NewCaptureSession.model_rebuild()
+Operations.model_rebuild()
 PackageCompleteness.model_rebuild()
 PackageDraft.model_rebuild()
 PackageFile.model_rebuild()
@@ -1806,9 +1957,13 @@ Preflight.model_rebuild()
 Problem.model_rebuild()
 Provider.model_rebuild()
 PublishedDemo.model_rebuild()
+PurgeInput.model_rebuild()
+PurgeResult.model_rebuild()
 ReadyToBuild.model_rebuild()
 RecordedApp.model_rebuild()
 RecordedFlow.model_rebuild()
+RecordingDeletion.model_rebuild()
+RecordingDeletionInput.model_rebuild()
 RecordingDetail.model_rebuild()
 RecordingEvents.model_rebuild()
 RecordingImport.model_rebuild()
@@ -1826,6 +1981,12 @@ ReleaseTest.model_rebuild()
 Repo.model_rebuild()
 ReportEntry.model_rebuild()
 RequestKey.model_rebuild()
+RetentionPlan.model_rebuild()
+RetentionPlanItem.model_rebuild()
+RetentionPolicy.model_rebuild()
+RetentionPolicyInput.model_rebuild()
+RetentionRun.model_rebuild()
+RetentionRunInput.model_rebuild()
 RoleAssignment.model_rebuild()
 RoleList.model_rebuild()
 RoleUpdate.model_rebuild()
@@ -1846,6 +2007,8 @@ TestedRelease.model_rebuild()
 Timeline.model_rebuild()
 TimelineLane.model_rebuild()
 TimelineRun.model_rebuild()
+Tombstone.model_rebuild()
+TombstoneList.model_rebuild()
 ToolDecision.model_rebuild()
 Triage.model_rebuild()
 TriageCard.model_rebuild()

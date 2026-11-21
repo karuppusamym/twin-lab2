@@ -1,0 +1,124 @@
+# Monitoring of the TwinLab2 portal on OpenShift: a ServiceMonitor for the portal's /metrics
+# (observability.py) and the alerts (PrometheusRule). NOT YET RUN ON A CLUSTER: the metric names
+# and expressions are checked by tests/server/test_deploy_manifests.py against the portal's own
+# /metrics, nothing else. Needs user-workload monitoring enabled on the cluster
+# (cluster-monitoring-config: enableUserWorkload: true), then:
+#
+#   oc apply -f deploy/openshift-monitoring.yaml
+#
+# /metrics answers only on the pods' internal port 9090 (the Service's `metrics` port, which the
+# Route does not reach). The catalog gauges (queue, workers, Verify, stored bytes) come from the
+# database, so every pod reports the same values: the rules take max() of them.
+# What each alert means and what to do: docs/operations/ (linked from each alert's runbook_url).
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    metadata:
+      name: twinlab2
+      labels: {app.kubernetes.io/name: twinlab2}
+    spec:
+      selector:
+        matchLabels: {app.kubernetes.io/name: twinlab2, app.kubernetes.io/component: portal}
+      endpoints:
+        - port: metrics
+          path: /metrics
+          interval: 30s
+          scrapeTimeout: 10s
+  - apiVersion: monitoring.coreos.com/v1
+    kind: PrometheusRule
+    metadata:
+      name: twinlab2
+      labels: {app.kubernetes.io/name: twinlab2}
+    spec:
+      groups:
+        - name: twinlab2.portal
+          rules:
+            - alert: TwinLab2PortalDown
+              expr: up{job="twinlab2"} == 0
+              for: 5m
+              labels: {severity: critical}
+              annotations:
+                summary: "A TwinLab2 portal pod does not answer /metrics."
+                runbook_url: https://github.com/karuppusamym/twin-lab2/blob/main/docs/operations/deploy.md
+            - alert: TwinLab2HighErrorRate
+              expr: |
+                sum(rate(twinlab2_http_requests_total{status=~"5.."}[5m]))
+                  / clamp_min(sum(rate(twinlab2_http_requests_total[5m])), 1e-9) > 0.05
+              for: 10m
+              labels: {severity: warning}
+              annotations:
+                summary: "More than 5% of portal requests fail with 5xx."
+                description: "Find the failing route by its label; quote a response's Request-Id to find its log lines."
+                runbook_url: https://github.com/karuppusamym/twin-lab2/blob/main/docs/operations/deploy.md
+            - alert: TwinLab2SlowRequests
+              expr: |
+                histogram_quantile(0.95, sum by (le) (rate(twinlab2_http_request_duration_seconds_bucket{route!~"/api/uploads.*|.*/download"}[5m]))) > 2
+              for: 15m
+              labels: {severity: warning}
+              annotations:
+                summary: "The 95th percentile of portal requests (uploads and downloads aside) is over 2 s."
+                runbook_url: https://github.com/karuppusamym/twin-lab2/blob/main/docs/operations/deploy.md
+            - alert: TwinLab2CatalogUnreachable
+              expr: max(twinlab2_catalog_up) == 0
+              for: 5m
+              labels: {severity: critical}
+              annotations:
+                summary: "The portal cannot read its catalog database."
+                runbook_url: https://github.com/karuppusamym/twin-lab2/blob/main/docs/operations/restore.md
+            - alert: TwinLab2ArtifactDiskFull
+              expr: min(twinlab2_artifact_store_free_bytes / twinlab2_artifact_store_size_bytes) < 0.10
+              for: 10m
+              labels: {severity: warning}
+              annotations:
+                summary: "Less than 10% free where local artifacts are kept."
+                runbook_url: https://github.com/karuppusamym/twin-lab2/blob/main/docs/operations/full-disk.md
+        - name: twinlab2.jobs
+          rules:
+            - alert: TwinLab2NoWorker
+              expr: max(twinlab2_workers_alive) == 0
+              for: 10m
+              labels: {severity: critical}
+              annotations:
+                summary: "No build worker was seen for 10 minutes: builds, Verify and retention wait."
+                runbook_url: https://github.com/karuppusamym/twin-lab2/blob/main/docs/operations/stuck-job.md
+            - alert: TwinLab2JobQueueBacklog
+              expr: max by (type) (twinlab2_job_oldest_due_seconds) > 900
+              for: 10m
+              labels: {severity: warning}
+              annotations:
+                summary: "A {{ $labels.type }} job has been due for more than 15 minutes."
+                runbook_url: https://github.com/karuppusamym/twin-lab2/blob/main/docs/operations/stuck-job.md
+            - alert: TwinLab2JobLeaseExpired
+              expr: max(twinlab2_jobs_lease_expired) > 0
+              for: 15m
+              labels: {severity: warning}
+              annotations:
+                summary: "A running job's lease ran out and nobody took it over."
+                runbook_url: https://github.com/karuppusamym/twin-lab2/blob/main/docs/operations/stuck-job.md
+            - alert: TwinLab2JobFailures
+              expr: |
+                max by (type) (twinlab2_job_outcomes{state="failed"})
+                  - max by (type) (twinlab2_job_outcomes{state="failed"} offset 1h) > 3
+              labels: {severity: warning}
+              annotations:
+                summary: "More than 3 {{ $labels.type }} jobs failed in the last hour."
+                runbook_url: https://github.com/karuppusamym/twin-lab2/blob/main/docs/operations/stuck-job.md
+            - alert: TwinLab2VerifyErrors
+              expr: |
+                sum(max by (state, tested) (twinlab2_verifications{state="error"}))
+                  - sum(max by (state, tested) (twinlab2_verifications{state="error"} offset 1h)) > 3
+              labels: {severity: warning}
+              annotations:
+                summary: "More than 3 Verify runs could not run (state error) in the last hour."
+                runbook_url: https://github.com/karuppusamym/twin-lab2/blob/main/docs/operations/stuck-job.md
+            - alert: TwinLab2RetentionNotRunning
+              expr: |
+                max(twinlab2_retention_last_run_timestamp_seconds) > 0
+                  and time() - max(twinlab2_retention_last_run_timestamp_seconds) > 2 * 86400
+              for: 1h
+              labels: {severity: warning}
+              annotations:
+                summary: "The daily retention run has not finished for 2 days."
+                runbook_url: https://github.com/karuppusamym/twin-lab2/blob/main/docs/operations/stuck-job.md

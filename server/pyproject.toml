@@ -24,6 +24,10 @@ dependencies = [
     "psycopg[binary]>=3.2,<4",
     # Claude build sessions: the clarification conversation (Messages API)
     "anthropic>=0.75,<1",
+    # /metrics (observability.py), multiprocess-safe under gunicorn
+    "prometheus-client>=0.20,<1",
+    # envelope encryption of local artifact files (crypto.py)
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]
@@ -37,9 +41,11 @@ providers = [
 ]
 # the container image: gunicorn with uvicorn workers
 serve = ["gunicorn>=23,<24", "uvicorn-worker>=0.3,<1"]
+# opt-in tracing (TWINLAB2_OTEL=1): spans per request and per worker job, exported over OTLP/HTTP
+otel = ["opentelemetry-sdk>=1.25,<2", "opentelemetry-exporter-otlp-proto-http>=1.25,<2"]
 # FastAPI's TestClient needs httpx (a dependency already); the contract tests validate every
 # /api/v1 response against api/openapi.yaml with jsonschema
-test = ["pytest>=8", "jsonschema>=4.18", "referencing>=0.30", "moto[s3,server]>=5.0"]
+test = ["pytest>=8", "jsonschema>=4.18", "referencing>=0.30", "moto[s3,server]>=5.0", "opentelemetry-sdk>=1.25,<2"]
 
 [tool.setuptools.packages.find]
 include = ["twinlab2*"]
