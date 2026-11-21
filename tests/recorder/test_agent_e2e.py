@@ -146,9 +146,14 @@ class EndToEndTest(unittest.TestCase):
                         page.fill("#q", "C-7")
                         page.click("#go")
                         page.wait_for_function("document.querySelector('#out').textContent === '3'")
+                    # Only the Notepad this test opens is closed, never one the person has open.
+                    # Windows 11's notepad.exe can hand off to a new process, so the test closes
+                    # the Notepad processes that were not running before it started one.
+                    before = set(win.pids_by_name("notepad.exe"))
                     notepad = subprocess.Popen(["notepad.exe"])
                     time.sleep(2.0)
-                    subprocess.run(["taskkill", "/F", "/IM", "notepad.exe"], capture_output=True)
+                    for pid in (set(win.pids_by_name("notepad.exe")) | {notepad.pid}) - before:
+                        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
                     notepad.wait(5)
                     pids, end = set(), time.monotonic() + 20
                     while not pids and time.monotonic() < end:
