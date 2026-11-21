@@ -1065,6 +1065,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/{app_id}/access-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask an application's owners for a role
+         * @description Any signed-in user, typically after a 403 `role` on the application (its `app_id` and
+         *     `requested_role` are in that problem). Needs a role and a reason. One pending request per
+         *     person and application: asking again replaces its role and reason. The answer is the same
+         *     202 whether or not the application exists (a 403 hides that; so does this). Audited as
+         *     `access.request`. 400 when the caller already holds that role or a higher one.
+         */
+        post: operations["requestAccess"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/access-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My access requests, and the ones I decide
+         * @description `mine`: the caller's own requests, newest first (at most 50), with their outcome; `app_name`
+         *     is null where the caller cannot see the application (a declined request, say).
+         *     `to_decide`: pending requests on applications the caller owns (a portal admin: all of them).
+         */
+        get: operations["listAccessRequests"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/access-requests/{request_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve or decline an access request
+         * @description The application's owners and portal admins. `approve` assigns the requested role (or
+         *     `role`, when given) as the access table does (`role.assign`), unless the person holds that
+         *     role or a higher one by now; `decline` assigns nothing. `note` is shown to the requester.
+         *     Audited as `access.approve` / `access.decline`. 409 `state_conflict` once decided; 404 for
+         *     a request the caller neither made nor decides.
+         */
+        post: operations["decideAccessRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/home": {
         parameters: {
             query?: never;
@@ -1845,6 +1919,10 @@ export interface components {
             request_id?: string;
             /** @description With `code: role` on an application: its owners, who can grant the role (only to a caller who may see them). */
             owners?: string[];
+            /** @description With `code: role` on an application: the application (as in the path), for `requestAccess`. */
+            app_id?: number;
+            /** @description With `app_id`: the lowest role that would have been enough. */
+            requested_role?: components["schemas"]["Role"];
             /** @description Per-field problems of a request body. */
             errors?: {
                 field: string;
@@ -3415,6 +3493,46 @@ export interface components {
         };
         TriageDecisions: {
             decisions: components["schemas"]["TriageDecision"][];
+        };
+        AccessRequestInput: {
+            role: components["schemas"]["Role"];
+            /** @description Why the role is needed (at most 500 characters are kept). */
+            reason: string;
+        };
+        AccessRequestSent: {
+            /** @enum {string} */
+            state: "pending";
+            role: components["schemas"]["Role"];
+            message: string;
+        };
+        /** @enum {string} */
+        AccessRequestState: "pending" | "approved" | "declined";
+        AccessRequest: {
+            id: number;
+            app_id: number;
+            /** @description Null where the caller cannot see the application. */
+            app_name: string | null;
+            /** @description Who asked. */
+            user: string;
+            role: components["schemas"]["Role"];
+            reason: string;
+            state: components["schemas"]["AccessRequestState"];
+            created_at: string;
+            decided_by: string | null;
+            decided_at: string | null;
+            /** @description The decider's note to the requester. */
+            note: string;
+        };
+        AccessRequestList: {
+            mine: components["schemas"]["AccessRequest"][];
+            to_decide: components["schemas"]["AccessRequest"][];
+        };
+        AccessDecision: {
+            /** @enum {string} */
+            decision: "approve" | "decline";
+            /** @description Approve with this role instead of the requested one. */
+            role?: components["schemas"]["Role"];
+            note?: string;
         };
         TriageOutcome: {
             apps: {
@@ -5145,6 +5263,85 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TriageOutcome"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    requestAccess: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccessRequestInput"];
+            };
+        };
+        responses: {
+            /** @description Sent to the owners (or nothing to send to; the caller cannot tell). */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessRequestSent"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    listAccessRequests: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The requests. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessRequestList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    decideAccessRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccessDecision"];
+            };
+        };
+        responses: {
+            /** @description The decided request. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessRequest"];
                 };
             };
             400: components["responses"]["BadRequest"];

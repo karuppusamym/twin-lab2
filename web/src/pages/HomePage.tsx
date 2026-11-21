@@ -4,6 +4,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
+import { AccessRequestsCard } from "../components/AccessRequests";
 import { Badge, QueryView, useTitle } from "../components/ui";
 import { plural, when } from "../lib/format";
 
@@ -18,7 +19,7 @@ const GREETING: Record<Schemas["HomeRole"], string> = {
   owner: "Your recordings and what each application found in them still needs.",
   builder: "Approved packages ready to build, and questions waiting for your answer.",
   viewer: "The published demos you can open or download.",
-  none: "You have no role on any application yet: ask an application's owner to add you.",
+  none: "You have no role on any application yet: open an application's link and request access, or ask its owner to add you.",
 };
 
 function HomeView({ home }: { home: Schemas["Home"] }) {
@@ -28,6 +29,7 @@ function HomeView({ home }: { home: Schemas["Home"] }) {
     <>
       <h1>Home</h1>
       <p className="muted">{GREETING[home.role]}</p>
+      <AccessRequestsCard />
       {home.is_admin && <AdminCard />}
       {owner && <OwnerWork home={home} />}
       {builder && <BuilderWork home={home} />}

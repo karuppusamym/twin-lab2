@@ -4,6 +4,7 @@ import { useMutation, useQueryClient, type QueryKey, type UseQueryResult } from 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 import { ApiError, errorText } from "../api/client";
+import { RequestAccess } from "./AccessRequests";
 import { capitalize, words } from "../lib/format";
 import { sessionKey } from "../session";
 
@@ -13,7 +14,12 @@ export function Loading({ what = "Loading" }: { what?: string }) {
 
 export function ErrorText({ error }: { error: unknown }) {
   if (!error) return null;
-  return <p className="error" role="alert">{errorText(error)}</p>;
+  const text = <p className="error" role="alert">{errorText(error)}</p>;
+  // refused for want of a role on an application: who can grant it, and "Request access"
+  if (error instanceof ApiError && error.status === 403 && error.problem.code === "role" && typeof error.problem.app_id === "number") {
+    return <>{text}<RequestAccess problem={error.problem} /></>;
+  }
+  return text;
 }
 
 export function Notice({ children }: { children: ReactNode }) {

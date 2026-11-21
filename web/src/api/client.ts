@@ -65,8 +65,45 @@ function origin() {
   return typeof window === "undefined" ? "http://localhost" : window.location.origin;
 }
 
+let refreshing: Promise<string> | null = null;
+
+/** Read the session again for a new form token (one read at a time, shared by every caller). */
+export function refreshCsrfToken(): Promise<string> {
+  refreshing ??= (async () => {
+    try {
+      const response = await globalThis.fetch(new URL("/api/v1/session", origin()), { credentials: "same-origin", headers: { Accept: "application/json" } });
+      if (!response.ok) return "";
+      const body = (await response.json()) as { csrf_token?: string };
+      csrfToken = body.csrf_token ?? "";
+      return csrfToken;
+    } catch {
+      return "";
+    } finally {
+      refreshing = null;
+    }
+  })();
+  return refreshing;
+}
+
+/**
+ * fetch, except that a change refused because the form token is out of date (403 `csrf`: the
+ * user signed in or out in another tab, or the session was renewed) reads the session for the new
+ * token and is sent once more. A second refusal is the answer.
+ */
+export async function sendWithFreshToken(request: Request): Promise<Response> {
+  const spare = SAFE.has(request.method) ? null : request.clone();
+  const response = await globalThis.fetch(request);
+  if (!spare || response.status !== 403) return response;
+  const problem = await problemOf(response);
+  if (problem.code !== "csrf") return response;
+  const token = await refreshCsrfToken();
+  if (!token) return response;
+  spare.headers.set("X-CSRF-Token", token);
+  return globalThis.fetch(spare);
+}
+
 // fetch is looked up per call (tests replace it after this module loads)
-export const api = createClient<paths>({ baseUrl: origin(), credentials: "same-origin", fetch: (request) => globalThis.fetch(request) });
+export const api = createClient<paths>({ baseUrl: origin(), credentials: "same-origin", fetch: (request) => sendWithFreshToken(request) });
 api.use(session);
 
 /** The data of an openapi-fetch answer (errors were already thrown by the middleware). */
@@ -79,7 +116,7 @@ export function data<T>(result: { data?: T; error?: unknown }): T {
 export async function postForm<T>(path: string, form: FormData): Promise<T> {
   const headers = new Headers({ Accept: "application/json" });
   if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
-  const response = await fetch(new URL(path, origin()), { method: "POST", body: form, headers, credentials: "same-origin" });
+  const response = await sendWithFreshToken(new Request(new URL(path, origin()), { method: "POST", body: form, headers, credentials: "same-origin" }));
   if (!response.ok) throw new ApiError(await problemOf(response));
   return (await response.json()) as T;
 }
