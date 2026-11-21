@@ -25,7 +25,8 @@ EXE = wh.chromium_path()
 FORM = b"""<!DOCTYPE html><html><head><title>Order</title><style>
 body { margin: 0; font: 28px/1 monospace; background: #fff; color: #000; }
 input, textarea, div.ce { position: absolute; left: 40px; width: 600px; height: 44px; border: 0;
-  outline: none; padding: 4px; font: 28px/1 monospace; color: #000; background: #fff; caret-color: transparent; }
+  outline: none; padding: 4px; font: 28px/1 monospace; color: #000; background: #fff; caret-color: transparent;
+  resize: none; overflow: hidden; }
 #name { top: 20px; } #phone { top: 90px; } #notes { top: 160px; height: 80px; } #ce { top: 270px; }
 #auto { top: 340px; } button { position: absolute; left: 40px; top: 420px; font-size: 20px; }
 #start { left: 300px; }
