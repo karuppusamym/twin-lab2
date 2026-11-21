@@ -153,6 +153,8 @@ tags:
     description: Setup / Advanced, build setup (admins).
   - name: users
     description: Local users and portal admins (admins).
+  - name: access
+    description: Requesting a role on an application, and its owners' decisions.
   - name: audit
     description: Append-only audit history.
   - name: agent
@@ -1577,6 +1579,101 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /api/v1/apps/{app_id}/access-requests:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    post:
+      tags: [access]
+      operationId: requestAccess
+      summary: Ask an application's owners for a role
+      description: |
+        Any signed-in user, typically after a 403 `role` on the application (its `app_id` and
+        `requested_role` are in that problem). Needs a role and a reason. One pending request per
+        person and application: asking again replaces its role and reason. The answer is the same
+        202 whether or not the application exists (a 403 hides that; so does this). Audited as
+        `access.request`. 400 when the caller already holds that role or a higher one.
+      x-twinlab-role: signed-in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccessRequestInput" }
+            examples:
+              builder: { value: { role: builder, reason: "I am rebuilding Billing for the demo week." } }
+      responses:
+        "202":
+          description: Sent to the owners (or nothing to send to; the caller cannot tell).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessRequestSent" }
+              examples:
+                sent:
+                  value: { state: pending, role: builder, message: "Your request was sent to the application's owners. You will see their answer on your home page." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/access-requests:
+    get:
+      tags: [access]
+      operationId: listAccessRequests
+      summary: My access requests, and the ones I decide
+      description: |
+        `mine`: the caller's own requests, newest first (at most 50), with their outcome; `app_name`
+        is null where the caller cannot see the application (a declined request, say).
+        `to_decide`: pending requests on applications the caller owns (a portal admin: all of them).
+      x-twinlab-role: signed-in
+      responses:
+        "200":
+          description: The requests.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessRequestList" }
+              examples:
+                owner:
+                  value:
+                    mine: []
+                    to_decide:
+                      - { id: 4, app_id: 1, app_name: Billing, user: bob, role: builder, reason: "Rebuilding Billing.", state: pending, created_at: "2026-11-21T09:00:00+00:00", decided_by: null, decided_at: null, note: "" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/access-requests/{request_id}/decision:
+    parameters:
+      - name: request_id
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [access]
+      operationId: decideAccessRequest
+      summary: Approve or decline an access request
+      description: |
+        The application's owners and portal admins. `approve` assigns the requested role (or
+        `role`, when given) as the access table does (`role.assign`), unless the person holds that
+        role or a higher one by now; `decline` assigns nothing. `note` is shown to the requester.
+        Audited as `access.approve` / `access.decline`. 409 `state_conflict` once decided; 404 for
+        a request the caller neither made nor decides.
+      x-twinlab-role: owner-or-admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccessDecision" }
+            examples:
+              approve: { value: { decision: approve } }
+              decline: { value: { decision: decline, note: "Ask again when the package is frozen." } }
+      responses:
+        "200":
+          description: The decided request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessRequest" }
+              examples:
+                approved:
+                  value: { id: 4, app_id: 1, app_name: Billing, user: bob, role: builder, reason: "Rebuilding Billing.", state: approved, created_at: "2026-11-21T09:00:00+00:00", decided_by: olivia, decided_at: "2026-11-21T09:05:00+00:00", note: "" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /api/v1/home:
     get:
       tags: [session]
@@ -2494,6 +2591,8 @@ components:
           type: array
           items: { type: string }
           description: "With `code: role` on an application: its owners, who can grant the role (only to a caller who may see them)."
+        app_id: { type: integer, description: "With `code: role` on an application: the application (as in the path), for `requestAccess`." }
+        requested_role: { $ref: "#/components/schemas/Role", description: "With `app_id`: the lowest role that would have been enough." }
         errors:
           type: array
           description: Per-field problems of a request body.
@@ -4431,6 +4530,52 @@ components:
       required: [decisions]
       properties:
         decisions: { type: array, maxItems: 200, items: { $ref: "#/components/schemas/TriageDecision" } }
+    AccessRequestInput:
+      type: object
+      required: [role, reason]
+      additionalProperties: false
+      properties:
+        role: { $ref: "#/components/schemas/Role" }
+        reason: { type: string, maxLength: 2000, description: "Why the role is needed (at most 500 characters are kept)." }
+    AccessRequestSent:
+      type: object
+      required: [state, role, message]
+      properties:
+        state: { type: string, enum: [pending] }
+        role: { $ref: "#/components/schemas/Role" }
+        message: { type: string }
+    AccessRequestState:
+      type: string
+      enum: [pending, approved, declined]
+    AccessRequest:
+      type: object
+      required: [id, app_id, app_name, user, role, reason, state, created_at, decided_by, decided_at, note]
+      properties:
+        id: { type: integer }
+        app_id: { type: integer }
+        app_name: { type: [string, "null"], description: "Null where the caller cannot see the application." }
+        user: { type: string, description: "Who asked." }
+        role: { $ref: "#/components/schemas/Role" }
+        reason: { type: string }
+        state: { $ref: "#/components/schemas/AccessRequestState" }
+        created_at: { type: string }
+        decided_by: { type: [string, "null"] }
+        decided_at: { type: [string, "null"] }
+        note: { type: string, description: "The decider's note to the requester." }
+    AccessRequestList:
+      type: object
+      required: [mine, to_decide]
+      properties:
+        mine: { type: array, items: { $ref: "#/components/schemas/AccessRequest" } }
+        to_decide: { type: array, items: { $ref: "#/components/schemas/AccessRequest" } }
+    AccessDecision:
+      type: object
+      required: [decision]
+      additionalProperties: false
+      properties:
+        decision: { type: string, enum: [approve, decline] }
+        role: { $ref: "#/components/schemas/Role", description: "Approve with this role instead of the requested one." }
+        note: { type: string, maxLength: 2000 }
     TriageOutcome:
       type: object
       required: [apps, message]

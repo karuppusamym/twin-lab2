@@ -199,7 +199,7 @@ def create_app(target, store=None):
     """The portal on the database at `target`: a DATABASE_URL (sqlite:///…, postgresql://…) or a
     SQLite file path. Pending migrations are applied first. `store` is the artifact store
     (default: from the environment)."""
-    from twinlab2 import routes_builds, routes_portal, routes_registry, routes_workboard, uploads
+    from twinlab2 import routes_access, routes_builds, routes_portal, routes_registry, routes_workboard, uploads
 
     target = str(target)
     if database.engine_of(target) == "sqlite":
@@ -218,7 +218,7 @@ def create_app(target, store=None):
     app.state.artifacts = store
     app.state.target = target
     rest.install_errors(app)
-    for module in (routes_portal, routes_registry, routes_builds, routes_workboard, uploads):
+    for module in (routes_portal, routes_registry, routes_builds, routes_workboard, routes_access, uploads):
         app.include_router(module.routes.router)
     app.include_router(web_routes(secret, store).router)  # last: its fallbacks match every other path
 

@@ -481,6 +481,8 @@ def ensure(*roles, app_id=None):
         if app_id is not None and [r for r in roles if r in RANK]:
             hint, extra = access_hint(app_id)
             detail += " " + hint
+            # the web app offers "Request access" (routes_access) on this application
+            extra = {**(extra or {}), "app_id": app_id, "requested_role": next(r for r in roles if r in RANK)}
         elif ADMIN in roles:
             detail += " Ask a portal admin."
         fail(403, detail, "role", extra=extra)
