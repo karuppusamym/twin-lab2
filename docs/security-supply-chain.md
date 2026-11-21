@@ -28,6 +28,11 @@ so a new advisory against unchanged code shows up without a commit.
 The Python SBOMs are taken on Linux, so the recorder's Windows-only dependency (`comtypes`) is not
 in them; the recorder's PyInstaller folder itself is not scanned yet.
 
+The dependency-review job needs the repository's dependency graph (Settings, Code security). While
+it is off the job is refused by GitHub and, being `continue-on-error`, does not block; enable the
+graph and remove `continue-on-error` from `supply-chain.yml` to make it count. That is a repository
+setting for the admin (the office, for a private mirror).
+
 ## The gate and the allowlist
 
 `tools/vuln_gate.py` reads the scanners' JSON and writes one table per job into the run summary.

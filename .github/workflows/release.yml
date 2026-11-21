@@ -171,7 +171,8 @@ jobs:
           [IO.File]::WriteAllText("out\$zip.sha256", "$hash  $zip`n")
           "SHA-256 of ${zip}: $hash" >> $env:GITHUB_STEP_SUMMARY
           foreach ($msi in Get-ChildItem dist\TwinLabRecorder-*.msi) {
-            Copy-Item $msi.FullName out            $h = (Get-FileHash $msi.FullName -Algorithm SHA256).Hash.ToLower()
+            Copy-Item $msi.FullName out
+            $h = (Get-FileHash $msi.FullName -Algorithm SHA256).Hash.ToLower()
             [IO.File]::WriteAllText("out\$($msi.Name).sha256", "$h  $($msi.Name)`n")
             "SHA-256 of $($msi.Name): $h" >> $env:GITHUB_STEP_SUMMARY
           }
