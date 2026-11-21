@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/karuppusamym/twin-lab2/blob/main/contract/recorder-contract.schema.json",
   "title": "TwinLab recorder contract",
-  "description": "What a workstation recorder sends to the TwinLab2 portal: the pairing request (#/$defs/pair) and the references of a recorded session (#/$defs/references for contract 1.0.x, #/$defs/references_1_1 for 1.1.0 and later minors). See RECORDER-CONTRACT.md. Unknown fields are allowed, so that a minor version can add optional ones, and are ignored: the portal stores only the fields named here.",
-  "x-contract-version": "1.2.0",
+  "description": "What a workstation recorder sends to the TwinLab2 portal: the pairing request (#/$defs/pair) and the references of a recorded session (#/$defs/references for contract 1.0.x, #/$defs/references_1_1 for 1.1.0 and later minors; from 1.3.0 an optional screens block). See RECORDER-CONTRACT.md. Unknown fields are allowed, so that a minor version can add optional ones, and are ignored: the portal stores only the fields named here.",
+  "x-contract-version": "1.3.0",
   "oneOf": [
     {
       "$ref": "#/$defs/pair"
@@ -511,6 +511,17 @@
         },
         "preflight": {
           "$ref": "#/$defs/preflight"
+        },
+        "screens": {
+          "description": "1.3: per application recorded at level full (by its key in apps), the structure of its screens: controls and their states, regions, grids with column headers and row-count shapes, transitions. Never a value or a record. See RECORDER-CONTRACT.md, Contract 1.3.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "$ref": "#/$defs/screen"
+            }
+          }
         }
       }
     },
@@ -534,6 +545,296 @@
             "type": "array",
             "items": {
               "$ref": "#/$defs/step_1_1"
+            }
+          }
+        }
+      }
+    },
+    "structure_ident": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z_.\\-]*$",
+      "maxLength": 40,
+      "description": "An identifier as the application names it (an id, a name, a class, a ControlType): no digit, no @, at most 40 characters."
+    },
+    "structure_label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "pattern": "^[^0-9@]*$",
+      "description": "Words the application shows for a control (a caption, an input's label, a column header, a code-list entry): at most three words (four for a column header), no digit, no @."
+    },
+    "structure_rows": {
+      "enum": [
+        "0",
+        "1",
+        "few",
+        "many"
+      ],
+      "description": "A count as a shape: 0, 1, few (2 to 9), many (10 or more)."
+    },
+    "screen_control": {
+      "description": "A control of a screen state, in page order. Never a value: `value` is only empty or filled.",
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/structure_ident"
+        },
+        "tag": {
+          "$ref": "#/$defs/structure_ident"
+        },
+        "type": {
+          "$ref": "#/$defs/structure_ident"
+        },
+        "id": {
+          "$ref": "#/$defs/structure_ident"
+        },
+        "name": {
+          "$ref": "#/$defs/structure_ident"
+        },
+        "classes": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "$ref": "#/$defs/structure_ident"
+          }
+        },
+        "label": {
+          "$ref": "#/$defs/structure_label"
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "readonly": {
+          "type": "boolean"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "checked": {
+          "type": "boolean"
+        },
+        "selected": {
+          "type": "boolean"
+        },
+        "value": {
+          "enum": [
+            "empty",
+            "filled"
+          ]
+        },
+        "options": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "option_texts": {
+          "description": "Only for a code list: at most 30 entries of at most 40 characters, no digit.",
+          "type": "array",
+          "maxItems": 30,
+          "items": {
+            "type": "string",
+            "maxLength": 40,
+            "pattern": "^[^0-9@]*$"
+          }
+        },
+        "repeat": {
+          "$ref": "#/$defs/structure_rows"
+        },
+        "row": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "col": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "len": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "numeric": {
+          "type": "boolean"
+        },
+        "hidden": {
+          "type": "boolean"
+        },
+        "intensified": {
+          "type": "boolean"
+        }
+      }
+    },
+    "screen_state": {
+      "description": "One distinct state of a screen: its controls, regions and grids, and the events after which the screen was in it.",
+      "type": "object",
+      "required": [
+        "controls"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "description": "The state's content hash (twinlab2_contract.structure.state_key); transitions refer to it. The portal computes it again."
+        },
+        "controls": {
+          "type": "array",
+          "maxItems": 400,
+          "items": {
+            "$ref": "#/$defs/screen_control"
+          }
+        },
+        "regions": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/structure_ident"
+              },
+              "id": {
+                "$ref": "#/$defs/structure_ident"
+              },
+              "name": {
+                "$ref": "#/$defs/structure_ident"
+              },
+              "classes": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                  "$ref": "#/$defs/structure_ident"
+                }
+              },
+              "visible": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "grids": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "rows"
+            ],
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/structure_ident"
+              },
+              "id": {
+                "$ref": "#/$defs/structure_ident"
+              },
+              "columns": {
+                "type": "array",
+                "maxItems": 40,
+                "items": {
+                  "type": "string",
+                  "maxLength": 40,
+                  "pattern": "^[^0-9@]*$"
+                }
+              },
+              "rows": {
+                "$ref": "#/$defs/structure_rows"
+              },
+              "visible": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "withheld": {
+          "$ref": "#/$defs/count"
+        },
+        "events": {
+          "type": "array",
+          "maxItems": 2000,
+          "items": {
+            "$ref": "#/$defs/event_id"
+          }
+        }
+      }
+    },
+    "screen": {
+      "description": "One screen template of an application (the steps' `screen`) with its distinct states and the transitions between them.",
+      "type": "object",
+      "required": [
+        "screen",
+        "surface",
+        "states"
+      ],
+      "properties": {
+        "screen": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "surface": {
+          "enum": [
+            "web",
+            "desktop",
+            "mainframe"
+          ]
+        },
+        "states": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/screen_state"
+          }
+        },
+        "transitions": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "required": [
+              "from_state",
+              "to",
+              "to_state"
+            ],
+            "properties": {
+              "from_state": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{16}$"
+              },
+              "to": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "to_state": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{16}$"
+              },
+              "action": {
+                "$ref": "#/$defs/structure_ident"
+              },
+              "control": {
+                "type": "string",
+                "maxLength": 40
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 40
+              },
+              "key": {
+                "type": "string",
+                "maxLength": 40
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              }
             }
           }
         }

@@ -18,7 +18,9 @@ the three by time, each recording keeping its own order, and writes:
   session, the applications recorded at full or steps level, each one's flow of filtered labels
   (twinlab2_recorder.workstation.flow; a web step under a target's path prefix keeps that prefix
   in its screen, contract 1.2), the timeline as runs of applications, the completeness manifest
-  (twinlab2_recorder.workstation.completeness) and the preflight checks when there were some. No value,
+  (twinlab2_recorder.workstation.completeness), the preflight checks when there were some, and
+  (contract 1.3) the screen structure of each application recorded at level `full`: its screens'
+  controls, regions, grids and transitions (twinlab2_recorder.workstation.structure). No value,
   title, tree, picture, time of a presence row or name of a presence application.
 
 `event_id` (a UUIDv7 given when the event was captured, twinlab2_recorder.workstation.journal) is how an
@@ -40,7 +42,7 @@ from twinlab2_recorder.workstation.levels import FULL, PRESENCE, STEPS, denied_p
 
 FORMAT = "twinlab-workstation-session/1"
 # The recorder contract the references follow (twin-lab2 RECORDER-CONTRACT.md).
-CONTRACT_VERSION = "1.2.0"
+CONTRACT_VERSION = "1.3.0"
 EVENT_FIELDS = ("event_id", "channel", "captured_at")
 
 
@@ -177,7 +179,12 @@ def build(folder: Path) -> dict:
             f.write(json.dumps({k: v for k, v in row.items() if not k.startswith("_")},
                                ensure_ascii=False) + "\n")  # fmt: skip
     box = outbox(meta, out)
-    from twinlab2_recorder.workstation import completeness
+    from twinlab2_recorder.workstation import completeness, structure
+
+    full = {a["key"] for a in box["apps"] if a.get("level") == FULL}
+    screens = structure.collect(folder, out, full)
+    if screens:
+        box["screens"] = screens
 
     box["completeness"] = completeness.manifest(folder, meta)
     pre = completeness.preflight(meta)
@@ -256,6 +263,7 @@ def outbox(meta: dict, rows: list[dict]) -> dict:
             continue
         on = (prefixes.get(origin_of(str(step.get("url") or ""))) or ()) if row.get("surface") == "web" else ()
         label = flow.label_step(step, row["global_seq"], (meta.get("apps") or {}).get(row["app"]), on)
+        row["_label"] = label
         flows.setdefault(row["app"], []).append(label | _event(row))
     apps = []
     for key, facts in (meta.get("apps") or {}).items():

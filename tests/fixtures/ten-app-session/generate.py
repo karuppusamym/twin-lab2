@@ -8,7 +8,10 @@ The folder is what a recorder session leaves on the PC: `session.json`, the sess
 `levels.desktop_identity` gives its image and version resource), one recording per channel
 (`web/`, `desktop/`, `mainframe/` `steps.jsonl`) and the capture journal (`capture/*.jsonl`) with
 an `open`, an `event` per step and a clean `close` per channel. Every step carries the event id,
-channel and capture time the journal stamps on it (contract 1.1). The references are then built
+channel and capture time the journal stamps on it (contract 1.1). Each web step has its
+after-snapshot (`web/dom/`) and each desktop step its control tree (`desktop/trees/`), whose
+controls and regions carry the application's tag, plus a data row that must never reach the
+references (contract 1.3: the screen structure). The references are then built
 by `twinlab2_recorder.workstation.timeline.build`, the code the recorder runs at Stop: nothing in
 them is written by hand. Synthetic: no real person's data.
 
@@ -24,6 +27,8 @@ Three more web applications share `fin.example.test` at nested path prefixes: Fi
 step at `/finance/billing-archive` checks that a prefix matches whole segments only.
 `LEGACY_STEPS` are the steps without those three: what the 1.1 recorder recorded for
 `../references-ten-apps-1.1.json` (built by the recorder of PR 23, kept as it was sent).
+`../references-ten-apps-1.2.json` is what the 1.2 recorder of PR 25 built from this session (before
+screen structure), kept as it was sent for the portal's 1.2 tests.
 """
 
 from __future__ import annotations
@@ -91,6 +96,7 @@ DESKTOP = {
 # (app tag, channel, step) in the order they happen. A tag is the application's own word in
 # every label, so a step that lands on another application is visible.
 W, D, M = "web", "desktop", "mainframe"
+LF = chr(10)
 
 
 def web(url, action, selector):
@@ -145,6 +151,41 @@ STEPS = [
 ]
 
 
+def page(tag, step):
+    """The after-snapshot a web step leaves (`dom/<seq>.html`, values blanked as the web recorder
+    writes them): the step's control, a region and a table named after the application's tag, and
+    a data row whose text and record id must never reach the references."""
+    sel = step["selector"]
+    control = ""
+    if "#" in sel:
+        kind, ident = sel.split("#", 1)
+        control = (f'<label for="{ident}">{tag.title()} field</label><input id="{ident}" name="{ident}" required>'
+                   if kind == "input" else f'<{kind} id="{ident}" href="#" type="button">Go</{kind}>')
+    return ("<html><body>"
+            f'<header id="{tag}Header"></header><main id="{tag}Main"><form id="{tag}Form">{control}'
+            f'<button id="{tag}Save" disabled>Save</button></form>'
+            f'<div id="{tag}Error" hidden>Error</div>'
+            f'<table id="{tag}Rows"><thead><tr><th>Number</th><th>Customer</th></tr></thead>'
+            '<tbody><tr id="row-INV-9999"><td>INV-9999</td><td>Jane Doe</td>'
+            '<td><a class="open" href="#">Jane Doe</a></td></tr></tbody></table></main></body></html>')
+
+
+def tree(tag, step):
+    """The value-free control tree a desktop step leaves (`trees/<seq>.json`): the step's control,
+    a disabled button, a grid with column headers and one data row (its name is data)."""
+    aid = step["target"]["selector"].split("AutomationId=", 1)[1].split(";", 1)[0]
+    control = step["target"]["selector"].rsplit("ControlType=", 1)[1]
+    return {"type": "Window", "aid": step["window"]["selector"].split("AutomationId=", 1)[1].split(";", 1)[0],
+            "name": "Billing", "name_is": "title", "children": [
+                {"type": control, "aid": aid, "enabled": True, "visible": True,
+                 **({"name": "Post", "name_is": "structure"} if control == "Button" else {"value": "X99"})},
+                {"type": "Button", "aid": f"{tag}Close", "name": "Close", "name_is": "structure", "enabled": False},
+                {"type": "DataGrid", "aid": f"{tag}Grid", "children": [
+                    {"type": "Header", "children": [{"type": "HeaderItem", "name": "Customer", "name_is": "structure"},
+                                                    {"type": "HeaderItem", "name": "Amount", "name_is": "structure"}]},
+                    {"type": "DataItem", "name": "Xxxx Xxx", "name_is": "data"}]}]}
+
+
 def ts(i):
     return f"2026-11-20T14:{i // 60:02d}:{i % 60:02d}.000Z"
 
@@ -194,6 +235,15 @@ def write(folder: Path) -> None:
         at = ts(i * 5)
         row = {"seq": len(streams[channel]) + 1, "ts": at, **step, "event_id": event_id(i), "channel": channel,
                "captured_at": at}
+        if channel == W:  # the after-snapshot (contract 1.3 reads the screen structure from it)
+            row["dom"] = f"dom/{row['seq']:04d}.html"
+            (folder / "web" / "dom").mkdir(parents=True, exist_ok=True)
+            (folder / "web" / row["dom"]).write_text(page(_tag, step), encoding="utf-8", newline=LF)
+        elif channel == D:  # the value-free control tree
+            row["tree"] = f"trees/{row['seq']:04d}.json"
+            (folder / "desktop" / "trees").mkdir(parents=True, exist_ok=True)
+            (folder / "desktop" / row["tree"]).write_text(json.dumps(tree(_tag, step)), encoding="utf-8",
+                                                          newline=LF)
         streams[channel].append(row)
         capture[channel].append({"type": "event", "event_id": event_id(i), "channel": channel, "captured_at": at,
                                  "recording": channel, "action": step["action"], "seq": row["seq"], "ts": at})

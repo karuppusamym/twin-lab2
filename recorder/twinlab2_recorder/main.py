@@ -185,7 +185,7 @@ def contract_references(box: dict) -> dict:
     """The outbox as recorder contract references: the contract version and this recorder
     stamped on it, then checked against the schema here, before anything leaves the PC.
 
-    The outbox (twinlab2_recorder.workstation.timeline) declares its contract version (1.2.0 now;
+    The outbox (twinlab2_recorder.workstation.timeline) declares its contract version (1.3.0 now;
     Twin Lab's declares 1.1.0 since 4385949). An
     outbox without a version (an older Twin Lab) is stamped with the version its shape is: 1.1.0
     when it reports the recording's `completeness`, else 1.0.0. A 1.1 outbox in which no step has
@@ -206,6 +206,7 @@ def contract_references(box: dict) -> dict:
         doc["contract_version"] = "1.0.0"
         doc.pop("completeness", None)
         doc.pop("preflight", None)
+        doc.pop("screens", None)  # 1.3 only: its states name events by id
     recorder = {"name": st.APP, "version": st.VERSION}
     commit = (box.get("session") or {}).get("twinlab_commit") or _build_info().get("twinlab_commit")
     if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{7,40}", commit):

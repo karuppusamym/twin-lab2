@@ -171,7 +171,7 @@ class MigrationTest(unittest.TestCase):
                 db.execute("INSERT INTO apps(id, name, git_url, requirements) VALUES (1, 'CaseDesk', '', '')")
                 db.execute("INSERT INTO recordings VALUES (?, 'Old', ?)", (RECORDING, json.dumps(
                     [{"seq": 1, "source": "CaseDesk", "action": "type"}, {"seq": 2, "source": "CaseDesk", "action": "click"}])))
-                db.execute("INSERT INTO recording_apps VALUES (?, 1, ?, 'full', ?)", (RECORDING, DESK, json.dumps(flow)))
+                db.execute("INSERT INTO recording_apps(recording_id, app_id, key, level, flow) VALUES (?, 1, ?, 'full', ?)", (RECORDING, DESK, json.dumps(flow)))
                 db.execute("INSERT INTO evidence(app_id, recording_id, selection, notes, reviewed, suggested) "
                            "VALUES (1, ?, '[1]', 'kept', 1, '[2]')", (RECORDING,))
                 db.execute("INSERT INTO scenarios(app_id, name, events) VALUES (1, 'Find', ?)",

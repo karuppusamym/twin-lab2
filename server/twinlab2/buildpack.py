@@ -11,6 +11,13 @@ Raw capture never enters a pack: the references payload a recorder sent (kept in
 schema stay in the catalog database or on the recording machine. `build` reads only the
 projected events, the flow labels and the owner-written scenarios.
 
+From recorder contract 1.3 the pack also carries `screens`: per screen template of this
+application, its distinct states (controls in page order with their identifiers, labels and
+enabled/read-only/required/visible/checked states, regions shown or hidden, grids with column
+headers and row-count shapes) and the transitions between them, limited to the states the owner's
+selected events show (twinlab2_contract.structure). `BUILD_TASK.md` has the same as "Screens and
+controls". A pack without structure has no `screens` key (older revisions keep their bytes).
+
 A recording is named in a pack only by its id and the day it was recorded (`recorded_on`), never
 by its free-text name: one recording can cover many applications, and its name ("Billing +
 Payroll walkthrough") would tell each application's builder about the others.
@@ -37,6 +44,7 @@ from zipfile import ZIP_STORED, ZipFile, ZipInfo
 from twinlab2 import artifacts
 from twinlab2 import redact
 from twinlab2 import scenarios
+from twinlab2_contract import structure
 
 FORMAT = 2
 TEXT_EXTENSIONS = {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".sql", ".har"}
@@ -120,6 +128,27 @@ def evidence(db, app_id):
     return out
 
 
+def screen_structure(db, app_id):
+    """The screens of this application's linked recordings that its selected events show, one
+    entry per screen template across recordings (states by content). Only the application's own
+    rows are read: a recording's screens were assigned per application when it arrived."""
+    merged = []
+    for link in db.execute("SELECT recording_id, selection FROM evidence WHERE app_id = ? ORDER BY recording_id",
+                           (app_id,)).fetchall():  # fmt: skip
+        selected = set(json.loads(link["selection"]))
+        mine = []
+        for row in db.execute("SELECT screens FROM recording_apps WHERE recording_id = ? AND app_id = ? ORDER BY key",
+                              (link["recording_id"], app_id)):  # fmt: skip
+            mine = structure.merge(mine, json.loads(row["screens"] or "[]"))
+        merged = structure.merge(merged, structure.select(mine, selected))
+    out = []
+    for sc in merged:
+        screen = screen_reference(sc["screen"]) or sc["screen"]
+        out.append(dict(sc, screen=screen, transitions=[dict(t, to=screen_reference(t["to"]) or t["to"])
+                                                         for t in sc["transitions"]]))  # fmt: skip
+    return out
+
+
 def preview(db, recording_id, limit=10):
     """Per application linked to a recording, what its evidence would put in the build pack:
     the selected events (the first `limit`, with their capture time when known) and counts."""
@@ -190,7 +219,13 @@ def manifest(db, app_id):
         "format": FORMAT, "app": dict(app), "scenarios": items, "evidence": linked, "attachments": attachments,
         "unresolved_questions": [f"Selected event {ref} is not part of any scenario." for ref in unlinked],
     }
-    for section, label in (("scenarios", "Scenario text"), ("evidence", "Recorded steps and notes")):
+    screens = screen_structure(db, app_id)
+    if screens:
+        data["screens"] = screens
+    for section, label in (("scenarios", "Scenario text"), ("evidence", "Recorded steps and notes"),
+                           ("screens", "Screen structure")):
+        if section not in data:
+            continue
         found = Counter()
         data[section] = redact_strings(data[section], found)
         if found:
@@ -239,6 +274,8 @@ def task_markdown(data, revision, version_path):
         bullets("Unresolved questions", s["unresolved_questions"])
         if s["notes"]:
             out += ["**Notes**", "", s["notes"], ""]
+    if data.get("screens"):
+        out += screens_markdown(data)
     if data["unresolved_questions"]:
         out += ["## Other unresolved questions", ""]
         out += [f"- {q}" for q in data["unresolved_questions"]] + [""]
@@ -247,6 +284,103 @@ def task_markdown(data, revision, version_path):
             "and JSON `{\"commit\": \"<full 40-character Git commit it was built from>\"}`, so the "
             "catalog can verify which release a deployment runs.", ""]
     return "\n".join(out)
+
+
+REPLAY_NOTE = (
+    "After every recorded step an independent replay compares the rebuilt screen with the recorded one: the "
+    "interactive elements (tag, id and classes) and how many there are of each, whether each element with an "
+    "id (or a control with a name) is shown, which controls are enabled, the option lists of selects, and the "
+    "value format of fields. Build each state below with exactly these controls, identifiers, classes and "
+    "states, and no other interactive elements. Text and data are not compared; rows are given as a shape "
+    "(0, 1, few = 2 to 9, many = 10 or more). Words that could be data were left out (counted as withheld).")
+
+
+def _control_line(c):
+    if "row" in c:
+        ident = f"field at row {c['row']}, column {c.get('col', '?')}, length {c.get('len', '?')}"
+    else:
+        ident = (c.get("tag") or c["kind"]) + (f"#{c['id']}" if c.get("id") else "")
+        ident += "".join(f".{x}" for x in c.get("classes") or [])
+        for k in ("name", "type"):
+            if c.get(k):
+                ident += f' {k}="{c[k]}"'
+    states = []
+    if c.get("visible") is False:
+        states.append("hidden")
+    if c.get("enabled") is False:
+        states.append("disabled")
+    for k, word in (("readonly", "read-only"), ("required", "required"), ("checked", "checked"),
+                    ("selected", "selected"), ("numeric", "numeric"), ("intensified", "intensified")):
+        if c.get(k):
+            states.append(word)
+    if c.get("hidden") and "hidden" not in states:
+        states.append("non-display")
+    if c.get("value"):
+        states.append(c["value"])
+    if c.get("repeat"):
+        states.append(f"one per row ({c['repeat']} rows)")
+    if "options" in c:
+        texts = c.get("option_texts")
+        states.append(f"{c['options']} options" + (": " + ", ".join(f'"{t}"' for t in texts) if texts else ""))
+    label = f' "{c["label"]}"' if c.get("label") else ""
+    return f"- `{ident}` ({c['kind']}){label}" + (f": {'; '.join(states)}" if states else "")
+
+
+def _region(r):
+    name = f"{r['kind']}#{r['id']}" if r.get("id") else f"{r['kind']}[name={r['name']}]"
+    return "`" + name + "".join(f".{x}" for x in r.get("classes") or []) + "`"
+
+
+def _state_name(screens, screen, state_id):
+    for sc in screens:
+        if sc["screen"] == screen:
+            for i, st in enumerate(sc["states"], 1):
+                if st["id"] == state_id:
+                    return f"state {i}"
+    return "a state"
+
+
+def screens_markdown(data):
+    """The "Screens and controls" section of BUILD_TASK.md."""
+    seqs = {ev["event_id"]: f"{rec['recording_id']} #{ev['seq']}" for rec in data["evidence"] for ev in rec["events"]}
+    out = ["## Screens and controls", "", REPLAY_NOTE, ""]
+    for sc in data["screens"]:
+        n = len(sc["states"])
+        out += [f"### `{sc['screen']}` ({sc['surface']}, {n} state{'s' if n != 1 else ''})", ""]
+        for i, st in enumerate(sc["states"], 1):
+            after = ", ".join(seqs.get(e, f"event `{e}`") for e in st["events"][:8])
+            more = f" and {len(st['events']) - 8} more" if len(st["events"]) > 8 else ""
+            out += [f"**State {i}** (`{st['id']}`), after {after}{more}", ""]
+            out += [_control_line(c) for c in st["controls"]] or ["- no controls"]
+            shown = [_region(r) for r in st["regions"] if r.get("visible", True)]
+            hidden = [_region(r) for r in st["regions"] if r.get("visible") is False]
+            if shown:
+                out.append("- shown: " + ", ".join(shown))
+            if hidden:
+                out.append("- hidden: " + ", ".join(hidden))
+            for g in st["grids"]:
+                name = g["kind"] + (f"#{g['id']}" if g.get("id") else "")
+                cols = ", ".join(c or "(unnamed)" for c in g.get("columns") or []) or "no column headers"
+                out.append(f"- grid `{name}`: columns {cols}; rows: {g['rows']}"
+                           + ("" if g.get("visible", True) else "; hidden"))
+            if st.get("withheld"):
+                out.append(f"- withheld as possible data: {st['withheld']}")
+            out.append("")
+        if sc["transitions"]:
+            out += ["**Transitions**", ""]
+            for t in sc["transitions"]:
+                via = " ".join(str(t[k]) for k in ("action", "control") if t.get(k)) or "a step"
+                if t.get("label"):
+                    via += f" `{t['label']}`"
+                if t.get("key"):
+                    via += f" key {t['key']}"
+                to = _state_name(data["screens"], t["to"], t["to_state"])
+                if t["to"] != sc["screen"]:
+                    to = f"`{t['to']}` {to}"
+                times = f" ({t['count']} times)" if t.get("count", 1) > 1 else ""
+                out.append(f"- from {_state_name(data['screens'], sc['screen'], t['from_state'])}: {via} → {to}{times}")
+            out.append("")
+    return out
 
 
 @dataclass
