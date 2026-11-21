@@ -1,0 +1,2816 @@
+{
+ "contract_version": "1.5.0",
+ "format": "twinlab-references/1",
+ "session": {
+  "id": "20261120T140000Z-10a9b8c7",
+  "name": "Month-end close",
+  "started": "2026-11-20T14:00:00.000Z",
+  "ended": "2026-11-20T14:02:45.000Z",
+  "state": "stopped",
+  "recorder": "TwinLabRecorder 0.2.0",
+  "twinlab_commit": "430dfe538965b46ccbe824f8f2b4f415c5576483",
+  "portal_session_id": 1,
+  "location": {
+   "kind": "local",
+   "path": "recordings/20261120T140000Z-10a9b8c7"
+  },
+  "targets": [
+   {
+    "origin": "https://erp.example.test",
+    "path": "/billing",
+    "level": "full",
+    "app_id": 1
+   },
+   {
+    "origin": "https://erp.example.test",
+    "path": "/billing-admin",
+    "level": "full",
+    "app_id": 2
+   },
+   {
+    "origin": "https://meter.example.test",
+    "level": "full",
+    "app_id": 3
+   },
+   {
+    "origin": "https://seikyu.example.test:8443",
+    "level": "full",
+    "app_id": 4
+   },
+   {
+    "origin": "https://fin.example.test",
+    "path": "/finance",
+    "level": "full",
+    "app_id": 5
+   },
+   {
+    "origin": "https://fin.example.test",
+    "path": "/finance/billing",
+    "level": "full",
+    "app_id": 6
+   },
+   {
+    "origin": "https://fin.example.test",
+    "path": "/finance/payroll",
+    "level": "full",
+    "app_id": 7
+   },
+   {
+    "origin": "https://orders.example.test",
+    "level": "full"
+   },
+   {
+    "origin": "http://127.0.0.1:8081",
+    "level": "full"
+   },
+   {
+    "exe": "contosobilling.exe",
+    "level": "full"
+   },
+   {
+    "exe": "billing.exe",
+    "level": "full"
+   },
+   {
+    "exe": "kasse.exe",
+    "level": "full"
+   },
+   {
+    "key": "mainframe:cics.example.test:3270",
+    "level": "steps"
+   }
+  ]
+ },
+ "apps": [
+  {
+   "key": "mainframe:cics.example.test:3270",
+   "surface": "mainframe",
+   "level": "steps",
+   "display": "Kontoführung CICS"
+  },
+  {
+   "key": "desktop:Contoso Ltd/Billing",
+   "surface": "desktop",
+   "level": "full",
+   "display": "Billing",
+   "exe": "ContosoBilling.exe",
+   "company": "Contoso Ltd",
+   "product": "Billing",
+   "version": "4.2.0.0",
+   "toolkit": "winforms"
+  },
+  {
+   "key": "desktop:exe/billing.exe",
+   "surface": "desktop",
+   "level": "full",
+   "display": "Billing",
+   "exe": "billing.exe",
+   "toolkit": "winforms"
+  },
+  {
+   "key": "desktop:Müller & Söhne GmbH/Kasse – Filiale Nord",
+   "surface": "desktop",
+   "level": "full",
+   "display": "Kasse – Filiale Nord",
+   "exe": "Kasse.exe",
+   "company": "Müller & Söhne GmbH",
+   "product": "Kasse – Filiale Nord",
+   "version": "2.0.1.0",
+   "toolkit": "winforms"
+  },
+  {
+   "key": "web:https://erp.example.test",
+   "surface": "web",
+   "level": "full",
+   "display": "Billing Admin",
+   "origin": "https://erp.example.test",
+   "app_id": 2
+  },
+  {
+   "key": "web:https://fin.example.test",
+   "surface": "web",
+   "level": "full",
+   "display": "Payroll",
+   "origin": "https://fin.example.test",
+   "app_id": 7
+  },
+  {
+   "key": "web:https://meter.example.test",
+   "surface": "web",
+   "level": "full",
+   "display": "Zählerstand Portal – Nord",
+   "origin": "https://meter.example.test",
+   "app_id": 3
+  },
+  {
+   "key": "web:https://orders.example.test",
+   "surface": "web",
+   "level": "full",
+   "display": "orders.example.test",
+   "origin": "https://orders.example.test"
+  },
+  {
+   "key": "web:https://seikyu.example.test:8443",
+   "surface": "web",
+   "level": "full",
+   "display": "請求 システム",
+   "origin": "https://seikyu.example.test:8443",
+   "app_id": 4
+  },
+  {
+   "key": "web:http://127.0.0.1:8081",
+   "surface": "web",
+   "level": "full",
+   "display": "127.0.0.1:8081",
+   "origin": "http://127.0.0.1:8081"
+  }
+ ],
+ "flows": {
+  "web:https://erp.example.test": [
+   {
+    "n": 3,
+    "action": "goto",
+    "control": "body",
+    "screen": "https://erp.example.test/billing/invoices",
+    "event_id": "019aa1b0-0001-7000-8000-000000000001",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:00:05.000Z"
+   },
+   {
+    "n": 4,
+    "action": "type",
+    "control": "input",
+    "label": "billingInvoiceSearch",
+    "screen": "https://erp.example.test/billing/invoices/{id}",
+    "event_id": "019aa1b0-0002-7000-8000-000000000002",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:00:10.000Z"
+   },
+   {
+    "n": 11,
+    "action": "click",
+    "control": "button",
+    "label": "adminRateTable",
+    "screen": "https://erp.example.test/billing-admin/rates",
+    "event_id": "019aa1b0-0006-7000-8000-000000000006",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:00:30.000Z"
+   },
+   {
+    "n": 12,
+    "action": "click",
+    "control": "button",
+    "label": "billingApprove",
+    "screen": "https://erp.example.test/billing/invoices/{id}",
+    "event_id": "019aa1b0-0007-7000-8000-000000000007",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:00:35.000Z"
+   },
+   {
+    "n": 20,
+    "action": "type",
+    "control": "input",
+    "label": "adminRateValue",
+    "screen": "https://erp.example.test/billing-admin/rates/edit",
+    "event_id": "019aa1b0-000b-7000-8000-00000000000b",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:00:55.000Z"
+   },
+   {
+    "n": 58,
+    "action": "click",
+    "control": "button",
+    "label": "adminRatePublish",
+    "screen": "https://erp.example.test/billing-admin/rates",
+    "event_id": "019aa1b0-001e-7000-8000-00000000001e",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:30.000Z"
+   },
+   {
+    "n": 59,
+    "action": "click",
+    "control": "button",
+    "label": "billingExport",
+    "screen": "https://erp.example.test/billing/invoices",
+    "event_id": "019aa1b0-001f-7000-8000-00000000001f",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:35.000Z"
+   }
+  ],
+  "web:https://fin.example.test": [
+   {
+    "n": 6,
+    "action": "goto",
+    "control": "body",
+    "screen": "https://fin.example.test/finance",
+    "event_id": "019aa1b0-0003-7000-8000-000000000003",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:00:15.000Z"
+   },
+   {
+    "n": 7,
+    "action": "click",
+    "control": "button",
+    "label": "receivableInvoiceOpen",
+    "screen": "https://fin.example.test/finance/billing/invoices/{id}",
+    "event_id": "019aa1b0-0004-7000-8000-000000000004",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:00:20.000Z"
+   },
+   {
+    "n": 14,
+    "action": "type",
+    "control": "input",
+    "label": "payrollRunHours",
+    "screen": "https://fin.example.test/finance/payroll/runs/{id}",
+    "event_id": "019aa1b0-0008-7000-8000-000000000008",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:00:40.000Z"
+   },
+   {
+    "n": 26,
+    "action": "click",
+    "control": "button",
+    "label": "ledgerArchiveOpen",
+    "screen": "https://fin.example.test/finance/{id}/{id}",
+    "event_id": "019aa1b0-000e-7000-8000-00000000000e",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:01:10.000Z"
+   },
+   {
+    "n": 36,
+    "action": "click",
+    "control": "button",
+    "label": "receivableExport",
+    "screen": "https://fin.example.test/finance/billing",
+    "event_id": "019aa1b0-0013-7000-8000-000000000013",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:01:35.000Z"
+   },
+   {
+    "n": 46,
+    "action": "click",
+    "control": "button",
+    "label": "payrollRunCreate",
+    "screen": "https://fin.example.test/finance/payroll/runs/new",
+    "event_id": "019aa1b0-0018-7000-8000-000000000018",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:00.000Z"
+   },
+   {
+    "n": 56,
+    "action": "type",
+    "control": "input",
+    "label": "ledgerJournalAmount",
+    "screen": "https://fin.example.test/finance/journal/edit",
+    "event_id": "019aa1b0-001d-7000-8000-00000000001d",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:25.000Z"
+   }
+  ],
+  "desktop:Contoso Ltd/Billing": [
+   {
+    "n": 9,
+    "action": "click",
+    "control": "Button",
+    "label": "contosoPostLedger",
+    "screen": "ContosoMain",
+    "event_id": "019aa1b0-0005-7000-8000-000000000005",
+    "channel": "desktop",
+    "captured_at": "2026-11-20T14:00:25.000Z"
+   },
+   {
+    "n": 30,
+    "action": "type",
+    "control": "Edit",
+    "label": "contosoAmount",
+    "screen": "ContosoMain",
+    "event_id": "019aa1b0-0010-7000-8000-000000000010",
+    "channel": "desktop",
+    "captured_at": "2026-11-20T14:01:20.000Z"
+   }
+  ],
+  "mainframe:cics.example.test:3270": [
+   {
+    "n": 16,
+    "action": "screen",
+    "screen": "ACCOUNT INQUIRY",
+    "control": "screen",
+    "event_id": "019aa1b0-0009-7000-8000-000000000009",
+    "channel": "mainframe",
+    "captured_at": "2026-11-20T14:00:45.000Z"
+   },
+   {
+    "n": 24,
+    "action": "type",
+    "screen": "ACCOUNT INQUIRY",
+    "control": "field",
+    "label": "MAINFRAMEACCT",
+    "event_id": "019aa1b0-000d-7000-8000-00000000000d",
+    "channel": "mainframe",
+    "captured_at": "2026-11-20T14:01:05.000Z"
+   },
+   {
+    "n": 44,
+    "action": "aid",
+    "screen": "ACCOUNT INQUIRY",
+    "control": "key",
+    "label": "Enter",
+    "key": "Enter",
+    "event_id": "019aa1b0-0017-7000-8000-000000000017",
+    "channel": "mainframe",
+    "captured_at": "2026-11-20T14:01:55.000Z"
+   }
+  ],
+  "desktop:exe/billing.exe": [
+   {
+    "n": 18,
+    "action": "type",
+    "control": "Edit",
+    "label": "plainCustomerRef",
+    "screen": "BillingMainForm",
+    "event_id": "019aa1b0-000a-7000-8000-00000000000a",
+    "channel": "desktop",
+    "captured_at": "2026-11-20T14:00:50.000Z"
+   },
+   {
+    "n": 40,
+    "action": "click",
+    "control": "Button",
+    "label": "plainPrintStatement",
+    "screen": "BillingMainForm",
+    "event_id": "019aa1b0-0015-7000-8000-000000000015",
+    "channel": "desktop",
+    "captured_at": "2026-11-20T14:01:45.000Z"
+   }
+  ],
+  "web:https://meter.example.test": [
+   {
+    "n": 22,
+    "action": "type",
+    "control": "input",
+    "label": "meterReading",
+    "screen": "https://meter.example.test/readings",
+    "event_id": "019aa1b0-000c-7000-8000-00000000000c",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:01:00.000Z"
+   },
+   {
+    "n": 42,
+    "action": "click",
+    "control": "button",
+    "label": "meterConfirm",
+    "screen": "https://meter.example.test/readings/confirm",
+    "event_id": "019aa1b0-0016-7000-8000-000000000016",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:01:50.000Z"
+   }
+  ],
+  "web:https://orders.example.test": [
+   {
+    "n": 28,
+    "action": "click",
+    "control": "button",
+    "label": "ordersCreate",
+    "screen": "https://orders.example.test/orders/new",
+    "event_id": "019aa1b0-000f-7000-8000-00000000000f",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:01:15.000Z"
+   },
+   {
+    "n": 48,
+    "action": "type",
+    "control": "input",
+    "label": "ordersSearch",
+    "screen": "https://orders.example.test/orders/search",
+    "event_id": "019aa1b0-0019-7000-8000-000000000019",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:05.000Z"
+   }
+  ],
+  "web:https://seikyu.example.test:8443": [
+   {
+    "n": 32,
+    "action": "click",
+    "control": "a",
+    "label": "invoiceListOpen",
+    "screen": "https://seikyu.example.test:8443/seikyu/list",
+    "event_id": "019aa1b0-0011-7000-8000-000000000011",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:01:25.000Z"
+   },
+   {
+    "n": 50,
+    "action": "type",
+    "control": "input",
+    "label": "invoiceAmount",
+    "screen": "https://seikyu.example.test:8443/seikyu/new",
+    "event_id": "019aa1b0-001a-7000-8000-00000000001a",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:10.000Z"
+   }
+  ],
+  "web:http://127.0.0.1:8081": [
+   {
+    "n": 34,
+    "action": "click",
+    "control": "button",
+    "label": "hrLeaveSubmit",
+    "screen": "http://127.0.0.1:8081/leave",
+    "event_id": "019aa1b0-0012-7000-8000-000000000012",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:01:30.000Z"
+   },
+   {
+    "n": 54,
+    "action": "type",
+    "control": "input",
+    "label": "hrLeaveDays",
+    "screen": "http://127.0.0.1:8081/leave/new",
+    "event_id": "019aa1b0-001c-7000-8000-00000000001c",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:20.000Z"
+   }
+  ],
+  "desktop:Müller & Söhne GmbH/Kasse – Filiale Nord": [
+   {
+    "n": 38,
+    "action": "click",
+    "control": "Button",
+    "label": "kasseCloseDay",
+    "screen": "KasseMain",
+    "event_id": "019aa1b0-0014-7000-8000-000000000014",
+    "channel": "desktop",
+    "captured_at": "2026-11-20T14:01:40.000Z"
+   },
+   {
+    "n": 52,
+    "action": "type",
+    "control": "Edit",
+    "label": "kasseCount",
+    "screen": "KasseMain",
+    "event_id": "019aa1b0-001b-7000-8000-00000000001b",
+    "channel": "desktop",
+    "captured_at": "2026-11-20T14:02:15.000Z"
+   }
+  ]
+ },
+ "timeline": [
+  {
+   "app": "presence",
+   "steps": 1
+  },
+  {
+   "app": "web:https://erp.example.test",
+   "steps": 2
+  },
+  {
+   "app": "web:https://fin.example.test",
+   "steps": 2
+  },
+  {
+   "app": "desktop:Contoso Ltd/Billing",
+   "steps": 1
+  },
+  {
+   "app": "web:https://erp.example.test",
+   "steps": 2
+  },
+  {
+   "app": "web:https://fin.example.test",
+   "steps": 1
+  },
+  {
+   "app": "mainframe:cics.example.test:3270",
+   "steps": 1
+  },
+  {
+   "app": "desktop:exe/billing.exe",
+   "steps": 1
+  },
+  {
+   "app": "web:https://erp.example.test",
+   "steps": 1
+  },
+  {
+   "app": "web:https://meter.example.test",
+   "steps": 1
+  },
+  {
+   "app": "mainframe:cics.example.test:3270",
+   "steps": 1
+  },
+  {
+   "app": "web:https://fin.example.test",
+   "steps": 1
+  },
+  {
+   "app": "web:https://orders.example.test",
+   "steps": 1
+  },
+  {
+   "app": "desktop:Contoso Ltd/Billing",
+   "steps": 1
+  },
+  {
+   "app": "web:https://seikyu.example.test:8443",
+   "steps": 1
+  },
+  {
+   "app": "web:http://127.0.0.1:8081",
+   "steps": 1
+  },
+  {
+   "app": "web:https://fin.example.test",
+   "steps": 1
+  },
+  {
+   "app": "desktop:Müller & Söhne GmbH/Kasse – Filiale Nord",
+   "steps": 1
+  },
+  {
+   "app": "desktop:exe/billing.exe",
+   "steps": 1
+  },
+  {
+   "app": "web:https://meter.example.test",
+   "steps": 1
+  },
+  {
+   "app": "mainframe:cics.example.test:3270",
+   "steps": 1
+  },
+  {
+   "app": "web:https://fin.example.test",
+   "steps": 1
+  },
+  {
+   "app": "web:https://orders.example.test",
+   "steps": 1
+  },
+  {
+   "app": "web:https://seikyu.example.test:8443",
+   "steps": 1
+  },
+  {
+   "app": "desktop:Müller & Söhne GmbH/Kasse – Filiale Nord",
+   "steps": 1
+  },
+  {
+   "app": "web:http://127.0.0.1:8081",
+   "steps": 1
+  },
+  {
+   "app": "web:https://fin.example.test",
+   "steps": 1
+  },
+  {
+   "app": "web:https://erp.example.test",
+   "steps": 2
+  }
+ ],
+ "screens": {
+  "web:https://erp.example.test": [
+   {
+    "screen": "https://erp.example.test/billing/invoices",
+    "surface": "web",
+    "states": [
+     {
+      "id": "101e08fe53483e97",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "billingSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "billingHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "billingMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "billingForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "billingError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "billingRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0001-7000-8000-000000000001"
+      ]
+     },
+     {
+      "id": "9e69029dfe7e9a78",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "type": "button",
+        "id": "billingExport",
+        "label": "Go",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "billingSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "billingHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "billingMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "billingForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "billingError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "billingRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-001f-7000-8000-00000000001f"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://erp.example.test/billing/invoices/{id}",
+      "from_state": "101e08fe53483e97",
+      "to_state": "80f5898073747264",
+      "action": "type",
+      "control": "input",
+      "label": "billingInvoiceSearch",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "https://erp.example.test/billing/invoices/{id}",
+    "surface": "web",
+    "states": [
+     {
+      "id": "80f5898073747264",
+      "controls": [
+       {
+        "kind": "input",
+        "tag": "input",
+        "type": "text",
+        "id": "billingInvoiceSearch",
+        "name": "billingInvoiceSearch",
+        "label": "Billing field",
+        "visible": true,
+        "enabled": true,
+        "required": true,
+        "value": "empty"
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "billingSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "billingHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "billingMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "billingForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "billingError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "billingRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0002-7000-8000-000000000002"
+      ]
+     },
+     {
+      "id": "f74b826b8fd8697d",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "type": "button",
+        "id": "billingApprove",
+        "label": "Go",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "billingSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "billingHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "billingMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "billingForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "billingError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "billingRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0007-7000-8000-000000000007"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://erp.example.test/billing-admin/rates",
+      "from_state": "80f5898073747264",
+      "to_state": "c524b7e9a06b10e5",
+      "action": "click",
+      "control": "button",
+      "label": "adminRateTable",
+      "count": 1
+     },
+     {
+      "to": "https://erp.example.test/billing-admin/rates/edit",
+      "from_state": "f74b826b8fd8697d",
+      "to_state": "4a6b11dc99b51baa",
+      "action": "type",
+      "control": "input",
+      "label": "adminRateValue",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "https://erp.example.test/billing-admin/rates",
+    "surface": "web",
+    "states": [
+     {
+      "id": "c524b7e9a06b10e5",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "type": "button",
+        "id": "adminRateTable",
+        "label": "Go",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "adminSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "adminHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "adminMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "adminForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "adminError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "adminRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0006-7000-8000-000000000006"
+      ]
+     },
+     {
+      "id": "46accee1aa76afc6",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "type": "button",
+        "id": "adminRatePublish",
+        "label": "Go",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "adminSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "adminHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "adminMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "adminForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "adminError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "adminRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-001e-7000-8000-00000000001e"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://erp.example.test/billing/invoices/{id}",
+      "from_state": "c524b7e9a06b10e5",
+      "to_state": "f74b826b8fd8697d",
+      "action": "click",
+      "control": "button",
+      "label": "billingApprove",
+      "count": 1
+     },
+     {
+      "to": "https://erp.example.test/billing/invoices",
+      "from_state": "46accee1aa76afc6",
+      "to_state": "9e69029dfe7e9a78",
+      "action": "click",
+      "control": "button",
+      "label": "billingExport",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "https://erp.example.test/billing-admin/rates/edit",
+    "surface": "web",
+    "states": [
+     {
+      "id": "4a6b11dc99b51baa",
+      "controls": [
+       {
+        "kind": "input",
+        "tag": "input",
+        "type": "text",
+        "id": "adminRateValue",
+        "name": "adminRateValue",
+        "label": "Admin field",
+        "visible": true,
+        "enabled": true,
+        "required": true,
+        "value": "empty"
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "adminSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "adminHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "adminMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "adminForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "adminError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "adminRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-000b-7000-8000-00000000000b"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://erp.example.test/billing-admin/rates",
+      "from_state": "4a6b11dc99b51baa",
+      "to_state": "46accee1aa76afc6",
+      "action": "click",
+      "control": "button",
+      "label": "adminRatePublish",
+      "count": 1
+     }
+    ]
+   }
+  ],
+  "web:https://fin.example.test": [
+   {
+    "screen": "https://fin.example.test/finance",
+    "surface": "web",
+    "states": [
+     {
+      "id": "3a275997f9210607",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "ledgerSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "ledgerHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "ledgerMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "ledgerForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "ledgerError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "ledgerRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0003-7000-8000-000000000003"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://fin.example.test/finance/billing/invoices/{id}",
+      "from_state": "3a275997f9210607",
+      "to_state": "eb17056518855a09",
+      "action": "click",
+      "control": "button",
+      "label": "receivableInvoiceOpen",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "https://fin.example.test/finance/billing/invoices/{id}",
+    "surface": "web",
+    "states": [
+     {
+      "id": "eb17056518855a09",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "type": "button",
+        "id": "receivableInvoiceOpen",
+        "label": "Go",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "receivableSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "receivableHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "receivableMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "receivableForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "receivableError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "receivableRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0004-7000-8000-000000000004"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://fin.example.test/finance/payroll/runs/{id}",
+      "from_state": "eb17056518855a09",
+      "to_state": "79af6cb53188c584",
+      "action": "type",
+      "control": "input",
+      "label": "payrollRunHours",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "https://fin.example.test/finance/payroll/runs/{id}",
+    "surface": "web",
+    "states": [
+     {
+      "id": "79af6cb53188c584",
+      "controls": [
+       {
+        "kind": "input",
+        "tag": "input",
+        "type": "text",
+        "id": "payrollRunHours",
+        "name": "payrollRunHours",
+        "label": "Payroll field",
+        "visible": true,
+        "enabled": true,
+        "required": true,
+        "value": "empty"
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "payrollSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "payrollHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "payrollMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "payrollForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "payrollError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "payrollRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0008-7000-8000-000000000008"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://fin.example.test/finance/{id}/{id}",
+      "from_state": "79af6cb53188c584",
+      "to_state": "25fa18d816784ef3",
+      "action": "click",
+      "control": "button",
+      "label": "ledgerArchiveOpen",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "https://fin.example.test/finance/{id}/{id}",
+    "surface": "web",
+    "states": [
+     {
+      "id": "25fa18d816784ef3",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "type": "button",
+        "id": "ledgerArchiveOpen",
+        "label": "Go",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "ledgerSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "ledgerHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "ledgerMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "ledgerForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "ledgerError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "ledgerRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-000e-7000-8000-00000000000e"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://fin.example.test/finance/billing",
+      "from_state": "25fa18d816784ef3",
+      "to_state": "9a053b2f25e49f0a",
+      "action": "click",
+      "control": "button",
+      "label": "receivableExport",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "https://fin.example.test/finance/billing",
+    "surface": "web",
+    "states": [
+     {
+      "id": "9a053b2f25e49f0a",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "type": "button",
+        "id": "receivableExport",
+        "label": "Go",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "receivableSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "receivableHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "receivableMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "receivableForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "receivableError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "receivableRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0013-7000-8000-000000000013"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://fin.example.test/finance/payroll/runs/new",
+      "from_state": "9a053b2f25e49f0a",
+      "to_state": "5c5282ba7fe0ea46",
+      "action": "click",
+      "control": "button",
+      "label": "payrollRunCreate",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "https://fin.example.test/finance/payroll/runs/new",
+    "surface": "web",
+    "states": [
+     {
+      "id": "5c5282ba7fe0ea46",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "type": "button",
+        "id": "payrollRunCreate",
+        "label": "Go",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "payrollSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "payrollHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "payrollMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "payrollForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "payrollError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "payrollRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0018-7000-8000-000000000018"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://fin.example.test/finance/journal/edit",
+      "from_state": "5c5282ba7fe0ea46",
+      "to_state": "65781c35e7c35d1a",
+      "action": "type",
+      "control": "input",
+      "label": "ledgerJournalAmount",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "https://fin.example.test/finance/journal/edit",
+    "surface": "web",
+    "states": [
+     {
+      "id": "65781c35e7c35d1a",
+      "controls": [
+       {
+        "kind": "input",
+        "tag": "input",
+        "type": "text",
+        "id": "ledgerJournalAmount",
+        "name": "ledgerJournalAmount",
+        "label": "Ledger field",
+        "visible": true,
+        "enabled": true,
+        "required": true,
+        "value": "empty"
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "ledgerSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "ledgerHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "ledgerMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "ledgerForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "ledgerError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "ledgerRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-001d-7000-8000-00000000001d"
+      ]
+     }
+    ],
+    "transitions": []
+   }
+  ],
+  "desktop:Contoso Ltd/Billing": [
+   {
+    "screen": "ContosoMain",
+    "surface": "desktop",
+    "states": [
+     {
+      "id": "dd2c7fa3a7293611",
+      "controls": [
+       {
+        "kind": "Button",
+        "id": "contosoPostLedger",
+        "label": "Post",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "Button",
+        "id": "contosoClose",
+        "label": "Close",
+        "visible": true,
+        "enabled": false
+       }
+      ],
+      "regions": [
+       {
+        "kind": "Window",
+        "id": "ContosoMain",
+        "visible": true
+       }
+      ],
+      "grids": [
+       {
+        "kind": "DataGrid",
+        "rows": "1",
+        "id": "contosoGrid",
+        "columns": [
+         "Customer",
+         "Amount"
+        ]
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0005-7000-8000-000000000005"
+      ]
+     },
+     {
+      "id": "772a797f716c36d4",
+      "controls": [
+       {
+        "kind": "Edit",
+        "id": "contosoAmount",
+        "visible": true,
+        "enabled": true,
+        "value": "filled"
+       },
+       {
+        "kind": "Button",
+        "id": "contosoClose",
+        "label": "Close",
+        "visible": true,
+        "enabled": false
+       }
+      ],
+      "regions": [
+       {
+        "kind": "Window",
+        "id": "ContosoMain",
+        "visible": true
+       }
+      ],
+      "grids": [
+       {
+        "kind": "DataGrid",
+        "rows": "1",
+        "id": "contosoGrid",
+        "columns": [
+         "Customer",
+         "Amount"
+        ]
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0010-7000-8000-000000000010"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "ContosoMain",
+      "from_state": "dd2c7fa3a7293611",
+      "to_state": "772a797f716c36d4",
+      "action": "type",
+      "control": "Edit",
+      "label": "contosoAmount",
+      "count": 1
+     }
+    ]
+   }
+  ],
+  "desktop:exe/billing.exe": [
+   {
+    "screen": "BillingMainForm",
+    "surface": "desktop",
+    "states": [
+     {
+      "id": "00868e737769b0bf",
+      "controls": [
+       {
+        "kind": "Edit",
+        "id": "plainCustomerRef",
+        "visible": true,
+        "enabled": true,
+        "value": "filled"
+       },
+       {
+        "kind": "Button",
+        "id": "plainClose",
+        "label": "Close",
+        "visible": true,
+        "enabled": false
+       }
+      ],
+      "regions": [
+       {
+        "kind": "Window",
+        "id": "BillingMainForm",
+        "visible": true
+       }
+      ],
+      "grids": [
+       {
+        "kind": "DataGrid",
+        "rows": "1",
+        "id": "plainGrid",
+        "columns": [
+         "Customer",
+         "Amount"
+        ]
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-000a-7000-8000-00000000000a"
+      ]
+     },
+     {
+      "id": "3c3456065560d096",
+      "controls": [
+       {
+        "kind": "Button",
+        "id": "plainPrintStatement",
+        "label": "Post",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "Button",
+        "id": "plainClose",
+        "label": "Close",
+        "visible": true,
+        "enabled": false
+       }
+      ],
+      "regions": [
+       {
+        "kind": "Window",
+        "id": "BillingMainForm",
+        "visible": true
+       }
+      ],
+      "grids": [
+       {
+        "kind": "DataGrid",
+        "rows": "1",
+        "id": "plainGrid",
+        "columns": [
+         "Customer",
+         "Amount"
+        ]
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0015-7000-8000-000000000015"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "BillingMainForm",
+      "from_state": "00868e737769b0bf",
+      "to_state": "3c3456065560d096",
+      "action": "click",
+      "control": "Button",
+      "label": "plainPrintStatement",
+      "count": 1
+     }
+    ]
+   }
+  ],
+  "web:https://meter.example.test": [
+   {
+    "screen": "https://meter.example.test/readings",
+    "surface": "web",
+    "states": [
+     {
+      "id": "73353a8abd9e5f2e",
+      "controls": [
+       {
+        "kind": "input",
+        "tag": "input",
+        "type": "text",
+        "id": "meterReading",
+        "name": "meterReading",
+        "label": "Meter field",
+        "visible": true,
+        "enabled": true,
+        "required": true,
+        "value": "empty"
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "meterSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "meterHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "meterMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "meterForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "meterError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "meterRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-000c-7000-8000-00000000000c"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://meter.example.test/readings/confirm",
+      "from_state": "73353a8abd9e5f2e",
+      "to_state": "65b4e70d3422a00e",
+      "action": "click",
+      "control": "button",
+      "label": "meterConfirm",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "https://meter.example.test/readings/confirm",
+    "surface": "web",
+    "states": [
+     {
+      "id": "65b4e70d3422a00e",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "type": "button",
+        "id": "meterConfirm",
+        "label": "Go",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "meterSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "meterHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "meterMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "meterForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "meterError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "meterRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0016-7000-8000-000000000016"
+      ]
+     }
+    ],
+    "transitions": []
+   }
+  ],
+  "web:https://orders.example.test": [
+   {
+    "screen": "https://orders.example.test/orders/new",
+    "surface": "web",
+    "states": [
+     {
+      "id": "bef10821ab868272",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "type": "button",
+        "id": "ordersCreate",
+        "label": "Go",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "ordersSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "ordersHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "ordersMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "ordersForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "ordersError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "ordersRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-000f-7000-8000-00000000000f"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://orders.example.test/orders/search",
+      "from_state": "bef10821ab868272",
+      "to_state": "74c9067bc0229db3",
+      "action": "type",
+      "control": "input",
+      "label": "ordersSearch",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "https://orders.example.test/orders/search",
+    "surface": "web",
+    "states": [
+     {
+      "id": "74c9067bc0229db3",
+      "controls": [
+       {
+        "kind": "input",
+        "tag": "input",
+        "type": "text",
+        "id": "ordersSearch",
+        "name": "ordersSearch",
+        "label": "Orders field",
+        "visible": true,
+        "enabled": true,
+        "required": true,
+        "value": "empty"
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "ordersSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "ordersHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "ordersMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "ordersForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "ordersError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "ordersRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0019-7000-8000-000000000019"
+      ]
+     }
+    ],
+    "transitions": []
+   }
+  ],
+  "web:https://seikyu.example.test:8443": [
+   {
+    "screen": "https://seikyu.example.test:8443/seikyu/list",
+    "surface": "web",
+    "states": [
+     {
+      "id": "88e0bb0b4ff59006",
+      "controls": [
+       {
+        "kind": "link",
+        "tag": "a",
+        "id": "invoiceListOpen",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "invoiceSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "invoiceHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "invoiceMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "invoiceForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "invoiceError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "invoiceRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0011-7000-8000-000000000011"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "https://seikyu.example.test:8443/seikyu/new",
+      "from_state": "88e0bb0b4ff59006",
+      "to_state": "d59f08061e6e4ad8",
+      "action": "type",
+      "control": "input",
+      "label": "invoiceAmount",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "https://seikyu.example.test:8443/seikyu/new",
+    "surface": "web",
+    "states": [
+     {
+      "id": "d59f08061e6e4ad8",
+      "controls": [
+       {
+        "kind": "input",
+        "tag": "input",
+        "type": "text",
+        "id": "invoiceAmount",
+        "name": "invoiceAmount",
+        "label": "Invoice field",
+        "visible": true,
+        "enabled": true,
+        "required": true,
+        "value": "empty"
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "invoiceSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "invoiceHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "invoiceMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "invoiceForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "invoiceError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "invoiceRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-001a-7000-8000-00000000001a"
+      ]
+     }
+    ],
+    "transitions": []
+   }
+  ],
+  "web:http://127.0.0.1:8081": [
+   {
+    "screen": "http://127.0.0.1:8081/leave",
+    "surface": "web",
+    "states": [
+     {
+      "id": "711d1f46cfa8ef34",
+      "controls": [
+       {
+        "kind": "button",
+        "tag": "button",
+        "type": "button",
+        "id": "hrLeaveSubmit",
+        "label": "Go",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "hrSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "hrHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "hrMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "hrForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "hrError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "hrRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0012-7000-8000-000000000012"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "http://127.0.0.1:8081/leave/new",
+      "from_state": "711d1f46cfa8ef34",
+      "to_state": "b0c47df3854fc67b",
+      "action": "type",
+      "control": "input",
+      "label": "hrLeaveDays",
+      "count": 1
+     }
+    ]
+   },
+   {
+    "screen": "http://127.0.0.1:8081/leave/new",
+    "surface": "web",
+    "states": [
+     {
+      "id": "b0c47df3854fc67b",
+      "controls": [
+       {
+        "kind": "input",
+        "tag": "input",
+        "type": "text",
+        "id": "hrLeaveDays",
+        "name": "hrLeaveDays",
+        "label": "Hr field",
+        "visible": true,
+        "enabled": true,
+        "required": true,
+        "value": "empty"
+       },
+       {
+        "kind": "button",
+        "tag": "button",
+        "id": "hrSave",
+        "label": "Save",
+        "visible": true,
+        "enabled": false
+       },
+       {
+        "kind": "link",
+        "tag": "a",
+        "classes": [
+         "open"
+        ],
+        "visible": true,
+        "enabled": true,
+        "repeat": "1"
+       }
+      ],
+      "regions": [
+       {
+        "kind": "header",
+        "id": "hrHeader",
+        "visible": true
+       },
+       {
+        "kind": "main",
+        "id": "hrMain",
+        "visible": true
+       },
+       {
+        "kind": "form",
+        "id": "hrForm",
+        "visible": true
+       },
+       {
+        "kind": "div",
+        "id": "hrError",
+        "visible": false
+       }
+      ],
+      "grids": [
+       {
+        "kind": "table",
+        "rows": "1",
+        "id": "hrRows",
+        "columns": [
+         "Number",
+         "Customer"
+        ],
+        "visible": true
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-001c-7000-8000-00000000001c"
+      ]
+     }
+    ],
+    "transitions": []
+   }
+  ],
+  "desktop:Müller & Söhne GmbH/Kasse – Filiale Nord": [
+   {
+    "screen": "KasseMain",
+    "surface": "desktop",
+    "states": [
+     {
+      "id": "c9cee7fc8c221a34",
+      "controls": [
+       {
+        "kind": "Button",
+        "id": "kasseCloseDay",
+        "label": "Post",
+        "visible": true,
+        "enabled": true
+       },
+       {
+        "kind": "Button",
+        "id": "kasseClose",
+        "label": "Close",
+        "visible": true,
+        "enabled": false
+       }
+      ],
+      "regions": [
+       {
+        "kind": "Window",
+        "id": "KasseMain",
+        "visible": true
+       }
+      ],
+      "grids": [
+       {
+        "kind": "DataGrid",
+        "rows": "1",
+        "id": "kasseGrid",
+        "columns": [
+         "Customer",
+         "Amount"
+        ]
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-0014-7000-8000-000000000014"
+      ]
+     },
+     {
+      "id": "b25dd8336477b41b",
+      "controls": [
+       {
+        "kind": "Edit",
+        "id": "kasseCount",
+        "visible": true,
+        "enabled": true,
+        "value": "filled"
+       },
+       {
+        "kind": "Button",
+        "id": "kasseClose",
+        "label": "Close",
+        "visible": true,
+        "enabled": false
+       }
+      ],
+      "regions": [
+       {
+        "kind": "Window",
+        "id": "KasseMain",
+        "visible": true
+       }
+      ],
+      "grids": [
+       {
+        "kind": "DataGrid",
+        "rows": "1",
+        "id": "kasseGrid",
+        "columns": [
+         "Customer",
+         "Amount"
+        ]
+       }
+      ],
+      "withheld": 0,
+      "events": [
+       "019aa1b0-001b-7000-8000-00000000001b"
+      ]
+     }
+    ],
+    "transitions": [
+     {
+      "to": "KasseMain",
+      "from_state": "c9cee7fc8c221a34",
+      "to_state": "b25dd8336477b41b",
+      "action": "type",
+      "control": "Edit",
+      "label": "kasseCount",
+      "count": 1
+     }
+    ]
+   }
+  ]
+ },
+ "completeness": {
+  "overall": "complete",
+  "channels": {
+   "web": {
+    "status": "complete",
+    "gaps": [],
+    "notes": [
+     "pictures: 0 of 22 steps have one"
+    ]
+   },
+   "desktop": {
+    "status": "complete",
+    "gaps": [],
+    "notes": []
+   },
+   "mainframe": {
+    "status": "not_requested",
+    "gaps": [],
+    "notes": []
+   },
+   "network": {
+    "status": "complete",
+    "gaps": [],
+    "notes": [
+     "22 request(s) in the network journal"
+    ]
+   }
+  },
+  "network_evidence": "complete",
+  "recovered": false,
+  "loss_window_seconds": 2.0
+ },
+ "preflight": {
+  "checks": [
+   {
+    "name": "UI Automation",
+    "ok": true,
+    "detail": "available"
+   },
+   {
+    "name": "Browser profile",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "name": "TN3270 host",
+    "ok": true,
+    "detail": "cics.example.test:3270"
+   }
+  ],
+  "ready": true
+ }
+}
