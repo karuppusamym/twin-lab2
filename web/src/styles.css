@@ -262,3 +262,39 @@ details.details-section > section { border: 0; padding: var(--space-2) 0; }
 div.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-3); background: var(--color-surface); border: var(--border-width) solid var(--color-border); border-radius: var(--radius-lg); margin: var(--space-3) 0; }
 .triage-card form.inline label { display: inline-flex; align-items: center; gap: var(--space-1); }
 .triage-card form.inline select { width: auto; }
+
+/* -- authoring: the guided scenario form, the event chooser, comboboxes ----------------------- */
+form.guided { gap: var(--space-4); }
+.guided-part { display: grid; gap: var(--space-3); padding: var(--space-3) var(--space-4) var(--space-4); }
+.guided-part > legend { font-weight: 700; padding: 0 var(--space-1); display: flex; align-items: center; gap: var(--space-2); }
+.guided-part.migrated { border-color: var(--review-strong); background: var(--review-bg); }
+.step-number { display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--color-primary); color: var(--color-primary-text); font-size: var(--text-sm); }
+.field-hint { display: block; font-weight: 400; color: var(--color-muted); font-size: var(--text-muted-size); margin: 0; }
+.line-list { margin: 0; padding-left: 1.75rem; display: grid; gap: var(--space-2); }
+.line-list li { display: flex; gap: var(--space-2); align-items: center; }
+.line-list li input { flex: 1 1 auto; min-width: 0; }
+.line-tools { display: flex; gap: var(--space-1); flex: none; }
+button.icon-button { background: transparent; color: var(--color-link); border: var(--border-width) solid var(--color-border); padding: .2rem .5rem; min-width: 2rem; }
+button.icon-button:hover:not(:disabled) { background: var(--color-secondary-bg); }
+.guided-part > button.secondary { justify-self: start; }
+button.link-button { background: none; border: 0; padding: 0; color: var(--color-link); text-decoration: underline; font-weight: 400; }
+table.events-table tr.group-row th { text-align: left; background: var(--color-border-soft); font-weight: 400; padding-top: var(--space-2); }
+table.events-table .group-title { font-weight: 700; }
+.combobox { position: relative; display: grid; gap: var(--space-1); }
+.combobox > label { display: block; }
+.combobox [role="listbox"] { position: absolute; top: 100%; left: 0; right: 0; z-index: 5; margin: .15rem 0 0; padding: var(--space-1) 0; list-style: none; max-height: 16rem; overflow-y: auto; background: var(--color-surface); border: var(--border-width) solid var(--color-input-border); border-radius: var(--radius); box-shadow: 0 .3rem .8rem rgb(0 0 0 / .12); }
+.combobox [role="listbox"][hidden] { display: none; }
+.combobox [role="option"] { padding: .35rem .6rem; cursor: pointer; }
+.combobox [role="option"].active { background: var(--active-bg); color: var(--active-text); }
+.combobox [role="option"][aria-selected="true"] { font-weight: 700; }
+.combobox li[role="presentation"] { padding: .35rem .6rem; }
+form.inline .combobox { display: inline-grid; min-width: 16rem; }
+.report-list { list-style: none; padding: 0; margin: var(--space-2) 0; display: grid; gap: var(--space-2); }
+.report-list li { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); align-items: baseline; }
+@media (max-width: 40rem) {
+  .guided-part { padding: var(--space-2) var(--space-2) var(--space-3); }
+  .guided-part fieldset { padding: var(--space-2); margin: 0; }
+  .line-list { padding-left: 1.25rem; }
+  .line-list li { flex-wrap: wrap; }
+  .line-list li input { flex-basis: 100%; }
+}

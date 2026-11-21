@@ -611,7 +611,7 @@ paths:
               examples:
                 registered:
                   value:
-                    release: { id: 8, version: 7c41e9b2d05f, revision: 4be1c0ffee51a8d2e9f04b17c6a3d58e2f9b01c4, commit_sha: 7c41e9b2d05f3a68c1e4b97a20d6f58e3b9c1a74, archive_sha: 5d0c2e7a4f9b81c63e2d17a05b9f4c8e1a36d2b70f5c9e84a1b3d6f2e07c5a98, state: packaged }
+                    release: { id: 8, version: 7c41e9b2d05f, label: "1.2", revision: 4be1c0ffee51a8d2e9f04b17c6a3d58e2f9b01c4, commit_sha: 7c41e9b2d05f3a68c1e4b97a20d6f58e3b9c1a74, archive_sha: 5d0c2e7a4f9b81c63e2d17a05b9f4c8e1a36d2b70f5c9e84a1b3d6f2e07c5a98, state: packaged }
                     created: true
                     href: /releases/8
                     next: "Verify the release: replay the recorded examples against its deployment."
@@ -1351,8 +1351,10 @@ paths:
       description: |
         A reviewer of the recording. In recording order (`seq`). Paginated (default `limit` 100).
         `q` matches the action, key, control, label, screen, source and time (case-insensitive,
-        every word must match); `source` is one application (an event's `source`). `sources` counts
-        the events per source of the whole recording. With `ids=true` the answer also lists the
+        every word must match); `source` is one application (an event's `source`); `screen` is one
+        screen (empty: the events with no screen). `sources` counts the events per source of the whole
+        recording; `screens` counts the events per screen of the chosen source (or of all), in the order
+        the recording first reached each screen. With `ids=true` the answer also lists the
         `event_id` of every matching event (all pages), for "select every match".
       x-twinlab-role: recording reviewer
       parameters:
@@ -1360,6 +1362,7 @@ paths:
         - { $ref: "#/components/parameters/Offset" }
         - { name: q, in: query, schema: { type: string, maxLength: 200 } }
         - { name: source, in: query, schema: { type: string, maxLength: 500 } }
+        - { name: screen, in: query, schema: { type: string, maxLength: 500 } }
         - { name: ids, in: query, schema: { type: boolean, default: false } }
       responses:
         "200":
@@ -2701,10 +2704,12 @@ components:
     TestedRelease:
       type: object
       description: An application's latest Tested or Published release.
-      required: [id, version, state, platform, counts, deployment]
+      required: [id, version, label, commit_sha, state, platform, counts, deployment]
       properties:
         id: { type: integer }
         version: { type: string }
+        label: { type: string, description: "The readable number (ReleaseSummary.label)." }
+        commit_sha: { type: string }
         state: { $ref: "#/components/schemas/ReleaseState" }
         platform: { type: string }
         counts:
@@ -3631,7 +3636,7 @@ components:
         page: { $ref: "#/components/schemas/Page" }
     RecordingEvents:
       type: object
-      required: [events, page, sources]
+      required: [events, page, sources, screens]
       properties:
         events: { type: array, items: { $ref: "#/components/schemas/Event" } }
         page: { $ref: "#/components/schemas/Page" }
@@ -3643,6 +3648,15 @@ components:
             required: [source, count]
             properties:
               source: { type: string }
+              count: { type: integer }
+        screens:
+          type: array
+          description: The events per screen of the chosen source (or the whole recording), in first-reached order.
+          items:
+            type: object
+            required: [screen, count]
+            properties:
+              screen: { type: [string, "null"], description: "null: events with no screen." }
               count: { type: integer }
         ids: { type: array, items: { type: string }, description: "With `ids=true`: the event_id of every matching event." }
     RecordingImport:
@@ -3915,10 +3929,16 @@ components:
     # -- releases ---------------------------------------------------------------------------------
     ReleaseSummary:
       type: object
-      required: [id, version, revision, commit_sha, archive_sha, state]
+      required: [id, version, label, revision, commit_sha, archive_sha, state]
       properties:
         id: { type: integer }
-        version: { type: string }
+        version: { type: string, description: "The release's unique name in its application (the commit, 12 characters)." }
+        label:
+          type: string
+          description: |
+            The readable number `<package>.<build>`: the builder package revision the release was built
+            from and the count of releases built from it, oldest first (e.g. `1.2`). Shown as
+            `<app> <label> (<commit, 7 characters>)`.
         revision: { type: string }
         commit_sha: { type: string }
         archive_sha: { type: string }
@@ -4031,11 +4051,16 @@ components:
           type: array
           items:
             type: object
-            required: [id, created_at, sha256]
+            description: Latest first.
+            required: [id, number, latest, created_at, sha256, tested, requested_by]
             properties:
               id: { type: integer }
+              number: { type: integer, minimum: 1, description: "1 for the release's first report." }
+              latest: { type: boolean }
               created_at: { $ref: "#/components/schemas/Timestamp" }
               sha256: { type: string }
+              tested: { type: [boolean, "null"], description: "The report's outcome: true when it made the release Tested; null when unknown." }
+              requested_by: { type: [string, "null"], description: "Who started the verification; null for a report stored before verification jobs." }
     ReleaseDetail:
       type: object
       required: [release, app, my_role, can_download, deployments, test, scenarios, results, checks, version_path]
@@ -4775,6 +4800,8 @@ components:
             tested_release:
               id: 5
               version: 1.0.0
+              label: "1.1"
+              commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b
               state: tested
               platform: Web
               counts: { pass: 2, fail: 0, not-run: 0 }
@@ -4856,7 +4883,7 @@ components:
           next: { id: verify, title: Verify, state: next, hint: Verify the release against its scenarios., href: /releases/5, action: Verify release }
         tested_release: null
         releases:
-          - { id: 5, version: 1.0.0, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
+          - { id: 5, version: 1.0.0, label: "1.1", revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
         packages:
           - { rev: 2, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, sha256: 1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c, size: 18432, approved_by: ana, approved_at: "2026-11-18T09:30:00+00:00" }
           - { rev: 1, revision: 4c0d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c, sha256: 0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b, size: 16210, approved_by: ana, approved_at: "2026-11-10T14:00:00+00:00" }
@@ -4890,7 +4917,7 @@ components:
           next: { id: verify, title: Verify, state: next, hint: Verify the release against its scenarios., href: /releases/5, action: Verify release }
         tested_release: null
         releases:
-          - { id: 5, version: 1.0.0, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
+          - { id: 5, version: 1.0.0, label: "1.1", revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
         packages: []
         statuses:
           - { value: known, label: Replicate }
@@ -4925,7 +4952,7 @@ components:
         github_token_configured: true
         default_windows_pattern: "*windows*"
         releases:
-          - { id: 5, version: 1.0.0, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
+          - { id: 5, version: 1.0.0, label: "1.1", revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
         data_backends:
           - { value: "", label: Predict from the data model }
           - { value: sqlite, label: SQLite }
@@ -5276,7 +5303,7 @@ components:
               final: true
               head_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b
               outstanding: 0
-            release: { id: 5, version: 1.0.0, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
+            release: { id: 5, version: 1.0.0, label: "1.1", revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
             checks: [{ name: build, conclusion: success }]
             reasons: []
             tested: true
@@ -5380,6 +5407,11 @@ components:
         sources:
           - { source: billing.example.test, count: 2 }
           - { source: CaseDesk.exe, count: 3 }
+        screens:
+          - { screen: Orders, count: 1 }
+          - { screen: Order 1001, count: 1 }
+          - { screen: Open cases, count: 1 }
+          - { screen: Case 77, count: 2 }
         events:
           - { event_id: 0b1c2d3e-0000-4000-8000-000000000001, seq: 1, action: click, source: billing.example.test, control: button, label: Search, screen: Orders, time: "2026-11-15T10:40:01.000Z", in_gap: false }
           - { event_id: 0b1c2d3e-0000-4000-8000-000000000002, seq: 2, action: click, source: billing.example.test, control: button, label: Invoice, screen: Order 1001, time: "2026-11-15T10:40:09.000Z", in_gap: false }
@@ -5464,7 +5496,7 @@ components:
 
     ReleaseDetail:
       value:
-        release: { id: 5, version: 1.0.0, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested, published_at: null, repository: example/billing-desk-demo, pr_number: 12, source_ref: null }
+        release: { id: 5, version: 1.0.0, label: "1.1", revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested, published_at: null, repository: example/billing-desk-demo, pr_number: 12, source_ref: null }
         app: { id: 1, name: Billing Desk }
         my_role: owner
         can_download: true
@@ -5518,7 +5550,7 @@ components:
           checked_at: "2026-11-19T15:58:00+00:00"
           checks: [{ name: build, kind: check_run, conclusion: success, url: null, completed_at: "2026-11-19T15:50:00+00:00" }]
           reasons: []
-          reports: [{ id: 1, created_at: "2026-11-19T16:00:00+00:00", sha256: 2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f }]
+          reports: [{ id: 1, number: 1, latest: true, created_at: "2026-11-19T16:00:00+00:00", sha256: 2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f, tested: true, requested_by: alice }]
         version_path: .twinlab/version
         notice: null
 

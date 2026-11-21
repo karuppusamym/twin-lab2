@@ -26,6 +26,7 @@ from twinlab2 import github
 from twinlab2 import jobqueue
 from twinlab2 import packages
 from twinlab2 import providers
+from twinlab2 import registry
 from twinlab2 import shapes
 from twinlab2.auth import require_role
 from twinlab2.providers import base
@@ -290,7 +291,8 @@ def comparison(build):
         tests = db().execute("SELECT * FROM release_tests WHERE release_id = ?", (release["id"],)).fetchone()
     checks = (db().execute("SELECT * FROM commit_checks WHERE repository = ? AND commit_sha = ? ORDER BY kind, name",
                            (build["repo"], build["head_sha"])).fetchall() if build["head_sha"] else [])
-    return {"build": session_view(build), "release": shapes.release_summary(release) if release else None,
+    label = registry.release_labels(db(), release["app_id"])[release["id"]] if release is not None else None
+    return {"build": session_view(build), "release": shapes.release_summary(release, label) if release else None,
             "checks": [{"name": c["name"], "conclusion": c["conclusion"]} for c in checks],
             "reasons": list((report or {}).get("reasons") or (json.loads(verification["reasons"]) if verification else [])),
             "tested": bool((report or {}).get("tested")),
