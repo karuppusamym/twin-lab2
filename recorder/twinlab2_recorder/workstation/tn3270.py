@@ -403,8 +403,9 @@ class Recorder:
     """Writes the steps of every connection to one recording folder."""
 
     def __init__(self, out_dir: Path, app_key: str, on_step: Callable[[dict], None] | None = None,
-                 journal=None):  # fmt: skip
+                 journal=None, paused: Callable[[], bool] | None = None):  # fmt: skip
         self.out = Path(out_dir)
+        self.paused = paused or (lambda: False)  # the session is paused: no step, no screen
         self.journal = journal  # twinlab2_recorder.workstation.journal.Journal of the session, or None
         (self.out / "screens").mkdir(parents=True, exist_ok=True)
         self.app_key = app_key
@@ -481,6 +482,8 @@ class Recorder:
         return {"id": f"scr:{sid}", "title": self._title(conn), "rows": s.rows, "cols": s.cols}
 
     def _write(self, step: dict, screen_file: dict | None = None) -> None:
+        if self.paused():
+            return
         with self.lock:
             if self.file.closed:
                 return
@@ -533,6 +536,8 @@ class Recorder:
         step = {"action": "type", "connection": conn.number, "screen": self._screen_info(conn),
                 "field": {"row": row, "col": col, "len": f["len"] if f else None,
                           "label": self._label(conn, f)}}  # fmt: skip
+        if self.paused():
+            return  # not even kept in memory
         if f is not None and f["hidden"]:
             step["secret"] = True
         elif value:
@@ -558,11 +563,12 @@ class Proxy(threading.Thread):
     def __init__(self, host: str, port: int, out_dir: Path, *, listen: int = 0, tls: bool = False,
                  tls_verify: bool = True, app_key: str | None = None,
                  stop: Callable[[], bool] | None = None,
-                 on_step: Callable[[dict], None] | None = None, journal=None) -> None:  # fmt: skip
+                 on_step: Callable[[dict], None] | None = None, journal=None,
+                 paused: Callable[[], bool] | None = None) -> None:  # fmt: skip
         super().__init__(name="tl-tn3270", daemon=True)
         self.host, self.port, self.tls, self.tls_verify = host, int(port), tls, tls_verify
         self.app_key = app_key or f"mainframe:{host.lower()}:{port}"
-        self.recorder = Recorder(out_dir, self.app_key, on_step, journal=journal)
+        self.recorder = Recorder(out_dir, self.app_key, on_step, journal=journal, paused=paused)
         self.stop_fn = stop or (lambda: False)
         self._stopped = threading.Event()
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

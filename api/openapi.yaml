@@ -153,8 +153,12 @@ tags:
     description: Setup / Advanced, build setup (admins).
   - name: users
     description: Local users and portal admins (admins).
+  - name: access
+    description: Requesting a role on an application, and its owners' decisions.
   - name: audit
     description: Append-only audit history.
+  - name: operations
+    description: Operating the portal (admins) — retention, deletion, purges, tombstones, audit export, storage encryption.
   - name: agent
     description: The recorder agent API (machine token). Unchanged; see RECORDER-CONTRACT.md.
 
@@ -1591,6 +1595,101 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /api/v1/apps/{app_id}/access-requests:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    post:
+      tags: [access]
+      operationId: requestAccess
+      summary: Ask an application's owners for a role
+      description: |
+        Any signed-in user, typically after a 403 `role` on the application (its `app_id` and
+        `requested_role` are in that problem). Needs a role and a reason. One pending request per
+        person and application: asking again replaces its role and reason. The answer is the same
+        202 whether or not the application exists (a 403 hides that; so does this). Audited as
+        `access.request`. 400 when the caller already holds that role or a higher one.
+      x-twinlab-role: signed-in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccessRequestInput" }
+            examples:
+              builder: { value: { role: builder, reason: "I am rebuilding Billing for the demo week." } }
+      responses:
+        "202":
+          description: Sent to the owners (or nothing to send to; the caller cannot tell).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessRequestSent" }
+              examples:
+                sent:
+                  value: { state: pending, role: builder, message: "Your request was sent to the application's owners. You will see their answer on your home page." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/access-requests:
+    get:
+      tags: [access]
+      operationId: listAccessRequests
+      summary: My access requests, and the ones I decide
+      description: |
+        `mine`: the caller's own requests, newest first (at most 50), with their outcome; `app_name`
+        is null where the caller cannot see the application (a declined request, say).
+        `to_decide`: pending requests on applications the caller owns (a portal admin: all of them).
+      x-twinlab-role: signed-in
+      responses:
+        "200":
+          description: The requests.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessRequestList" }
+              examples:
+                owner:
+                  value:
+                    mine: []
+                    to_decide:
+                      - { id: 4, app_id: 1, app_name: Billing, user: bob, role: builder, reason: "Rebuilding Billing.", state: pending, created_at: "2026-11-21T09:00:00+00:00", decided_by: null, decided_at: null, note: "" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/access-requests/{request_id}/decision:
+    parameters:
+      - name: request_id
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [access]
+      operationId: decideAccessRequest
+      summary: Approve or decline an access request
+      description: |
+        The application's owners and portal admins. `approve` assigns the requested role (or
+        `role`, when given) as the access table does (`role.assign`), unless the person holds that
+        role or a higher one by now; `decline` assigns nothing. `note` is shown to the requester.
+        Audited as `access.approve` / `access.decline`. 409 `state_conflict` once decided; 404 for
+        a request the caller neither made nor decides.
+      x-twinlab-role: owner-or-admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccessDecision" }
+            examples:
+              approve: { value: { decision: approve } }
+              decline: { value: { decision: decline, note: "Ask again when the package is frozen." } }
+      responses:
+        "200":
+          description: The decided request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessRequest" }
+              examples:
+                approved:
+                  value: { id: 4, app_id: 1, app_name: Billing, user: bob, role: builder, reason: "Rebuilding Billing.", state: approved, created_at: "2026-11-21T09:00:00+00:00", decided_by: olivia, decided_at: "2026-11-21T09:05:00+00:00", note: "" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /api/v1/home:
     get:
       tags: [session]
@@ -1707,8 +1806,18 @@ paths:
       x-twinlab-idempotent: stored
       parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Make a pairing code
-      description: Signed in. The code works once, within `minutes`, and is never shown again.
+      description: |
+        Signed in. The code works once, within `minutes`, and is never shown again. `scopes`: what
+        the machine paired with it may do (default both): `record` (sessions offered, applications,
+        a recording's references) and `upload` (evidence uploads). See docs/AGENT-API-SECURITY.md.
       x-twinlab-role: signed-in
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PairingCodeInput" }
+            examples:
+              upload_only: { value: { scopes: [upload] } }
       responses:
         "201":
           description: The code.
@@ -1716,7 +1825,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PairingCode" }
               examples:
-                code: { value: { code: ABCDE23456, display: ABCDE-23456, minutes: 10, expires_at: "2026-11-20T10:10:00+00:00" } }
+                code: { value: { code: ABCDE23456, display: ABCDE-23456, minutes: 10, expires_at: "2026-11-20T10:10:00+00:00", scopes: [record, upload] } }
+        "400": { $ref: "#/components/responses/BadRequest" }
 
   /api/v1/machines/{machine_id}/revoke:
     parameters:
@@ -1734,7 +1844,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Machine" }
               examples:
-                revoked: { value: { id: 3, name: OLD-PC, paired_by: ana, paired_at: "2026-09-01T09:00:00+00:00", last_seen: null, recorder: "", contract_version: null, revoked_at: "2026-11-20T10:00:00+00:00" } }
+                revoked: { value: { id: 3, name: OLD-PC, paired_by: ana, paired_at: "2026-09-01T09:00:00+00:00", last_seen: null, recorder: "", contract_version: null, revoked_at: "2026-11-20T10:00:00+00:00", scopes: [record, upload] } }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -2220,7 +2330,248 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
 
   # ---------------------------------------------------------------------------------------------
-  # recorder agent API (unchanged; RECORDER-CONTRACT.md)
+  # operations (admins): retention, deletion, purges, tombstones, audit export
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/admin/operations:
+    get:
+      tags: [operations]
+      operationId: getOperations
+      summary: Storage, encryption, metrics, tracing and retention at a glance
+      description: Portal admins. What the Operations page shows; what a retention run would delete now (`plan`).
+      x-twinlab-role: admin
+      responses:
+        "200":
+          description: The operations summary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Operations" }
+              examples:
+                local: { $ref: "#/components/examples/Operations" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/retention:
+    put:
+      tags: [operations]
+      operationId: saveRetentionPolicy
+      summary: Set the retention policy
+      description: |
+        Portal admins. Days to keep each kind (`null` keeps it forever; audit at least 30).
+        `schedule: daily` queues a retention run every 24 hours. Audited as `retention.policy`.
+      x-twinlab-role: admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RetentionPolicyInput" }
+            examples:
+              year: { value: { raw_recordings: 90, evidence: 365, frozen_packages: 365, build_logs: 180, audit: null, schedule: daily } }
+      responses:
+        "200":
+          description: The policy now in force.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RetentionPolicy" }
+              examples:
+                year: { value: { raw_recordings: 90, evidence: 365, frozen_packages: 365, build_logs: 180, audit: null, schedule: daily, updated_by: root, updated_at: "2026-11-21T09:00:00+00:00" } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/retention/runs:
+    post:
+      tags: [operations]
+      operationId: startRetentionRun
+      summary: Run the retention policy (or a dry run) as a worker job
+      description: |
+        Portal admins. A dry run (the default) counts what would be deleted; a real run deletes it,
+        writes a tombstone per deleted object and an audit row `retention.apply`. Poll the run.
+      x-twinlab-role: admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RetentionRunInput" }
+            examples:
+              dry: { value: { dry_run: true } }
+      responses:
+        "202":
+          description: The run, queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RetentionRun" }
+              examples:
+                queued: { value: { id: 3, requested_by: root, dry_run: true, state: queued, policy: { raw_recordings: 90, evidence: null, frozen_packages: null, build_logs: null, audit: null, schedule: off }, result: null, error: null, created_at: "2026-11-21T09:00:00+00:00", finished_at: null } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/retention/runs/{run_id}:
+    parameters:
+      - { name: run_id, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [operations]
+      operationId: getRetentionRun
+      summary: A retention run and its result
+      x-twinlab-role: admin
+      responses:
+        "200":
+          description: The run.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RetentionRun" }
+              examples:
+                done: { $ref: "#/components/examples/RetentionRunDone" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/admin/audit-export:
+    get:
+      tags: [operations, audit]
+      operationId: exportAudit
+      summary: Export the audit history (CSV or JSON lines), filtered by date
+      description: |
+        Portal admins. Rows with `since` <= `at` < `until` (ISO dates or times, UTC), oldest first,
+        optionally of one application. CSV cells that a spreadsheet would run as a formula are
+        prefixed with `'`. Audited as `audit.export`.
+      x-twinlab-role: admin
+      parameters:
+        - { name: since, in: query, schema: { type: string, maxLength: 40 }, description: "e.g. 2026-11-01" }
+        - { name: until, in: query, schema: { type: string, maxLength: 40 }, description: "e.g. 2026-12-01 (exclusive)" }
+        - { name: app_id, in: query, schema: { type: integer } }
+        - { name: format, in: query, schema: { type: string, enum: [csv, json], default: csv } }
+      responses:
+        "200":
+          description: The rows, as an attachment.
+          content:
+            text/csv:
+              schema: { type: string }
+            application/x-ndjson:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/tombstones:
+    get:
+      tags: [operations]
+      operationId: listTombstones
+      summary: What was deleted, newest first
+      x-twinlab-role: admin
+      parameters:
+        - { name: app_id, in: query, schema: { type: integer } }
+        - { name: recording_id, in: query, schema: { type: string, maxLength: 128 } }
+      responses:
+        "200":
+          description: The tombstones.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TombstoneList" }
+              examples:
+                some: { $ref: "#/components/examples/TombstoneList" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/files/{sha256}:
+    parameters:
+      - { name: sha256, in: path, required: true, schema: { $ref: "#/components/schemas/Sha256" } }
+    get:
+      tags: [operations]
+      operationId: findFile
+      summary: Where a file is stored, by its SHA-256
+      description: |
+        Portal admins. The artifacts that are this file, and the stored ZIPs (frozen packages,
+        release downloads, reports, recording bundles) that contain it. A purge deletes all of them.
+      x-twinlab-role: admin
+      responses:
+        "200":
+          description: Where it is.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileLocations" }
+              examples:
+                found: { $ref: "#/components/examples/FileLocations" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/files/{sha256}/purge:
+    parameters:
+      - { name: sha256, in: path, required: true, schema: { $ref: "#/components/schemas/Sha256" } }
+    post:
+      tags: [operations]
+      operationId: purgeFile
+      summary: Delete every stored copy of a file (a leaked picture)
+      description: |
+        Portal admins. Deletes the artifacts that are this file (on S3 every version of its key),
+        the attachments that point at them, and every stored ZIP that contains it, whole. Writes
+        tombstones and an audit row `purge`. Backups keep their copies until they expire: see
+        docs/operations/leaked-picture.md.
+      x-twinlab-role: admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PurgeInput" }
+            examples:
+              leak: { value: { note: "Screenshot showed a customer's card number (INC-1234)." } }
+      responses:
+        "200":
+          description: What was deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PurgeResult" }
+              examples:
+                purged: { value: { sha256: 5d41402abc4b2a76b9719d911017c592ae0f1f7a2b6c1d0e9f8a7b6c5d4e3f2a, tombstone_id: 9, artifacts_deleted: 1, containers_deleted: [{ id: 14, kind: builder_package, members: [evidence/screens/login.png] }], other_versions_deleted: 1, freed_bytes: 48213 } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/apps/{app_id}/tombstones:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    get:
+      tags: [operations, releases]
+      operationId: getAppTombstones
+      summary: What was deleted from this application (retention, owner requests, purges)
+      description: Viewers of the application. Shown on its release pages, so a release still says what was deleted.
+      x-twinlab-role: viewer
+      responses:
+        "200":
+          description: The tombstones.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TombstoneList" }
+              examples:
+                some: { $ref: "#/components/examples/TombstoneList" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/recordings/{recording_id}/deletion:
+    parameters: [{ $ref: "#/components/parameters/RecordingId" }]
+    post:
+      tags: [recordings, operations]
+      operationId: deleteRecording
+      summary: Delete a recording and its derived data (owner's request)
+      description: |
+        The owners of every application the recording covers, or a portal admin. Deletes its steps,
+        assignments and evidence links, its uploaded bundles' bytes and, with `purge_packages`, the
+        frozen packages that include it. A tombstone per deleted object stays; audited as
+        `recording.delete`.
+      x-twinlab-role: owner of every application the recording covers, or admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecordingDeletionInput" }
+            examples:
+              request: { value: { reason: "Recorded on the production tenant by mistake.", purge_packages: true } }
+      responses:
+        "200":
+          description: What was deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecordingDeletion" }
+              examples:
+                deleted: { value: { recording_id: 9f2c4e1a7b3d5f60, tombstone_id: 4, apps: [1], uploads_deleted: 1, packages_deleted: [{ app_id: 1, rev: 2 }], freed_bytes: 120034 } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------------------------------------
+  # recorder agent API (RECORDER-CONTRACT.md). Token scopes and the per-machine rate limit
+  # (403 {error, scope}, 429 {error, retry_after} with Retry-After): docs/AGENT-API-SECURITY.md
   # ---------------------------------------------------------------------------------------------
   /api/agent/pair:
     post:
@@ -2246,26 +2597,74 @@ paths:
       tags: [agent]
       operationId: agentSessions
       summary: Sessions offered to this machine, and the keys not to record in full
+      description: Scope `record`.
       x-twinlab-role: agent-token
       security: [{ agentToken: [] }]
       responses:
         "200": { $ref: "#/components/responses/AgentJson" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
   /api/agent/apps:
     get:
       tags: [agent]
       operationId: agentApps
       summary: Catalog applications with an identity, for a session started on the recorder
+      description: Scope `record`.
       x-twinlab-role: agent-token
       security: [{ agentToken: [] }]
       responses:
         "200": { $ref: "#/components/responses/AgentJson" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
+  /api/agent/update:
+    get:
+      tags: [agent]
+      operationId: agentUpdate
+      summary: The newest recorder version this portal offers, for a recorder to update itself
+      description: >-
+        Any scope (every paired machine may update itself).
+        The release an administrator put in the portal's releases folder (`TWINLAB2_RECORDER_RELEASES`,
+        docs/recorder-deployment.md). `update_available` compares it with the recorder's `version`.
+        The recorder downloads `latest.url`, checks `size` and `sha256`, then the file's Authenticode
+        signature against its machine policy, and installs only while nothing is being recorded.
+      x-twinlab-role: agent-token
+      security: [{ agentToken: [] }]
+      parameters:
+        - { name: version, in: query, required: false, schema: { type: string }, description: The recorder's version. }
+      responses:
+        "200":
+          description: The newest release, or none.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecorderUpdate" }
+        "401": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
+  /api/agent/update/{file}:
+    parameters:
+      - { name: file, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [agent]
+      operationId: agentUpdateFile
+      summary: Download the offered recorder release (the MSI)
+      x-twinlab-role: agent-token
+      security: [{ agentToken: [] }]
+      responses:
+        "200":
+          description: The MSI.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/AgentError" }
+        "404": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
   /api/agent/references:
     post:
       tags: [agent]
       operationId: agentReferences
       summary: The references of a finished recording (applications, steps, timeline, completeness)
+      description: Scope `record`.
       x-twinlab-role: agent-token
       security: [{ agentToken: [] }]
       requestBody:
@@ -2277,6 +2676,8 @@ paths:
         "200": { $ref: "#/components/responses/AgentJson" }
         "400": { $ref: "#/components/responses/AgentError" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
         "409": { $ref: "#/components/responses/AgentError" }
         "426": { $ref: "#/components/responses/AgentError" }
   /api/uploads:
@@ -2284,6 +2685,7 @@ paths:
       tags: [agent]
       operationId: agentUploadInit
       summary: Start a resumable upload of a recording's evidence
+      description: Scope `upload` (the upload's own token, then, for its chunks, parts and completion).
       x-twinlab-role: agent-token
       security: [{ agentToken: [] }]
       requestBody:
@@ -2296,6 +2698,8 @@ paths:
         "201": { $ref: "#/components/responses/AgentJson" }
         "400": { $ref: "#/components/responses/AgentError" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
   /api/uploads/{upload_id}:
     parameters:
       - { name: upload_id, in: path, required: true, schema: { type: string } }
@@ -2308,6 +2712,8 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/AgentJson" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
         "404": { $ref: "#/components/responses/AgentError" }
     put:
       tags: [agent]
@@ -2324,6 +2730,8 @@ paths:
         "200": { $ref: "#/components/responses/AgentJson" }
         "400": { $ref: "#/components/responses/AgentError" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
         "409": { $ref: "#/components/responses/AgentError" }
   /api/uploads/{upload_id}/parts:
     parameters:
@@ -2337,6 +2745,8 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/AgentJson" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
   /api/uploads/{upload_id}/complete:
     parameters:
       - { name: upload_id, in: path, required: true, schema: { type: string } }
@@ -2350,6 +2760,8 @@ paths:
         "200": { $ref: "#/components/responses/AgentJson" }
         "400": { $ref: "#/components/responses/AgentError" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
         "409": { $ref: "#/components/responses/AgentError" }
   /api/recordings/{recording_id}/upload:
     parameters: [{ $ref: "#/components/parameters/RecordingId" }]
@@ -2396,6 +2808,14 @@ components:
     Deprecation: { description: "`true` when the answer carries a deprecated member (see Deprecations).", schema: { type: string } }
 
   responses:
+    Gone:
+      description: The stored file was deleted; its tombstone says when and why.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          examples:
+            gone:
+              value: { type: /errors/gone, title: Gone, status: 410, detail: "This file was deleted on 2026-11-20T10:00:00+00:00 (retention).", code: gone, tombstone_id: 7 }
     BadRequest:
       description: The request is not acceptable; `detail` says why.
       content:
@@ -2492,6 +2912,176 @@ components:
 
   schemas:
     # -- common -----------------------------------------------------------------------------------
+    RetentionDays:
+      type: [integer, "null"]
+      minimum: 1
+      maximum: 36500
+      description: Days to keep; null keeps it forever.
+    RetentionPolicyInput:
+      type: object
+      properties:
+        raw_recordings: { $ref: "#/components/schemas/RetentionDays" }
+        evidence: { $ref: "#/components/schemas/RetentionDays" }
+        frozen_packages: { $ref: "#/components/schemas/RetentionDays" }
+        build_logs: { $ref: "#/components/schemas/RetentionDays" }
+        audit: { $ref: "#/components/schemas/RetentionDays" }
+        schedule: { type: string, enum: ["off", daily] }
+    RetentionPolicy:
+      type: object
+      required: [raw_recordings, evidence, frozen_packages, build_logs, audit, schedule]
+      properties:
+        raw_recordings: { $ref: "#/components/schemas/RetentionDays" }
+        evidence: { $ref: "#/components/schemas/RetentionDays" }
+        frozen_packages: { $ref: "#/components/schemas/RetentionDays" }
+        build_logs: { $ref: "#/components/schemas/RetentionDays" }
+        audit: { $ref: "#/components/schemas/RetentionDays" }
+        schedule: { type: string, enum: ["off", daily] }
+        updated_by: { type: [string, "null"] }
+        updated_at: { type: [string, "null"] }
+    RetentionPlanItem:
+      type: object
+      required: [days, count, bytes]
+      properties:
+        days: { type: [integer, "null"] }
+        count: { type: integer, description: "Objects (or rows, for build logs and audit) that go." }
+        bytes: { type: integer }
+        freed_bytes: { type: integer, description: "Stored bytes removed (a real run)." }
+    RetentionPlan:
+      type: object
+      required: [raw_recordings, evidence, frozen_packages, build_logs, audit]
+      properties:
+        raw_recordings: { $ref: "#/components/schemas/RetentionPlanItem" }
+        evidence: { $ref: "#/components/schemas/RetentionPlanItem" }
+        frozen_packages: { $ref: "#/components/schemas/RetentionPlanItem" }
+        build_logs: { $ref: "#/components/schemas/RetentionPlanItem" }
+        audit: { $ref: "#/components/schemas/RetentionPlanItem" }
+    RetentionRunInput:
+      type: object
+      properties:
+        dry_run: { type: boolean, default: true }
+    RetentionRun:
+      type: object
+      required: [id, requested_by, dry_run, state, policy, result, error, created_at, finished_at]
+      properties:
+        id: { type: integer }
+        requested_by: { type: string }
+        dry_run: { type: boolean }
+        state: { type: string, enum: [queued, running, done, failed] }
+        policy: { type: object, additionalProperties: true }
+        result: { oneOf: [{ $ref: "#/components/schemas/RetentionPlan" }, { type: "null" }] }
+        error: { type: [string, "null"] }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+        finished_at: { type: [string, "null"] }
+    Operations:
+      type: object
+      required: [storage, metrics, tracing, log_format, policy, plan, runs, queue]
+      properties:
+        storage: { type: object, additionalProperties: true, description: "The artifact store (backend, location or bucket, versioning, encryption)." }
+        metrics:
+          type: object
+          required: [port, token]
+          properties:
+            port: { type: [integer, "null"], description: "The internal port /metrics answers on." }
+            token: { type: boolean, description: "Whether a bearer token also opens /metrics on any port." }
+        tracing: { type: boolean }
+        log_format: { type: string, enum: [json, text] }
+        policy: { $ref: "#/components/schemas/RetentionPolicy" }
+        plan: { $ref: "#/components/schemas/RetentionPlan" }
+        runs: { type: array, items: { $ref: "#/components/schemas/RetentionRun" } }
+        queue: { type: object, additionalProperties: { type: integer }, description: "Jobs by state." }
+    Tombstone:
+      type: object
+      required: [id, at, actor, reason, object_type, object_id, app_id, recording_id, sha256, size, details]
+      properties:
+        id: { type: integer }
+        at: { $ref: "#/components/schemas/Timestamp" }
+        actor: { type: string }
+        reason: { type: string, enum: [retention, owner_request, purge] }
+        object_type: { type: string, description: "recording, upload, attachment, frozen_package, build_messages, audit_log, file, …" }
+        object_id: { type: string }
+        app_id: { type: [integer, "null"] }
+        recording_id: { type: [string, "null"] }
+        sha256: { type: [string, "null"] }
+        size: { type: [integer, "null"] }
+        details: { type: object, additionalProperties: true }
+    TombstoneList:
+      type: object
+      required: [tombstones]
+      properties:
+        tombstones: { type: array, items: { $ref: "#/components/schemas/Tombstone" } }
+    FileLocations:
+      type: object
+      required: [sha256, artifacts, inside]
+      properties:
+        sha256: { $ref: "#/components/schemas/Sha256" }
+        artifacts:
+          type: array
+          items:
+            type: object
+            required: [id, kind, app_id, size, created_at]
+            properties:
+              id: { type: integer }
+              kind: { type: string }
+              app_id: { type: [integer, "null"] }
+              size: { type: integer }
+              created_at: { type: string }
+        inside:
+          type: array
+          items:
+            type: object
+            required: [id, kind, app_id, size, members]
+            properties:
+              id: { type: integer }
+              kind: { type: string }
+              app_id: { type: [integer, "null"] }
+              size: { type: integer }
+              members: { type: array, items: { type: string } }
+    PurgeInput:
+      type: object
+      required: [note]
+      properties:
+        note: { type: string, minLength: 3, maxLength: 500, description: "Why (kept in the tombstone and the audit history)." }
+    PurgeResult:
+      type: object
+      required: [sha256, tombstone_id, artifacts_deleted, containers_deleted, other_versions_deleted, freed_bytes]
+      properties:
+        sha256: { $ref: "#/components/schemas/Sha256" }
+        tombstone_id: { type: integer }
+        artifacts_deleted: { type: integer }
+        containers_deleted:
+          type: array
+          items:
+            type: object
+            required: [id, kind, members]
+            properties:
+              id: { type: integer }
+              kind: { type: string }
+              members: { type: array, items: { type: string } }
+        other_versions_deleted: { type: integer }
+        freed_bytes: { type: integer }
+    RecordingDeletionInput:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 3, maxLength: 500 }
+        purge_packages: { type: boolean, default: false, description: "Also delete the frozen packages that include the recording." }
+    RecordingDeletion:
+      type: object
+      required: [recording_id, tombstone_id, apps, uploads_deleted, packages_deleted, freed_bytes]
+      properties:
+        recording_id: { type: string }
+        tombstone_id: { type: integer }
+        apps: { type: array, items: { type: integer } }
+        uploads_deleted: { type: integer }
+        packages_deleted:
+          type: array
+          items:
+            type: object
+            required: [app_id, rev]
+            properties:
+              app_id: { type: integer }
+              rev: { type: integer }
+        freed_bytes: { type: integer }
     Problem:
       type: object
       description: RFC 9457 problem details; every error of /api/v1 has this shape.
@@ -2508,6 +3098,8 @@ components:
           type: array
           items: { type: string }
           description: "With `code: role` on an application: its owners, who can grant the role (only to a caller who may see them)."
+        app_id: { type: integer, description: "With `code: role` on an application: the application (as in the path), for `requestAccess`." }
+        requested_role: { $ref: "#/components/schemas/Role", description: "With `app_id`: the lowest role that would have been enough." }
         errors:
           type: array
           description: Per-field problems of a request body.
@@ -2521,6 +3113,7 @@ components:
           type: object
           additionalProperties: true
           description: "With `code: conflict`: the resource as the server has it now (the shape its GET answers)."
+        tombstone_id: { type: [integer, "null"], description: "With `code: gone`: the tombstone that records the deletion." }
     ErrorCode:
       type: string
       description: |
@@ -2551,6 +3144,7 @@ components:
         - internal
         - bad_gateway
         - unavailable
+        - gone
         - error
       x-twinlab-codes:
         invalid_request: "The request (its body, query or headers) is not valid; `errors` names the fields."
@@ -2577,6 +3171,7 @@ components:
         internal: "The portal failed; the error is in its log under the response's Request-Id."
         bad_gateway: "A service the portal depends on failed."
         unavailable: "The portal is not ready (starting, migrating, or a dependency is down): retry later."
+        gone: "The stored file was deleted (retention, an owner's request or a purge); a tombstone records it."
         error: "Any other HTTP error status."
     Page:
       type: object
@@ -3613,6 +4208,24 @@ components:
         network_evidence: { type: string }
         channels: { type: object, additionalProperties: { $ref: "#/components/schemas/Channel" } }
         local_exclusions: { $ref: "#/components/schemas/LocalExclusions" }
+        paused: { $ref: "#/components/schemas/PausedPeriods" }
+    PausedPeriods:
+      type: object
+      description: "Recorder contract 1.7: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap."
+      required: [count, seconds, periods]
+      properties:
+        count: { type: integer, minimum: 0, description: "How many times the recording was paused." }
+        seconds: { type: number, minimum: 0, description: "How long it was paused in all." }
+        periods:
+          type: array
+          description: "Each pause (at most 50)."
+          items:
+            type: object
+            required: [from, to, seconds]
+            properties:
+              from: { type: string, format: date-time }
+              to: { type: string, format: date-time }
+              seconds: { type: number, minimum: 0 }
     LocalExclusions:
       type: object
       description: "Recorder contract 1.5: applications the recording PC's own exclude list kept out. Not a gap: they were never meant to be recorded. Names of the exclude entries only."
@@ -3906,7 +4519,7 @@ components:
     # -- machines ---------------------------------------------------------------------------------
     Machine:
       type: object
-      required: [id, name, paired_by, paired_at, last_seen, recorder, contract_version, revoked_at]
+      required: [id, name, paired_by, paired_at, last_seen, recorder, contract_version, revoked_at, scopes]
       properties:
         id: { type: integer }
         name: { type: string }
@@ -3916,6 +4529,7 @@ components:
         recorder: { type: string }
         contract_version: { type: [string, "null"] }
         revoked_at: { type: [string, "null"] }
+        scopes: { type: array, items: { $ref: "#/components/schemas/AgentScope" }, description: "What its token may do." }
     MachineList:
       type: object
       required: [machines, code_minutes]
@@ -3924,12 +4538,25 @@ components:
         code_minutes: { type: integer }
     PairingCode:
       type: object
-      required: [code, display, minutes, expires_at]
+      required: [code, display, minutes, expires_at, scopes]
       properties:
         code: { type: string, pattern: "^[A-HJ-NP-Z2-9]{10}$" }
         display: { type: string, description: "The code as shown, XXXXX-XXXXX." }
         minutes: { type: integer }
         expires_at: { $ref: "#/components/schemas/Timestamp" }
+        scopes: { type: array, items: { $ref: "#/components/schemas/AgentScope" } }
+    PairingCodeInput:
+      type: object
+      additionalProperties: false
+      properties:
+        scopes:
+          type: array
+          items: { $ref: "#/components/schemas/AgentScope" }
+          description: "What the paired machine may do; default both."
+    AgentScope:
+      type: string
+      enum: [record, upload]
+      description: "`record`: sessions offered, applications, a recording's references; `upload`: evidence uploads."
 
     # -- automations ------------------------------------------------------------------------------
     Automation:
@@ -4285,6 +4912,26 @@ components:
         password: { type: string, description: "Empty or omitted keeps the saved password." }
         is_admin: { type: boolean }
 
+    RecorderRelease:
+      type: object
+      description: One recorder release (an MSI) the portal serves.
+      required: [version, file, url, size, sha256]
+      properties:
+        version: { type: string, pattern: '^\d+\.\d+\.\d+$', example: "0.3.0" }
+        file: { type: string, example: TwinLabRecorder-0.3.0-x64.msi }
+        url: { type: string, description: Where to download it, on this portal., example: /api/agent/update/TwinLabRecorder-0.3.0-x64.msi }
+        size: { type: integer, description: Bytes. }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        notes: { type: string, description: What changed, in words. }
+        published_at: { type: [string, "null"], format: date-time }
+    RecorderUpdate:
+      type: object
+      description: The answer to a recorder asking for a newer version of itself.
+      required: [update_available, latest]
+      properties:
+        current: { type: [string, "null"], description: The version the recorder said it is. }
+        update_available: { type: boolean, description: "`latest` is newer than `current`." }
+        latest: { oneOf: [{ $ref: "#/components/schemas/RecorderRelease" }, { type: "null" }] }
     AgentMessage:
       type: object
       description: A recorder message as RECORDER-CONTRACT.md defines it (with `contract_version`).
@@ -4501,6 +5148,52 @@ components:
       required: [decisions]
       properties:
         decisions: { type: array, maxItems: 200, items: { $ref: "#/components/schemas/TriageDecision" } }
+    AccessRequestInput:
+      type: object
+      required: [role, reason]
+      additionalProperties: false
+      properties:
+        role: { $ref: "#/components/schemas/Role" }
+        reason: { type: string, maxLength: 2000, description: "Why the role is needed (at most 500 characters are kept)." }
+    AccessRequestSent:
+      type: object
+      required: [state, role, message]
+      properties:
+        state: { type: string, enum: [pending] }
+        role: { $ref: "#/components/schemas/Role" }
+        message: { type: string }
+    AccessRequestState:
+      type: string
+      enum: [pending, approved, declined]
+    AccessRequest:
+      type: object
+      required: [id, app_id, app_name, user, role, reason, state, created_at, decided_by, decided_at, note]
+      properties:
+        id: { type: integer }
+        app_id: { type: integer }
+        app_name: { type: [string, "null"], description: "Null where the caller cannot see the application." }
+        user: { type: string, description: "Who asked." }
+        role: { $ref: "#/components/schemas/Role" }
+        reason: { type: string }
+        state: { $ref: "#/components/schemas/AccessRequestState" }
+        created_at: { type: string }
+        decided_by: { type: [string, "null"] }
+        decided_at: { type: [string, "null"] }
+        note: { type: string, description: "The decider's note to the requester." }
+    AccessRequestList:
+      type: object
+      required: [mine, to_decide]
+      properties:
+        mine: { type: array, items: { $ref: "#/components/schemas/AccessRequest" } }
+        to_decide: { type: array, items: { $ref: "#/components/schemas/AccessRequest" } }
+    AccessDecision:
+      type: object
+      required: [decision]
+      additionalProperties: false
+      properties:
+        decision: { type: string, enum: [approve, decline] }
+        role: { $ref: "#/components/schemas/Role", description: "Approve with this role instead of the requested one." }
+        note: { type: string, maxLength: 2000 }
     TriageOutcome:
       type: object
       required: [apps, message]
@@ -4585,6 +5278,47 @@ components:
         href: { type: string }
         next: { type: string }
   examples:
+    Operations:
+      value:
+        storage: { backend: local, location: /artifacts, versioning: every put is a new version file, direct_upload: false, encryption: "envelope (AES-256-GCM, key 3f2a9c0d1e4b5a6c)" }
+        metrics: { port: 9090, token: false }
+        tracing: false
+        log_format: json
+        policy: { raw_recordings: 90, evidence: null, frozen_packages: null, build_logs: 180, audit: null, schedule: daily, updated_by: root, updated_at: "2026-11-21T09:00:00+00:00" }
+        plan:
+          raw_recordings: { days: 90, count: 2, bytes: 240068 }
+          evidence: { days: null, count: 0, bytes: 0 }
+          frozen_packages: { days: null, count: 0, bytes: 0 }
+          build_logs: { days: 180, count: 14, bytes: 5210 }
+          audit: { days: null, count: 0, bytes: 0 }
+        runs: []
+        queue: { done: 12, queued: 1 }
+    RetentionRunDone:
+      value:
+        id: 3
+        requested_by: root
+        dry_run: false
+        state: done
+        policy: { raw_recordings: 90, evidence: null, frozen_packages: null, build_logs: 180, audit: null, schedule: daily }
+        result:
+          raw_recordings: { days: 90, count: 2, bytes: 240068, freed_bytes: 240068 }
+          evidence: { days: null, count: 0, bytes: 0 }
+          frozen_packages: { days: null, count: 0, bytes: 0 }
+          build_logs: { days: 180, count: 14, bytes: 5210, freed_bytes: 5210 }
+          audit: { days: null, count: 0, bytes: 0 }
+        error: null
+        created_at: "2026-11-21T09:00:00+00:00"
+        finished_at: "2026-11-21T09:00:04+00:00"
+    TombstoneList:
+      value:
+        tombstones:
+          - { id: 4, at: "2026-11-20T10:00:00+00:00", actor: ana, reason: owner_request, object_type: recording, object_id: 9f2c4e1a7b3d5f60, app_id: 1, recording_id: 9f2c4e1a7b3d5f60, sha256: null, size: null, details: { name: Month-end run, steps: 42, note: Recorded on the production tenant by mistake. } }
+          - { id: 3, at: "2026-11-19T02:00:00+00:00", actor: schedule, reason: retention, object_type: upload, object_id: u_7Hk2, app_id: null, recording_id: 2b4d6f8a0c1e3a5b, sha256: 2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae, size: 120034, details: { kind: raw_recordings, days: 90 } }
+    FileLocations:
+      value:
+        sha256: 5d41402abc4b2a76b9719d911017c592ae0f1f7a2b6c1d0e9f8a7b6c5d4e3f2a
+        artifacts: [{ id: 31, kind: restricted_evidence, app_id: 1, size: 48213, created_at: "2026-11-02T09:00:00+00:00" }]
+        inside: [{ id: 14, kind: builder_package, app_id: 1, size: 220311, members: [evidence/screens/login.png] }]
     SessionOwner:
       value:
         signed_in: true
@@ -5531,8 +6265,8 @@ components:
       value:
         code_minutes: 10
         machines:
-          - { id: 2, name: CLERK-PC, paired_by: ana, paired_at: "2026-11-01T08:00:00+00:00", last_seen: "2026-11-20T08:55:00+00:00", recorder: TwinLabRecorder 1.4.0, contract_version: "1.1", revoked_at: null }
-          - { id: 3, name: OLD-PC, paired_by: ana, paired_at: "2026-09-01T09:00:00+00:00", last_seen: null, recorder: "", contract_version: null, revoked_at: "2026-10-01T09:00:00+00:00" }
+          - { id: 2, name: CLERK-PC, paired_by: ana, paired_at: "2026-11-01T08:00:00+00:00", last_seen: "2026-11-20T08:55:00+00:00", recorder: TwinLabRecorder 1.4.0, contract_version: "1.1", revoked_at: null, scopes: [record, upload] }
+          - { id: 3, name: OLD-PC, paired_by: ana, paired_at: "2026-09-01T09:00:00+00:00", last_seen: null, recorder: "", contract_version: null, revoked_at: "2026-10-01T09:00:00+00:00", scopes: [record, upload] }
 
     AutomationPage:
       value:

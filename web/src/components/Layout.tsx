@@ -85,6 +85,7 @@ export function Layout({ children }: { children: ReactNode }) {
           {owner && <NavLink to="/sessions">Request a recording</NavLink>}
           {owner && <NavLink to="/setup">Setup</NavLink>}
           {session.is_admin && <NavLink to="/admin/users">Users</NavLink>}
+          {session.is_admin && <NavLink to="/admin/operations">Operations</NavLink>}
         </nav>
         <div className="account">
           <span className="who">{session.user}{session.is_admin ? " (admin)" : ""}</span>

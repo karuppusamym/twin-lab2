@@ -37,7 +37,7 @@ from twinlab2_recorder.client import PortalError
 
 CHUNK = 1024 * 1024
 MAX_ATTEMPTS = 5
-SKIP = {"stop", "sent.json"}
+SKIP = {"stop", "paused", "sent.json"}
 
 
 def _stamp() -> str:

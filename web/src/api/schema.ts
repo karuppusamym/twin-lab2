@@ -1074,6 +1074,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/{app_id}/access-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask an application's owners for a role
+         * @description Any signed-in user, typically after a 403 `role` on the application (its `app_id` and
+         *     `requested_role` are in that problem). Needs a role and a reason. One pending request per
+         *     person and application: asking again replaces its role and reason. The answer is the same
+         *     202 whether or not the application exists (a 403 hides that; so does this). Audited as
+         *     `access.request`. 400 when the caller already holds that role or a higher one.
+         */
+        post: operations["requestAccess"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/access-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * My access requests, and the ones I decide
+         * @description `mine`: the caller's own requests, newest first (at most 50), with their outcome; `app_name`
+         *     is null where the caller cannot see the application (a declined request, say).
+         *     `to_decide`: pending requests on applications the caller owns (a portal admin: all of them).
+         */
+        get: operations["listAccessRequests"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/access-requests/{request_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve or decline an access request
+         * @description The application's owners and portal admins. `approve` assigns the requested role (or
+         *     `role`, when given) as the access table does (`role.assign`), unless the person holds that
+         *     role or a higher one by now; `decline` assigns nothing. `note` is shown to the requester.
+         *     Audited as `access.approve` / `access.decline`. 409 `state_conflict` once decided; 404 for
+         *     a request the caller neither made nor decides.
+         */
+        post: operations["decideAccessRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/home": {
         parameters: {
             query?: never;
@@ -1178,7 +1252,9 @@ export interface paths {
         put?: never;
         /**
          * Make a pairing code
-         * @description Signed in. The code works once, within `minutes`, and is never shown again.
+         * @description Signed in. The code works once, within `minutes`, and is never shown again. `scopes`: what
+         *     the machine paired with it may do (default both): `record` (sessions offered, applications,
+         *     a recording's references) and `upload` (evidence uploads). See docs/AGENT-API-SECURITY.md.
          */
         post: operations["makePairingCode"];
         delete?: never;
@@ -1666,6 +1742,221 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Storage, encryption, metrics, tracing and retention at a glance
+         * @description Portal admins. What the Operations page shows; what a retention run would delete now (`plan`).
+         */
+        get: operations["getOperations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the retention policy
+         * @description Portal admins. Days to keep each kind (`null` keeps it forever; audit at least 30).
+         *     `schedule: daily` queues a retention run every 24 hours. Audited as `retention.policy`.
+         */
+        put: operations["saveRetentionPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/retention/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run the retention policy (or a dry run) as a worker job
+         * @description Portal admins. A dry run (the default) counts what would be deleted; a real run deletes it,
+         *     writes a tombstone per deleted object and an audit row `retention.apply`. Poll the run.
+         */
+        post: operations["startRetentionRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/retention/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: number;
+            };
+            cookie?: never;
+        };
+        /** A retention run and its result */
+        get: operations["getRetentionRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/audit-export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export the audit history (CSV or JSON lines), filtered by date
+         * @description Portal admins. Rows with `since` <= `at` < `until` (ISO dates or times, UTC), oldest first,
+         *     optionally of one application. CSV cells that a spreadsheet would run as a formula are
+         *     prefixed with `'`. Audited as `audit.export`.
+         */
+        get: operations["exportAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/tombstones": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What was deleted, newest first */
+        get: operations["listTombstones"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/files/{sha256}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sha256: components["schemas"]["Sha256"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Where a file is stored, by its SHA-256
+         * @description Portal admins. The artifacts that are this file, and the stored ZIPs (frozen packages,
+         *     release downloads, reports, recording bundles) that contain it. A purge deletes all of them.
+         */
+        get: operations["findFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/files/{sha256}/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sha256: components["schemas"]["Sha256"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete every stored copy of a file (a leaked picture)
+         * @description Portal admins. Deletes the artifacts that are this file (on S3 every version of its key),
+         *     the attachments that point at them, and every stored ZIP that contains it, whole. Writes
+         *     tombstones and an audit row `purge`. Backups keep their copies until they expire: see
+         *     docs/operations/leaked-picture.md.
+         */
+        post: operations["purgeFile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{app_id}/tombstones": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * What was deleted from this application (retention, owner requests, purges)
+         * @description Viewers of the application. Shown on its release pages, so a release still says what was deleted.
+         */
+        get: operations["getAppTombstones"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/recordings/{recording_id}/deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                recording_id: components["parameters"]["RecordingId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete a recording and its derived data (owner's request)
+         * @description The owners of every application the recording covers, or a portal admin. Deletes its steps,
+         *     assignments and evidence links, its uploaded bundles' bytes and, with `purge_packages`, the
+         *     frozen packages that include it. A tombstone per deleted object stays; audited as
+         *     `recording.delete`.
+         */
+        post: operations["deleteRecording"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agent/pair": {
         parameters: {
             query?: never;
@@ -1693,7 +1984,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Sessions offered to this machine, and the keys not to record in full */
+        /**
+         * Sessions offered to this machine, and the keys not to record in full
+         * @description Scope `record`.
+         */
         get: operations["agentSessions"];
         put?: never;
         post?: never;
@@ -1710,8 +2004,50 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Catalog applications with an identity, for a session started on the recorder */
+        /**
+         * Catalog applications with an identity, for a session started on the recorder
+         * @description Scope `record`.
+         */
         get: operations["agentApps"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The newest recorder version this portal offers, for a recorder to update itself
+         * @description Any scope (every paired machine may update itself). The release an administrator put in the portal's releases folder (`TWINLAB2_RECORDER_RELEASES`, docs/recorder-deployment.md). `update_available` compares it with the recorder's `version`. The recorder downloads `latest.url`, checks `size` and `sha256`, then the file's Authenticode signature against its machine policy, and installs only while nothing is being recorded.
+         */
+        get: operations["agentUpdate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent/update/{file}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file: string;
+            };
+            cookie?: never;
+        };
+        /** Download the offered recorder release (the MSI) */
+        get: operations["agentUpdateFile"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1729,7 +2065,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** The references of a finished recording (applications, steps, timeline, completeness) */
+        /**
+         * The references of a finished recording (applications, steps, timeline, completeness)
+         * @description Scope `record`.
+         */
         post: operations["agentReferences"];
         delete?: never;
         options?: never;
@@ -1746,7 +2085,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start a resumable upload of a recording's evidence */
+        /**
+         * Start a resumable upload of a recording's evidence
+         * @description Scope `upload` (the upload's own token, then, for its chunks, parts and completion).
+         */
         post: operations["agentUploadInit"];
         delete?: never;
         options?: never;
@@ -1835,6 +2177,155 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Days to keep; null keeps it forever. */
+        RetentionDays: number | null;
+        RetentionPolicyInput: {
+            raw_recordings?: components["schemas"]["RetentionDays"];
+            evidence?: components["schemas"]["RetentionDays"];
+            frozen_packages?: components["schemas"]["RetentionDays"];
+            build_logs?: components["schemas"]["RetentionDays"];
+            audit?: components["schemas"]["RetentionDays"];
+            /** @enum {string} */
+            schedule?: "off" | "daily";
+        };
+        RetentionPolicy: {
+            raw_recordings: components["schemas"]["RetentionDays"];
+            evidence: components["schemas"]["RetentionDays"];
+            frozen_packages: components["schemas"]["RetentionDays"];
+            build_logs: components["schemas"]["RetentionDays"];
+            audit: components["schemas"]["RetentionDays"];
+            /** @enum {string} */
+            schedule: "off" | "daily";
+            updated_by?: string | null;
+            updated_at?: string | null;
+        };
+        RetentionPlanItem: {
+            days: number | null;
+            /** @description Objects (or rows, for build logs and audit) that go. */
+            count: number;
+            bytes: number;
+            /** @description Stored bytes removed (a real run). */
+            freed_bytes?: number;
+        };
+        RetentionPlan: {
+            raw_recordings: components["schemas"]["RetentionPlanItem"];
+            evidence: components["schemas"]["RetentionPlanItem"];
+            frozen_packages: components["schemas"]["RetentionPlanItem"];
+            build_logs: components["schemas"]["RetentionPlanItem"];
+            audit: components["schemas"]["RetentionPlanItem"];
+        };
+        RetentionRunInput: {
+            /** @default true */
+            dry_run: boolean;
+        };
+        RetentionRun: {
+            id: number;
+            requested_by: string;
+            dry_run: boolean;
+            /** @enum {string} */
+            state: "queued" | "running" | "done" | "failed";
+            policy: {
+                [key: string]: unknown;
+            };
+            result: components["schemas"]["RetentionPlan"] | null;
+            error: string | null;
+            created_at: components["schemas"]["Timestamp"];
+            finished_at: string | null;
+        };
+        Operations: {
+            /** @description The artifact store (backend, location or bucket, versioning, encryption). */
+            storage: {
+                [key: string]: unknown;
+            };
+            metrics: {
+                /** @description The internal port /metrics answers on. */
+                port: number | null;
+                /** @description Whether a bearer token also opens /metrics on any port. */
+                token: boolean;
+            };
+            tracing: boolean;
+            /** @enum {string} */
+            log_format: "json" | "text";
+            policy: components["schemas"]["RetentionPolicy"];
+            plan: components["schemas"]["RetentionPlan"];
+            runs: components["schemas"]["RetentionRun"][];
+            /** @description Jobs by state. */
+            queue: {
+                [key: string]: number;
+            };
+        };
+        Tombstone: {
+            id: number;
+            at: components["schemas"]["Timestamp"];
+            actor: string;
+            /** @enum {string} */
+            reason: "retention" | "owner_request" | "purge";
+            /** @description recording, upload, attachment, frozen_package, build_messages, audit_log, file, … */
+            object_type: string;
+            object_id: string;
+            app_id: number | null;
+            recording_id: string | null;
+            sha256: string | null;
+            size: number | null;
+            details: {
+                [key: string]: unknown;
+            };
+        };
+        TombstoneList: {
+            tombstones: components["schemas"]["Tombstone"][];
+        };
+        FileLocations: {
+            sha256: components["schemas"]["Sha256"];
+            artifacts: {
+                id: number;
+                kind: string;
+                app_id: number | null;
+                size: number;
+                created_at: string;
+            }[];
+            inside: {
+                id: number;
+                kind: string;
+                app_id: number | null;
+                size: number;
+                members: string[];
+            }[];
+        };
+        PurgeInput: {
+            /** @description Why (kept in the tombstone and the audit history). */
+            note: string;
+        };
+        PurgeResult: {
+            sha256: components["schemas"]["Sha256"];
+            tombstone_id: number;
+            artifacts_deleted: number;
+            containers_deleted: {
+                id: number;
+                kind: string;
+                members: string[];
+            }[];
+            other_versions_deleted: number;
+            freed_bytes: number;
+        };
+        RecordingDeletionInput: {
+            reason: string;
+            /**
+             * @description Also delete the frozen packages that include the recording.
+             * @default false
+             */
+            purge_packages: boolean;
+        };
+        RecordingDeletion: {
+            recording_id: string;
+            tombstone_id: number;
+            apps: number[];
+            uploads_deleted: number;
+            packages_deleted: {
+                app_id: number;
+                rev: number;
+            }[];
+            freed_bytes: number;
+        };
         /** @description RFC 9457 problem details; every error of /api/v1 has this shape. */
         Problem: {
             /**
@@ -1854,6 +2345,10 @@ export interface components {
             request_id?: string;
             /** @description With `code: role` on an application: its owners, who can grant the role (only to a caller who may see them). */
             owners?: string[];
+            /** @description With `code: role` on an application: the application (as in the path), for `requestAccess`. */
+            app_id?: number;
+            /** @description With `app_id`: the lowest role that would have been enough. */
+            requested_role?: components["schemas"]["Role"];
             /** @description Per-field problems of a request body. */
             errors?: {
                 field: string;
@@ -1863,13 +2358,15 @@ export interface components {
             current?: {
                 [key: string]: unknown;
             };
+            /** @description With `code: gone`: the tombstone that records the deletion. */
+            tombstone_id?: number | null;
         };
         /**
          * @description The stable machine-readable reason of an error (see Errors); `x-twinlab-codes` says what each
          *     means. New codes may be added within v1: treat an unknown code by its HTTP status.
          * @enum {string}
          */
-        ErrorCode: "invalid_request" | "idempotency_key_mismatch" | "signed_out" | "wrong_credentials" | "forbidden" | "csrf" | "role" | "restricted" | "not_found" | "method_not_allowed" | "conflict" | "state_conflict" | "draft_changed" | "unchanged" | "incomplete_package" | "plan_changed" | "publish_locked" | "idempotency_in_progress" | "too_large" | "unsupported_media_type" | "idempotency_key_reused" | "internal" | "bad_gateway" | "unavailable" | "error";
+        ErrorCode: "invalid_request" | "idempotency_key_mismatch" | "signed_out" | "wrong_credentials" | "forbidden" | "csrf" | "role" | "restricted" | "not_found" | "method_not_allowed" | "conflict" | "state_conflict" | "draft_changed" | "unchanged" | "incomplete_package" | "plan_changed" | "publish_locked" | "idempotency_in_progress" | "too_large" | "unsupported_media_type" | "idempotency_key_reused" | "internal" | "bad_gateway" | "unavailable" | "gone" | "error";
         /** @description Where a page of a paginated list is (see Pagination). */
         Page: {
             /** @description Items matching the filters, on every page. */
@@ -2746,6 +3243,22 @@ export interface components {
                 [key: string]: components["schemas"]["Channel"];
             };
             local_exclusions?: components["schemas"]["LocalExclusions"];
+            paused?: components["schemas"]["PausedPeriods"];
+        };
+        /** @description Recorder contract 1.7: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap. */
+        PausedPeriods: {
+            /** @description How many times the recording was paused. */
+            count: number;
+            /** @description How long it was paused in all. */
+            seconds: number;
+            /** @description Each pause (at most 50). */
+            periods: {
+                /** Format: date-time */
+                from: string;
+                /** Format: date-time */
+                to: string;
+                seconds: number;
+            }[];
         };
         /** @description Recorder contract 1.5: applications the recording PC's own exclude list kept out. Not a gap: they were never meant to be recorded. Names of the exclude entries only. */
         LocalExclusions: {
@@ -2993,6 +3506,8 @@ export interface components {
             recorder: string;
             contract_version: string | null;
             revoked_at: string | null;
+            /** @description What its token may do. */
+            scopes: components["schemas"]["AgentScope"][];
         };
         MachineList: {
             machines: components["schemas"]["Machine"][];
@@ -3004,7 +3519,17 @@ export interface components {
             display: string;
             minutes: number;
             expires_at: components["schemas"]["Timestamp"];
+            scopes: components["schemas"]["AgentScope"][];
         };
+        PairingCodeInput: {
+            /** @description What the paired machine may do; default both. */
+            scopes?: components["schemas"]["AgentScope"][];
+        };
+        /**
+         * @description `record`: sessions offered, applications, a recording's references; `upload`: evidence uploads.
+         * @enum {string}
+         */
+        AgentScope: "record" | "upload";
         Automation: {
             id: number;
             name: string;
@@ -3292,6 +3817,33 @@ export interface components {
             password?: string;
             is_admin: boolean;
         };
+        /** @description One recorder release (an MSI) the portal serves. */
+        RecorderRelease: {
+            /** @example 0.3.0 */
+            version: string;
+            /** @example TwinLabRecorder-0.3.0-x64.msi */
+            file: string;
+            /**
+             * @description Where to download it
+             * @example /api/agent/update/TwinLabRecorder-0.3.0-x64.msi
+             */
+            url: string;
+            /** @description Bytes. */
+            size: number;
+            sha256: string;
+            /** @description What changed */
+            notes?: string;
+            /** Format: date-time */
+            published_at?: string | null;
+        };
+        /** @description The answer to a recorder asking for a newer version of itself. */
+        RecorderUpdate: {
+            /** @description The version the recorder said it is. */
+            current?: string | null;
+            /** @description `latest` is newer than `current`. */
+            update_available: boolean;
+            latest: components["schemas"]["RecorderRelease"] | null;
+        };
         /** @description A recorder message as RECORDER-CONTRACT.md defines it (with `contract_version`). */
         AgentMessage: {
             [key: string]: unknown;
@@ -3481,6 +4033,46 @@ export interface components {
         TriageDecisions: {
             decisions: components["schemas"]["TriageDecision"][];
         };
+        AccessRequestInput: {
+            role: components["schemas"]["Role"];
+            /** @description Why the role is needed (at most 500 characters are kept). */
+            reason: string;
+        };
+        AccessRequestSent: {
+            /** @enum {string} */
+            state: "pending";
+            role: components["schemas"]["Role"];
+            message: string;
+        };
+        /** @enum {string} */
+        AccessRequestState: "pending" | "approved" | "declined";
+        AccessRequest: {
+            id: number;
+            app_id: number;
+            /** @description Null where the caller cannot see the application. */
+            app_name: string | null;
+            /** @description Who asked. */
+            user: string;
+            role: components["schemas"]["Role"];
+            reason: string;
+            state: components["schemas"]["AccessRequestState"];
+            created_at: string;
+            decided_by: string | null;
+            decided_at: string | null;
+            /** @description The decider's note to the requester. */
+            note: string;
+        };
+        AccessRequestList: {
+            mine: components["schemas"]["AccessRequest"][];
+            to_decide: components["schemas"]["AccessRequest"][];
+        };
+        AccessDecision: {
+            /** @enum {string} */
+            decision: "approve" | "decline";
+            /** @description Approve with this role instead of the requested one. */
+            role?: components["schemas"]["Role"];
+            note?: string;
+        };
         TriageOutcome: {
             apps: {
                 id: number;
@@ -3552,6 +4144,15 @@ export interface components {
         };
     };
     responses: {
+        /** @description The stored file was deleted; its tombstone says when and why. */
+        Gone: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
         /** @description The request is not acceptable; `detail` says why. */
         BadRequest: {
             headers: {
@@ -5221,6 +5822,85 @@ export interface operations {
             409: components["responses"]["Conflict"];
         };
     };
+    requestAccess: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccessRequestInput"];
+            };
+        };
+        responses: {
+            /** @description Sent to the owners (or nothing to send to; the caller cannot tell). */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessRequestSent"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    listAccessRequests: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The requests. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessRequestList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    decideAccessRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccessDecision"];
+            };
+        };
+        responses: {
+            /** @description The decided request. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessRequest"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
     getHome: {
         parameters: {
             query?: never;
@@ -5345,7 +6025,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PairingCodeInput"];
+            };
+        };
         responses: {
             /** @description The code. */
             201: {
@@ -5356,6 +6040,7 @@ export interface operations {
                     "application/json": components["schemas"]["PairingCode"];
                 };
             };
+            400: components["responses"]["BadRequest"];
         };
     };
     revokeMachine: {
@@ -5920,6 +6605,261 @@ export interface operations {
             403: components["responses"]["Forbidden"];
         };
     };
+    getOperations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The operations summary. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operations"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    saveRetentionPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetentionPolicyInput"];
+            };
+        };
+        responses: {
+            /** @description The policy now in force. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionPolicy"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    startRetentionRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetentionRunInput"];
+            };
+        };
+        responses: {
+            /** @description The run, queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionRun"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getRetentionRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The run. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionRun"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    exportAudit: {
+        parameters: {
+            query?: {
+                /** @description e.g. 2026-11-01 */
+                since?: string;
+                /** @description e.g. 2026-12-01 (exclusive) */
+                until?: string;
+                app_id?: number;
+                format?: "csv" | "json";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rows, as an attachment. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                    "application/x-ndjson": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    listTombstones: {
+        parameters: {
+            query?: {
+                app_id?: number;
+                recording_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The tombstones. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TombstoneList"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    findFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sha256: components["schemas"]["Sha256"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Where it is. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileLocations"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    purgeFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sha256: components["schemas"]["Sha256"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PurgeInput"];
+            };
+        };
+        responses: {
+            /** @description What was deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurgeResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getAppTombstones: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The tombstones. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TombstoneList"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteRecording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                recording_id: components["parameters"]["RecordingId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordingDeletionInput"];
+            };
+        };
+        responses: {
+            /** @description What was deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordingDeletion"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
     agentPair: {
         parameters: {
             query?: never;
@@ -5951,6 +6891,8 @@ export interface operations {
         responses: {
             200: components["responses"]["AgentJson"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentApps: {
@@ -5964,6 +6906,58 @@ export interface operations {
         responses: {
             200: components["responses"]["AgentJson"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
+        };
+    };
+    agentUpdate: {
+        parameters: {
+            query?: {
+                /** @description The recorder's version. */
+                version?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The newest release, or none. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecorderUpdate"];
+                };
+            };
+            401: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
+        };
+    };
+    agentUpdateFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The MSI. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            401: components["responses"]["AgentError"];
+            404: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentReferences: {
@@ -5982,8 +6976,10 @@ export interface operations {
             200: components["responses"]["AgentJson"];
             400: components["responses"]["AgentError"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
             409: components["responses"]["AgentError"];
             426: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentUploadInit: {
@@ -6003,6 +6999,8 @@ export interface operations {
             201: components["responses"]["AgentJson"];
             400: components["responses"]["AgentError"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentUploadStatus: {
@@ -6018,7 +7016,9 @@ export interface operations {
         responses: {
             200: components["responses"]["AgentJson"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
             404: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentUploadChunk: {
@@ -6039,7 +7039,9 @@ export interface operations {
             200: components["responses"]["AgentJson"];
             400: components["responses"]["AgentError"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
             409: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentUploadParts: {
@@ -6055,6 +7057,8 @@ export interface operations {
         responses: {
             200: components["responses"]["AgentJson"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentUploadComplete: {
@@ -6071,7 +7075,9 @@ export interface operations {
             200: components["responses"]["AgentJson"];
             400: components["responses"]["AgentError"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
             409: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     recordingUploadProgress: {

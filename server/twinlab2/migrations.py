@@ -461,6 +461,76 @@ VERIFICATIONS = [
 ]
 
 
+# -- 15: access requests; agent token scopes and per-machine rate limits ---------------------------
+
+ACCESS_AND_AGENT = [
+    # one row per "Request access" (routes_access.py): pending until an owner (or admin) approves
+    # or declines it; the decision is also in the audit history (access.approve / access.decline)
+    """CREATE TABLE IF NOT EXISTS access_requests (
+        id {id}, app_id INTEGER NOT NULL REFERENCES apps(id), user_name TEXT NOT NULL,
+        role TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', state TEXT NOT NULL,
+        created_at TEXT NOT NULL, decided_by TEXT, decided_at TEXT, note TEXT NOT NULL DEFAULT ''
+    )""",
+    "CREATE INDEX IF NOT EXISTS access_requests_app ON access_requests(app_id, state)",
+    "CREATE INDEX IF NOT EXISTS access_requests_user ON access_requests(user_name, id)",
+    # what a machine token may do (agent.SCOPES, space separated); a pairing code carries the
+    # scopes its machine will get. Machines paired before this keep both.
+    add_columns([("machines", "scopes", "TEXT NOT NULL DEFAULT 'record upload'"),
+                 ("pairing_codes", "scopes", "TEXT NOT NULL DEFAULT 'record upload'")]),
+    # requests per machine per minute (agent.limit): a fixed window shared by every replica
+    """CREATE TABLE IF NOT EXISTS agent_rate (
+        machine_id INTEGER NOT NULL, minute TEXT NOT NULL, hits INTEGER NOT NULL,
+        PRIMARY KEY (machine_id, minute)
+    )""",
+]
+
+
+# -- 16: the data lifecycle (lifecycle.py): tombstones, retention runs, deleted artifacts, audit pruning --
+
+
+def audit_prune_guard(connection):
+    """audit_log stays append-only, except a DELETE of rows older than a row of
+    audit_prune_window, which only retention (lifecycle.prune_audit) writes, inside its own
+    transaction. UPDATE is still always refused."""
+    message = "audit_log is append-only"
+    if connection.engine == "sqlite":
+        connection.ddl("DROP TRIGGER IF EXISTS audit_log_no_delete")
+        connection.ddl(f"""CREATE TRIGGER audit_log_no_delete BEFORE DELETE ON audit_log
+                           WHEN NOT EXISTS (SELECT 1 FROM audit_prune_window WHERE OLD.at < audit_prune_window.cutoff)
+                           BEGIN SELECT RAISE(ABORT, '{message}'); END""")
+    else:
+        connection.ddl(f"""CREATE OR REPLACE FUNCTION audit_log_refuse() RETURNS trigger LANGUAGE plpgsql AS
+                           $$ BEGIN
+                             IF TG_OP = 'DELETE' AND EXISTS (SELECT 1 FROM audit_prune_window w WHERE OLD.at < w.cutoff) THEN
+                               RETURN OLD;
+                             END IF;
+                             RAISE EXCEPTION '{message}' USING ERRCODE = 'integrity_constraint_violation';
+                           END $$""")
+
+
+DATA_LIFECYCLE = [
+    # an artifact whose stored object was removed keeps its row (hash, size, kind) and says why
+    add_columns([("artifacts", "deleted_at", "TEXT"), ("artifacts", "deleted_reason", "TEXT"),
+                 ("artifacts", "tombstone_id", "INTEGER")]),
+    """CREATE TABLE IF NOT EXISTS tombstones (
+        id {id}, at TEXT NOT NULL, actor TEXT NOT NULL, reason TEXT NOT NULL, object_type TEXT NOT NULL,
+        object_id TEXT NOT NULL, app_id INTEGER, recording_id TEXT, sha256 TEXT, size INTEGER,
+        details TEXT NOT NULL DEFAULT '{}'
+    )""",
+    "CREATE INDEX IF NOT EXISTS tombstones_app ON tombstones(app_id, id)",
+    "CREATE INDEX IF NOT EXISTS tombstones_recording ON tombstones(recording_id)",
+    append_only("tombstones", "tombstones are append-only"),
+    """CREATE TABLE IF NOT EXISTS retention_runs (
+        id {id}, requested_by TEXT NOT NULL, dry_run INTEGER NOT NULL, state TEXT NOT NULL,
+        policy TEXT NOT NULL DEFAULT '{}', result TEXT, error TEXT, job_id TEXT,
+        created_at TEXT NOT NULL, finished_at TEXT
+    )""",
+    "CREATE TABLE IF NOT EXISTS audit_prune_window (cutoff TEXT NOT NULL)",
+    audit_prune_guard,
+    "CREATE INDEX IF NOT EXISTS artifacts_sha256 ON artifacts(sha256)",
+]
+
+
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
@@ -484,6 +554,8 @@ MIGRATIONS = [
                                                ("builder_packages", "known_gaps", "TEXT NOT NULL DEFAULT ''")])]),
     (13, "idempotency keys", IDEMPOTENCY_KEYS),
     (14, "async verification", VERIFICATIONS),
+    (15, "access requests and agent scopes", ACCESS_AND_AGENT),
+    (16, "data lifecycle", DATA_LIFECYCLE),
 ]
 
 

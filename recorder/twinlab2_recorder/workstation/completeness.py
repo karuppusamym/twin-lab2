@@ -9,7 +9,8 @@ contract 1.1.0.
                   not_requested", "gaps": [{"from", "to", "reason"}], "notes": [str]}},
      "network_evidence": "complete|incomplete|none",
      "recovered": bool, "loss_window_seconds": number | null,
-     "local_exclusions": {"count", "names", "entries", "managed"}}  (contract 1.5, optional)
+     "local_exclusions": {"count", "names", "entries", "managed"},  (contract 1.5, optional)
+     "paused": {"count", "seconds", "periods": [{"from", "to", "seconds"}]}}  (1.7, optional)
 
 A channel is requested when a target needs it (a web origin: `web` and `network`; a desktop
 executable or identity: `desktop`; a TN3270 host: `mainframe`); a session says which in
@@ -219,7 +220,23 @@ def manifest(folder: Path, meta: dict) -> dict:
     local = local_exclusions(folder, meta)
     if local is not None:
         out["local_exclusions"] = local
+    paused = paused_summary(folder, meta)
+    if paused is not None:
+        out["paused"] = paused
     return out
+
+
+def paused_summary(folder: Path, meta: dict) -> dict | None:
+    """When the person paused the recording (contract 1.7, twinlab2_recorder.workstation.pause):
+    session.json `pauses`, or the journal's pause and resume rows of a recovered session. Not
+    a gap: nothing was meant to be recorded meanwhile."""
+    from twinlab2_recorder.workstation import pause
+    from twinlab2_recorder.workstation.timeline import read_jsonl
+
+    periods = meta.get("pauses")
+    if not isinstance(periods, list):
+        periods = pause.paused_periods(read_jsonl(Path(folder) / "journal.jsonl"))
+    return pause.summary(periods)
 
 
 def local_exclusions(folder: Path, meta: dict) -> dict | None:

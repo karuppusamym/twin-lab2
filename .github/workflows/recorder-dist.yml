@@ -1,0 +1,121 @@
+name: recorder-dist
+
+# The recorder as offices deploy it: the PyInstaller folder, its size, the per-machine MSI (WiX 5),
+# and the MSI installed and uninstalled silently on a throw-away Windows runner (never on a
+# developer's PC): files, policy values, the self-check, the web channel as an optional feature,
+# and that uninstall leaves no data unless KEEPDATA=1. Nothing is signed here: this repository has
+# no certificate. An office's own pipeline sets TWINLAB_SIGN_CERT or TWINLAB_SIGN_PFX
+# (recorder/installer/sign.py) and the same build signs the program, node.exe and the MSI.
+
+on:
+  push:
+    branches: [main]
+    paths: ["recorder/**", "contract/**", ".github/workflows/recorder-dist.yml"]
+  pull_request:
+    paths: ["recorder/**", "contract/**", "tests/recorder/test_deployment.py", ".github/workflows/recorder-dist.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  msi:
+    name: recorder (build, MSI, silent install and uninstall)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            contract/pyproject.toml
+            server/pyproject.toml
+            recorder/pyproject.toml
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Install the recorder's build tools and WiX 5
+        run: |
+          python -m pip install -e ./contract -e ./server -e "./recorder[build]" pytest
+          dotnet tool install --global wix --version 5.0.2
+          wix --version
+      - name: Build the recorder folder (size.json)
+        run: |
+          python recorder/build.py
+          Get-Content dist/size.json
+          $size = Get-Content dist/size.json | ConvertFrom-Json
+          if ($size.total_mb -gt 160) { throw "the recorder folder grew to $($size.total_mb) MB" }
+      - name: Build the MSI
+        run: python recorder/installer/build_msi.py --folder dist/TwinLabRecorder --out dist
+      - name: Inspect the MSI (tables, read-only) and an administrative extract
+        run: |
+          $msi = (Get-ChildItem dist/TwinLabRecorder-*-x64.msi).FullName
+          "TWINLAB_MSI=$msi" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          python recorder/installer/build_msi.py --inspect $msi
+          $env:TWINLAB_MSI = $msi
+          python -m pytest -q tests/recorder/test_deployment.py -k "built_msi or msi_source"
+          $admin = Join-Path $env:RUNNER_TEMP "admin"
+          $p = Start-Process msiexec -ArgumentList "/a `"$msi`" /qn TARGETDIR=`"$admin`" /l*v `"$env:RUNNER_TEMP\admin.log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\admin.log" -Tail 40; throw "msiexec /a exited $($p.ExitCode)" }
+          $exe = Get-ChildItem $admin -Recurse -Filter TwinLabRecorder.exe | Select-Object -First 1
+          & $exe.FullName selfcheck
+          if ($LASTEXITCODE -ne 0) { throw "selfcheck failed in the administrative extract" }
+      - name: Silent install with policy properties, then check it
+        run: |
+          $p = Start-Process msiexec -ArgumentList "/i `"$env:TWINLAB_MSI`" /qn /norestart PORTALURL=https://twinlab.example.test LOCKPORTAL=1 UPDATES=off PROXY=direct /l*v `"$env:RUNNER_TEMP\install.log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\install.log" -Tail 60; throw "install exited $($p.ExitCode)" }
+          $exe = "$env:ProgramFiles\TwinLab Recorder\TwinLabRecorder.exe"
+          if (-not (Test-Path $exe)) { throw "not installed to Program Files" }
+          if (-not (Test-Path "$env:ProgramFiles\TwinLab Recorder\_internal\playwright\driver\node.exe")) { throw "web channel missing" }
+          $key = Get-ItemProperty "HKLM:\SOFTWARE\Policies\TwinLab\Recorder"
+          if ($key.PortalUrl -ne "https://twinlab.example.test" -or $key.LockPortal -ne "1" -or $key.Updates -ne "off") { throw "policy values not written" }
+          & $exe selfcheck; if ($LASTEXITCODE -ne 0) { throw "selfcheck failed" }
+          $pol = & $exe policy | ConvertFrom-Json
+          if ($pol.policy.portal_url -ne "https://twinlab.example.test" -or -not $pol.policy.lock_portal -or $pol.policy.updates -ne "off" -or $pol.policy.proxy -ne "direct") { throw "the recorder does not read the policy" }
+          & $exe --portable-data version
+          if ($LASTEXITCODE -ne 0) { throw "version failed" }
+      - name: Uninstall leaves no data
+        run: |
+          $data = "$env:LOCALAPPDATA\TwinLabRecorder\recordings\s1"
+          New-Item -ItemType Directory -Force $data | Out-Null
+          Set-Content "$data\journal.jsonl" "{}"
+          New-Item -ItemType Directory -Force "$env:ProgramData\TwinLabRecorder" | Out-Null
+          Set-Content "$env:ProgramData\TwinLabRecorder\policy.json" "{}"
+          $p = Start-Process msiexec -ArgumentList "/x `"$env:TWINLAB_MSI`" /qn /norestart /l*v `"$env:RUNNER_TEMP\uninstall.log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\uninstall.log" -Tail 60; throw "uninstall exited $($p.ExitCode)" }
+          if (Test-Path "$env:ProgramFiles\TwinLab Recorder") {
+            Get-ChildItem "$env:ProgramFiles\TwinLab Recorder" -Recurse -Force | Select-Object -First 30 -ExpandProperty FullName | Write-Host
+            Get-Content "$env:RUNNER_TEMP\uninstall.log" | Select-String -Pattern "PurgeData|RemoveFiles|RemoveFolders|cleanup" | Select-Object -First 20 | Write-Host
+            throw "program folder left behind"
+          }
+          if (Test-Path "HKLM:\SOFTWARE\Policies\TwinLab\Recorder") { throw "policy values left behind" }
+          if (Test-Path "$env:LOCALAPPDATA\TwinLabRecorder") { throw "user data left behind" }
+          if (Test-Path "$env:ProgramData\TwinLabRecorder") { throw "ProgramData left behind" }
+      - name: Without the web channel, and KEEPDATA=1 keeps the data
+        run: |
+          $p = Start-Process msiexec -ArgumentList "/i `"$env:TWINLAB_MSI`" /qn /norestart ADDLOCAL=Core" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "install (Core) exited $($p.ExitCode)" }
+          $exe = "$env:ProgramFiles\TwinLab Recorder\TwinLabRecorder.exe"
+          if (Test-Path "$env:ProgramFiles\TwinLab Recorder\_internal\playwright\driver\node.exe") { throw "web channel installed with ADDLOCAL=Core" }
+          $check = & $exe selfcheck | ConvertFrom-Json
+          if ($check.web_channel -notmatch "not installed") { throw "selfcheck does not say the web channel is missing" }
+          New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\TwinLabRecorder" | Out-Null
+          Set-Content "$env:LOCALAPPDATA\TwinLabRecorder\settings.json" "{}"
+          $p = Start-Process msiexec -ArgumentList "/x `"$env:TWINLAB_MSI`" /qn /norestart KEEPDATA=1" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "uninstall (KEEPDATA) exited $($p.ExitCode)" }
+          if (-not (Test-Path "$env:LOCALAPPDATA\TwinLabRecorder\settings.json")) { throw "KEEPDATA=1 did not keep the data" }
+          if (Test-Path "$env:ProgramFiles\TwinLab Recorder") { throw "program folder left behind" }
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: twinlab-recorder-msi
+          path: |
+            dist/*.msi
+            dist/size.json
+          if-no-files-found: ignore
+          retention-days: 14

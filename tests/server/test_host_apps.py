@@ -119,6 +119,14 @@ class HostAppsTest(unittest.TestCase):
             keys = [r[0] for r in self.db.execute("SELECT key FROM app_identities WHERE app_id = ?", (app["id"],))]
             self.assertIn(key, keys, tag)
         self.assertEqual(len({a["name"].casefold() for a in apps.values()}), len(apps))
+        # Payroll's identity was added by the owner before anything was recorded (no facts):
+        # the recording's facts fill it in (the package's toolkit comes from them)
+        sent = next(a for a in doc["apps"] if a["key"] == EXPECTED["payroll"][0])
+        want = {k: sent[k] for k in ("exe", "company", "product", "version", "toolkit") if k in sent}
+        self.assertTrue(want)
+        stored = self.db.execute("SELECT facts FROM app_identities WHERE key = ?", (EXPECTED["payroll"][0],)).fetchone()
+        self.assertEqual(json.loads(stored[0]), want)
+        self.assertEqual(buildpack.toolkit_of(self.db, 1), sent.get("toolkit"))
 
         shas = set()
         for tag, app_id in by_tag.items():

@@ -184,8 +184,8 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(s.excluded_window(1), "WINWORD.EXE")
         self.assertEqual(s.excluded_window(3), "Personal")
         self.assertIsNone(s.excluded_window(4))
-        self.assertEqual(set(s.desktop_exclusions()), {"exclude_window", "exclusion_masks"})
-        self.assertEqual(self.session(exclude.Policy()).desktop_exclusions(), {})
+        self.assertEqual(set(s.desktop_exclusions()), {"exclude_window", "exclusion_masks", "paused"})
+        self.assertEqual(set(self.session(exclude.Policy()).desktop_exclusions()), {"paused"})
 
     def test_a_picture_is_masked_where_an_excluded_window_overlaps_it(self):
         s = self.session(policy("WINWORD.EXE"))

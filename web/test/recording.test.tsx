@@ -86,3 +86,22 @@ describe("a recording made on a PC with an exclude list", () => {
       + "Nothing about them was recorded, by design: this is not a gap in the recording.");
   });
 });
+
+describe("a recording the person paused", () => {
+  it("says when and for how long, and does not call it a gap", async () => {
+    const detail = example<{ status: { summary: string; completeness: Record<string, unknown> | null } }>("getRecording");
+    detail.status.completeness = {
+      ...(detail.status.completeness ?? { overall: "complete", channels: {}, network_evidence: "complete" }),
+      paused: { count: 2, seconds: 201, periods: [
+        { from: "2026-11-21T10:53:12Z", to: "2026-11-21T10:55:40Z", seconds: 148 },
+        { from: "2026-11-21T11:02:00Z", to: "2026-11-21T11:02:53Z", seconds: 53 },
+      ] },
+    };
+    server.use(on("getRecording", () => HttpResponse.json(detail as never)));
+    renderApp("/recordings/9f2c4e1a7b3d5f60", "owner");
+    const note = await screen.findByText(/Paused by the person recording:/);
+    expect(note.closest("p")?.textContent).toBe(
+      "Paused by the person recording: twice, for 3 min 21 s in all (10:53:12–10:55:40, 11:02:00–11:02:53). "
+      + "Nothing was recorded meanwhile, by their choice: this is not a gap in the recording.");
+  });
+});

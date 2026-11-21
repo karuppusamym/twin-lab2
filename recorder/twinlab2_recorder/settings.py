@@ -19,7 +19,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 APP = "TwinLabRecorder"
-VERSION = "0.2.0"  # 0.2.0: the first that declares a recorder contract version
+VERSION = "0.3.0"  # 0.2.0: the first that declares a recorder contract version; 0.3.0: MSI, policy, updates
 
 
 def program_dir() -> Path:
