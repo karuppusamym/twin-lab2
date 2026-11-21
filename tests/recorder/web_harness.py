@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -77,12 +78,19 @@ def headless_chromium(exe: str, size: str = "1000,700"):
     """A headless Chromium with a DevTools port; yields its CDP address."""
     port = free_port()
     profile = Path(tempfile.mkdtemp(prefix="tl2-chromium-"))
-    proc = subprocess.Popen([exe, "--headless=new", f"--remote-debugging-port={port}",
-                             f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
-                             f"--window-size={size}", "about:blank"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # fmt: skip
+    args = [exe, "--headless=new", f"--remote-debugging-port={port}", f"--user-data-dir={profile}",
+            "--no-first-run", "--no-default-browser-check", f"--window-size={size}"]
+    if sys.platform.startswith("linux"):  # CI runners do not allow Chromium's sandbox
+        args += ["--no-sandbox", "--disable-dev-shm-usage"]
+    log = (profile.parent / f"{profile.name}.log").open("wb")
+    proc = subprocess.Popen(args + ["about:blank"], stdout=subprocess.DEVNULL, stderr=log)
     try:
-        _wait_port(port)
+        try:
+            _wait_port(port)
+        except RuntimeError as exc:
+            log.flush()
+            said = Path(log.name).read_text(encoding="utf-8", errors="replace")[-1500:]
+            raise RuntimeError(f"{exc}; Chromium exited {proc.poll()}: {said}") from None
         yield f"http://127.0.0.1:{port}"
     finally:
         proc.terminate()
@@ -90,7 +98,9 @@ def headless_chromium(exe: str, size: str = "1000,700"):
             proc.wait(15)
         except subprocess.TimeoutExpired:
             proc.kill()
+        log.close()
         shutil.rmtree(profile, ignore_errors=True)
+        Path(log.name).unlink(missing_ok=True)
 
 
 def attach_in_thread(cdp: str, out: Path, **kwargs):
