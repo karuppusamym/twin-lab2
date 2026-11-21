@@ -9,7 +9,7 @@ any comparison runs.
 
 ```yaml
 version: 1
-viewport: desktop          # desktop (1280x720, what the recorder uses) | mobile (390x844)
+viewport: desktop          # desktop (1280x720) | mobile (390x844) | WIDTHxHEIGHT (e.g. 1258x570)
 clock: 2026-01-05T09:00:00Z   # optional: Date is fixed at this time where the page shows time
 fonts: [Georgia, Arial]    # optional: families to report as available or not
 states:
@@ -23,6 +23,10 @@ states:
     region: .todoapp       # optional: compare only this element's box
     # approved: approved/two-tasks.png  # instead of the recorder's picture: an approved image
 ```
+
+A recording made by attaching to a person's own browser keeps that browser's size: its pictures
+are, say, 1258x570. `viewport: 1258x570` (what `template` writes, from `recording.json` or the
+pictures' size, `recording_viewport`) replays at that size, so the pictures can be compared.
 
 The setup is pinned: Chromium (its version is reported), the viewport, device scale factor 1,
 reduced motion, animations and the caret frozen by the screenshot, zoom 1, the clock when one is
@@ -38,6 +42,7 @@ the viewport changed.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -75,7 +80,51 @@ class Spec:
     path: Path | None = None
 
     def size(self) -> dict:
-        return dict(VIEWPORTS.get(self.viewport, VIEWPORTS["desktop"]))
+        return viewport_size(self.viewport) or dict(VIEWPORTS["desktop"])
+
+
+_SIZE = re.compile(r"^\s*(\d{2,5})\s*[xX]\s*(\d{2,5})\s*$")
+
+
+def viewport_size(name) -> dict | None:
+    """{width, height} of a viewport name: desktop, mobile or WIDTHxHEIGHT; None otherwise."""
+    if isinstance(name, dict) and name.get("width") and name.get("height"):
+        return {"width": int(name["width"]), "height": int(name["height"])}
+    if not isinstance(name, str):
+        return None
+    if name in VIEWPORTS:
+        return dict(VIEWPORTS[name])
+    m = _SIZE.match(name)
+    if m and 0 < int(m.group(1)) <= 7680 and 0 < int(m.group(2)) <= 4320:
+        return {"width": int(m.group(1)), "height": int(m.group(2))}
+    return None
+
+
+def recording_viewport(rec_path: Path) -> str | None:
+    """The size the recording's pictures were taken at, as WIDTHxHEIGHT: the viewport
+    `recording.json` names (a recorder-launched browser), else the size of its pictures (an
+    attached browser keeps its own size, so `recording.json` says null). None without either."""
+    import json
+
+    try:
+        meta = json.loads((Path(rec_path) / "recording.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    size = viewport_size((meta or {}).get("viewport")) if isinstance(meta, dict) else None
+    if size:
+        return f"{size['width']}x{size['height']}"
+    got = _last_size(Path(rec_path), pictures_of(Path(rec_path)))
+    return f"{got[0]}x{got[1]}" if got else None
+
+
+def _last_size(rec_path: Path, pictures: dict[int, str]) -> tuple[int, int] | None:
+    """The size of the last picture that is there (a recorder that stopped may name one it did
+    not write)."""
+    for seq in sorted(pictures, reverse=True):
+        got = picture_size(Path(rec_path) / pictures[seq])
+        if got:
+            return got
+    return None
 
 
 class VisualResult(BaseModel):
@@ -124,8 +173,8 @@ def load(path: Path | None) -> Spec | None:
                 st.problem = f"after: {after!r} is neither a step number nor end"
         if st.mode not in ("exact", "threshold"):
             st.problem = f"mode {st.mode!r}: exact or threshold"
-        if (st.viewport or spec.viewport) not in VIEWPORTS:
-            st.problem = f"viewport {st.viewport or spec.viewport!r}: desktop or mobile"
+        if viewport_size(st.viewport or spec.viewport) is None:
+            st.problem = f"viewport {st.viewport or spec.viewport!r}: desktop, mobile or WIDTHxHEIGHT"
         if st.after == "end" and not st.approved:
             st.problem = st.problem or "a state at the end needs an approved image"
         if st.id in seen:
@@ -182,8 +231,48 @@ def unsettled_pictures(rec_path: Path) -> dict[int, str]:
 
     from twinlab2.replay.acceptance import _raw_steps
     from twinlab2_contract.evidence.recording import _ts
-    from twinlab2_contract.upstream import NotAbsorbed
-    raise NotAbsorbed("Twin Lab's recorder (next_action)")  # cut from the copy: docs/UPSTREAM.md
+
+    raw = [d for d in _raw_steps(rec_path) if isinstance(d.get("seq"), int)]
+    said = any("picture_settled" in d for d in raw)
+    try:
+        meta = json.loads((Path(rec_path) / "recording.json").read_text(encoding="utf-8"))
+        quiet = int((meta.get("settle") or {}).get("quiet_ms") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        quiet = 0
+    out = {}
+    for n, d in enumerate(raw):
+        if d.get("picture_settled") is False:
+            out[d["seq"]] = str(d.get("picture_note") or "the next action had begun before the "
+                                "picture was taken")  # fmt: skip
+            continue
+        if said or not quiet or not d.get("screenshot"):
+            continue
+        nxt = next_action(raw, n)
+        here, began = _ts(d.get("ts")), _ts(nxt.get("ts")) if nxt is not None else None
+        if here is None or began is None:
+            continue
+        gap = int((began - here).total_seconds() * 1000)
+        if 0 <= gap < quiet:
+            out[d["seq"]] = (f"step {nxt['seq']} ({nxt.get('action')}) began {gap} ms after this "
+                             f"step, within the recorder's quiet time ({quiet} ms): the picture "
+                             "was taken after it began and may show what it did")  # fmt: skip
+    return out
+
+
+def next_action(steps: list[dict], n: int) -> dict | None:
+    """The step after `steps[n]` in the same tab that can change what its page shows: not a
+    dialog (the page is held while one is open), a download or a tab step, and not a step that
+    `steps[n]` caused itself. (Twin Lab's `recorder.next_action`, 90bdd91: the server does not
+    import the recorder package.)"""
+    step = steps[n]
+    for s in steps[n + 1 :]:
+        action = str(s.get("action") or "")
+        if (s.get("tab") or "") != (step.get("tab") or "") or action.startswith("tab-"):
+            continue
+        if action in ("dialog", "download") or s.get("caused_by") == step.get("seq"):
+            continue
+        return s
+    return None
 
 
 def picture_size(path: Path) -> tuple[int, int] | None:
@@ -478,15 +567,22 @@ def _changed(n, o) -> bool:
     return set(n.classes) != set(o.classes) or domlib._text(n) != domlib._text(o)
 
 
-def template(rec) -> str:
-    pictures = pictures_of(rec.path)
+def template(rec, required: bool = True) -> str:
+    """The visual.yaml template of a recording: a state per recorder picture, at the size the
+    pictures were taken (`recording_viewport`). `required=False` (what Verify generates when
+    no visual.yaml is declared) makes every state reported only: it never decides the result.
+    A picture a step names that is not in the recording (the recorder dropped it) gets no state:
+    the header says which."""
+    named = pictures_of(rec.path)
+    pictures = {seq: rel for seq, rel in named.items() if (Path(rec.path) / rel).is_file()}
+    missing = sorted(set(named) - set(pictures))
     unsettled = unsettled_pictures(rec.path)
     moving = self_changing(rec) if pictures else []
     states = []
     for seq in sorted(pictures):
         # threshold by default: a replica drawn with another font or a sub-pixel shift fails
         # exact at once; a person who wants zero differing pixels sets mode: exact
-        st = {"id": f"after-step-{seq}", "after": seq, "required": True,
+        st = {"id": f"after-step-{seq}", "after": seq, "required": required,
               "mode": "threshold", "max_ratio": 0.02, "tolerance": 16,
               "exclude": [dict(m) for m in moving]}  # fmt: skip
         if seq in unsettled:
@@ -494,9 +590,7 @@ def template(rec) -> str:
             st["required"] = False
             st["note"] = f"optional: the recorder's picture is not settled ({unsettled[seq]})"
         states.append(st)
-    size = None
-    if pictures:
-        size = picture_size(rec.path / pictures[max(pictures)])
+    size = _last_size(rec.path, pictures) if pictures else None
     head = (
         "# Visual baselines: the recorder's pictures (or approved images), compared with the\n"
         "# replica's at the pinned setup. Set exclude: (regions by locator) and the mode before\n"
@@ -506,11 +600,14 @@ def template(rec) -> str:
         + (f"# The recorder's pictures are {size[0]}x{size[1]}.\n" if size else
            "# This recording has no pictures: every state needs an approved image.\n")
     )  # fmt: skip
+    if missing:
+        head += (f"# Not in the recording, so not compared: the pictures of step(s) "
+                 f"{', '.join(map(str, missing[:40]))}{' ...' if len(missing) > 40 else ''}.\n")
     if moving:
         head += ("# Excluded in every state by default: regions that change by themselves (delete an\n"
                  "# entry to compare it):\n"
                  + "".join(f"#   {m['css']}: {m['reason']}\n" for m in moving))  # fmt: skip
-    body = {"version": 1, "recording": rec.id, "viewport": "desktop", "fonts": [],
+    body = {"version": 1, "recording": rec.id, "viewport": recording_viewport(rec.path) or "desktop", "fonts": [],
             "states": states}  # fmt: skip
     return head + yaml.safe_dump(body, sort_keys=False, allow_unicode=True)
 

@@ -207,3 +207,23 @@ def freeze(client, app_id, summary="", override=FIXTURE_GAPS):
                            json={"approve": True, "sha256": draft.json()["sha256"], "summary": summary, **extra})
     assert response.status_code in (201, 409), response.text
     return client.get(f"/api/v1/apps/{app_id}/build-pack")
+
+
+def wait_verification(client, response, timeout=60):
+    """Verify is a job: the 202 answer's verification, once it ended. The portal works it in a
+    thread of the test process (the app's TWINLAB_RUNNER is a fake), joined here."""
+    import time
+
+    from twinlab2 import verifications
+
+    assert response.status_code == 202, (response.status_code, response.text[:1500])
+    item = response.json()
+    end = time.monotonic() + timeout
+    while item["state"] in ("queued", "running"):
+        assert time.monotonic() < end, item
+        time.sleep(0.05)
+        got = client.get(f"/api/v1/verifications/{item['id']}")
+        assert got.status_code == 200, got.text
+        item = got.json()
+    verifications.join_in_process()
+    return item

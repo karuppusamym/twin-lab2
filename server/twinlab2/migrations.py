@@ -429,6 +429,24 @@ AUTH_SESSIONS = [
 ]
 
 
+# -- 13: Verify as a job (verifications.py) ---------------------------------------------------------
+
+VERIFICATIONS = [
+    # one row per Verify request: its state, progress per scenario and, when it ended, the
+    # stored report (release_artifacts.id), what it covered (scope) and the per-dimension results
+    """CREATE TABLE IF NOT EXISTS verifications (
+        id {id}, app_id INTEGER NOT NULL REFERENCES apps(id), release_id INTEGER,
+        kind TEXT NOT NULL, commit_sha TEXT, request_key TEXT NOT NULL, state TEXT NOT NULL,
+        params TEXT NOT NULL DEFAULT '{}', progress TEXT NOT NULL DEFAULT '{}', tested INTEGER,
+        reasons TEXT NOT NULL DEFAULT '[]', report_id INTEGER, report_sha TEXT, scope TEXT, dimensions TEXT,
+        error TEXT, job_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, requested_by TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, started_at TEXT, finished_at TEXT
+    )""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS verifications_request_key ON verifications(request_key)",
+    "CREATE INDEX IF NOT EXISTS verifications_release ON verifications(release_id, id)",
+]
+
+
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
@@ -450,6 +468,7 @@ MIGRATIONS = [
     # was frozen over critical gaps: JSON text, '' for revisions frozen before this
     (12, "package completeness", [add_columns([("builder_packages", "completeness", "TEXT NOT NULL DEFAULT ''"),
                                                ("builder_packages", "known_gaps", "TEXT NOT NULL DEFAULT ''")])]),
+    (13, "async verification", VERIFICATIONS),
 ]
 
 

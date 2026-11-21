@@ -3,6 +3,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
 import { DeploymentBadge } from "../components/shared";
+import { VerificationProgress, isActive } from "../components/Verification";
 import { ActionButton, Badge, ErrorText, Notice, QueryView, useAction, useTitle } from "../components/ui";
 import { capitalize, short } from "../lib/format";
 import { useCan } from "../session";
@@ -81,11 +82,13 @@ function ReleaseView({ detail }: { detail: Schemas["ReleaseDetail"] }) {
           <>
             <span className="actions">
               <ActionButton secondary label="Check GitHub again" run={async () => data(await api.POST("/api/v1/releases/{release_id}/checks/refresh", path))} />
-              <ActionButton label="Verify this build" run={async () => data(await api.POST("/api/v1/releases/{release_id}/verify", path))} />
+              <ActionButton label="Verify this build" disabled={isActive(detail.verification)}
+                run={async () => data(await api.POST("/api/v1/releases/{release_id}/verify", path))} />
             </span>
-            <p className="muted">Verify this build reads the checks, runs the scenario replay, business-outcome and reset checks against the deployment that reports this commit, stores the report and makes the release Tested when everything holds.</p>
+            <p className="muted">Verify this build runs as a job: the worker reads the checks, replays the scenarios on each of the application's surfaces (web, mainframe, desktop), checks the business outcome and the reset against the deployment that reports this commit, stores the report and makes the release Tested when everything holds. Its progress shows here.</p>
           </>
         )}
+        {detail.verification && <VerificationProgress key={detail.verification.id} initial={detail.verification} />}
         {builder && checks.reports.map((rep) => (
           <p key={rep.id}><a href={`/api/v1/releases/${release.id}/reports/${rep.id}`}>Verification report {rep.created_at}</a> <code className="muted">{short(rep.sha256)}</code></p>
         ))}

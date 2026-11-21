@@ -296,28 +296,28 @@ def compare_sessions(app_id: int, session: list[int] | None = Query(None)):
 
 @routes.post(V1 + "/apps/{app_id:int}/builds/compare", require_role("owner"), response_model=m.Comparison)
 def run_comparison(app_id: int, data: m.CompareInput):
-    """The same acceptance checks (release verification) against each candidate's commit."""
-    from twinlab2.routes_portal import verify_session
+    """The same acceptance checks (release verification) against each candidate's commit: one
+    verification each, queued for the worker (`verifications` lists them; the results fill in
+    as they end)."""
+    from twinlab2.rest import Problem
+    from twinlab2.routes_portal import verification_view, verify_session
 
     item = get_app(app_id)
     rows = candidates(app_id, sorted(set(data.sessions)))
     if not rows:
         fail(400, "Choose sessions with a commit to compare.")
-    errors = []
+    errors, queued = [], []
     for build in rows:
         if not build["head_sha"]:
             errors.append({"build_id": build["id"], "detail": f"Session #{build['id']} has no commit yet."})
             continue
         try:
-            outcome = verify_session(db(), build)
-            with db():
-                audit.record(db(), g.user, "release.verify", "release", outcome["release_id"], app_id=app_id,
-                             commit=build["head_sha"], build_id=build["id"], tested=outcome.get("tested"),
-                             reasons=outcome.get("reasons"), report_sha=outcome.get("report_sha"))
-        except ValueError as exc:
+            queued.append(verification_view(verify_session(build)))
+        except Problem as exc:
             db().rollback()
-            errors.append({"build_id": build["id"], "detail": f"Session #{build['id']}: {exc}"})
-    return {"app": shapes.ref(item), "results": [comparison(get_build(b["id"])) for b in rows], "errors": errors}
+            errors.append({"build_id": build["id"], "detail": f"Session #{build['id']}: {exc.detail}"})
+    return {"app": shapes.ref(item), "results": [comparison(get_build(b["id"])) for b in rows], "errors": errors,
+            "verifications": queued}
 
 
 # --- Setup ---------------------------------------------------------------------------------------------

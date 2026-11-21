@@ -42,11 +42,11 @@ from twinlab2 import scenarios
 from twinlab2 import shapes
 from twinlab2 import uploads
 from twinlab2 import verification as commit_checks
+from twinlab2 import verifications
 from twinlab2.auth import require_role
 from twinlab2.portal import (ATTACHMENT_TYPES, RESULTS, VERSION_PATH, PublishConflict, acquire_publish,
                              brief_scenarios, deployment_label, deployment_reason, ordered, publish,
-                             record_test, recording_projection, release_publish, upload_view, verification,
-                             verify_commit, verify_release)
+                             record_test, recording_projection, release_publish, upload_view, verification)
 from twinlab2.rest import Problem, Routes, db, fail, form_token, g
 from twinlab2.routes_registry import app_automations, app_recordings, identities, recording_refs
 from twinlab2.views import config, ensure_reviewer, get_app, get_recording, record, reviewer_of_recording, visible
@@ -1169,8 +1169,14 @@ def release_detail(release_id, notice=None):
                  "results": json.loads(test["results"]), "scope": test_scope(test)} if test else None,
         "scenarios": brief_scenarios(json.loads(brief["manifest"])) if brief else [],
         "results": list(RESULTS), "checks": check_summary(release_id), "version_path": VERSION_PATH,
+        "verification": latest_verification(release_id),
         "notice": notice,
     }
+
+
+def latest_verification(release_id):
+    row = verifications.latest_for_release(db(), release_id)
+    return verification_view(row) if row is not None else None
 
 
 @routes.get(V1 + "/releases/{release_id:int}", require_role("viewer", resolve=release_app), response_model=m.ReleaseDetail)
@@ -1252,20 +1258,84 @@ def refresh_checks(release_id: int):
     return release_detail(release_id)
 
 
-def outcome_notice(outcome):
-    if outcome.get("tested"):
-        return "Verified: the release is Tested."
-    return "Not Tested: " + " ".join(outcome.get("reasons") or ["the checks did not pass."])
+def report_link(release_id, report_id):
+    return f"{V1}/releases/{release_id}/reports/{report_id}"
 
 
-@routes.post(V1 + "/releases/{release_id:int}/verify", require_role("owner", resolve=release_app), response_model=m.ReleaseDetail)
-def verify_this_release(release_id: int):
+def verification_view(row):
+    return verifications.view(row, report_link)
+
+
+def verification_app(kwargs):
+    row = verifications.get(db(), kwargs["verification_id"])
+    if row is None:
+        fail(404, "There is no such verification.")
+    return row["app_id"]
+
+
+def targets_of(data):
+    """The request's verify targets: a mainframe host (host:port) or a desktop executable
+    (relative to the Windows verifier's builds folder)."""
+    raw = data.get("targets") if isinstance(data.get("targets"), dict) else {}
+    out = {}
+    if raw.get("mainframe"):
+        value = str(raw["mainframe"]).strip()[:300]
+        if not re.fullmatch(r"(tn3270s?://)?[A-Za-z0-9.\-]{1,253}:\d{1,5}/?", value):
+            fail(400, "Name the mainframe target as host:port (tn3270://host:port).")
+        out["mainframe"] = value
+    if raw.get("desktop"):
+        value = str(raw["desktop"]).strip()[:300]
+        if ".." in value.replace("\\", "/").split("/") or re.match(r"^([A-Za-z]:|[\\/])", value):
+            fail(400, "Name the desktop executable relative to the verifier's builds folder.")
+        out["desktop"] = value
+    return out
+
+
+def queue_verification(kind, app_id, params, request_key, release_id=None, commit=None):
+    """The verification of a request (a new one queued, or the one the request repeats). The
+    demo portal and tests inject a fake Twin Lab runner (TWINLAB_RUNNER): their verifications
+    are worked in a thread of this process."""
+    row, created = verifications.request(db(), kind, app_id, params, g.user, request_key,
+                                         release_id=release_id, commit=commit)
+    if created:
+        record("release.verify", "release", release_id, app_id=app_id, commit=commit, verification=row["id"],
+               kind=kind)
+        db().commit()
+        runner = config().get("TWINLAB_RUNNER")
+        if runner is not None or config().get("VERIFY_IN_PROCESS"):
+            verifications.run_in_process(config()["DATABASE"], verify_context(runner))
+    return row
+
+
+def verify_context(runner=None):
+    from twinlab2 import builds
+
+    ctx = builds.Context()
+    ctx.verify_github, ctx.verify_runner = github(), runner
+    return ctx
+
+
+@routes.post(V1 + "/releases/{release_id:int}/verify", require_role("owner", resolve=release_app),
+             response_model=m.Verification, status_code=202)
+def verify_this_release(release_id: int, body: m.VerifyInput | None = None):
+    """Queue the verification of a release; 202 with the verification to follow
+    (GET /api/v1/verifications/{id}). A repeated request gets the same verification."""
     item = get_release(release_id)
-    with db():
-        outcome = verify_release(db(), release_id, github(), config().get("TWINLAB_RUNNER"), user=g.user)
-        record("release.verify", "release", release_id, app_id=item["app_id"], commit=item["commit_sha"],
-               tested=outcome.get("tested"), reasons=outcome.get("reasons"), report_sha=outcome.get("report_sha"))
-    return release_detail(release_id, notice=outcome_notice(outcome))
+    data = payload(body) if body is not None else {}
+    if item["state"] == "published":
+        fail(400, "A published release is final: package a new version to test again.")
+    row = queue_verification("release", item["app_id"], {"targets": targets_of(data)}, data.get("request_key"),
+                             release_id=release_id, commit=item["commit_sha"])
+    return verification_view(verifications.get(db(), row["id"]))
+
+
+@routes.get(V1 + "/verifications/{verification_id:int}", require_role("viewer", resolve=verification_app),
+            response_model=m.Verification)
+def get_verification(verification_id: int):
+    row = verifications.get(db(), verification_id)
+    if row is None:
+        fail(404, "There is no such verification.")
+    return verification_view(row)
 
 
 def session_of(app_id, build_id):
@@ -1278,32 +1348,40 @@ def session_of(app_id, build_id):
     return {"build_id": build_id, "revision": build["revision"]}
 
 
-def verify_session(connection, build):
-    with connection:
-        return verify_commit(connection, build["app_id"], build["repo"], build["head_sha"], github(),
-                             config().get("TWINLAB_RUNNER"), build["pr_number"], build["branch"] or "",
-                             user=g.user, build_id=build["id"], revision=build["revision"])
-
-
-@routes.post(V1 + "/apps/{app_id:int}/verify-commit", require_role("owner"), response_model=m.VerifyOutcome)
-def verify_build(app_id: int, body: m.VerifyCommitInput):
-    """The “Verify this build” hook: a build's repository, head commit and pull request."""
-    item = get_app(app_id)
-    data = payload(body)
-    sha = text(data, "sha", 64)
+def verify_commit_request(app_id, repo, sha, pr_number=None, ref="", build_id=None, revision=None, targets=None,
+                          request_key=None):
+    """Check a "Verify this build" request now (400 for what is missing) and queue it: the
+    worker packages the commit and verifies it."""
     try:
-        with db():
-            outcome = verify_commit(
-                db(), app_id, text(data, "repo", 200) or commit_checks.github_repo(item["git_url"]),
-                sha, github(), config().get("TWINLAB_RUNNER"), integer(data, "pr_number"),
-                text(data, "ref", 200), user=g.user, **session_of(app_id, integer(data, "build_id")))
-            record("release.verify", "release", outcome["release_id"], app_id=app_id,
-                   commit=sha, tested=outcome.get("tested"), reasons=outcome.get("reasons"),
-                   report_sha=outcome.get("report_sha"))
+        repo, sha, revision = portal.check_commit_request(db(), app_id, repo, sha, revision)
     except ValueError as error:
         fail(400, str(error))
-    return {"release_id": outcome["release_id"], "tested": bool(outcome["tested"]),
-            "reasons": list(outcome["reasons"]), "report_sha": outcome.get("report_sha")}
+    existing = db().execute("SELECT id FROM releases WHERE app_id = ? AND commit_sha = ? ORDER BY id DESC",
+                            (app_id, sha)).fetchone()
+    params = {"repo": repo, "sha": sha, "pr_number": pr_number, "ref": ref or "", "build_id": build_id,
+              "revision": revision, "targets": targets or {}}
+    return queue_verification("commit", app_id, params, request_key, commit=sha,
+                              release_id=existing["id"] if existing is not None and build_id is None else None)
+
+
+def verify_session(build, request_key=None):
+    return verify_commit_request(build["app_id"], build["repo"], build["head_sha"], build["pr_number"],
+                                 build["branch"] or "", build["id"], build["revision"], request_key=request_key)
+
+
+@routes.post(V1 + "/apps/{app_id:int}/verify-commit", require_role("owner"), response_model=m.Verification,
+             status_code=202)
+def verify_build(app_id: int, body: m.VerifyCommitInput):
+    """The “Verify this build” hook: a build's repository, head commit and pull request. 202
+    with the verification to follow; its release is known once the worker packaged the commit."""
+    item = get_app(app_id)
+    data = payload(body)
+    session = session_of(app_id, integer(data, "build_id"))
+    row = verify_commit_request(app_id, text(data, "repo", 200) or commit_checks.github_repo(item["git_url"]),
+                                text(data, "sha", 64), integer(data, "pr_number"), text(data, "ref", 200),
+                                session.get("build_id"), session.get("revision"), targets_of(data),
+                                data.get("request_key"))
+    return verification_view(verifications.get(db(), row["id"]))
 
 
 @routes.put(V1 + "/apps/{app_id:int}/verification-settings", require_role("owner"), response_model=m.AppSetup)

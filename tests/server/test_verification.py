@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from zipfile import ZipFile
 
@@ -18,6 +19,7 @@ from support import Client, freeze
 from twinlab2.portal import create_app
 from test_registry import eid
 from twinlab2 import verification
+from twinlab2 import verifications
 from support import connect, new_database
 
 REPO = "acme/billing"
@@ -137,7 +139,7 @@ class FakeTwinLab:
     def source(self):
         return {"commit": "430dfe538965b46ccbe824f8f2b4f415c5576483", "replay": "twinlab2.replay"}
 
-    def replay(self, recording_id, base_url):
+    def replay(self, recording_id, base_url, **plan):
         self.calls.append(("replay", recording_id, base_url))
         return self.replays.get(recording_id, self.default)
 
@@ -146,10 +148,14 @@ class FakeTwinLab:
         return self.reset_result
 
 
-class VerificationTest(unittest.TestCase):
+class VerificationWorld(unittest.TestCase):
+    """An application with a scenario and a frozen package, a fake GitHub, a deployment and a
+    fake Twin Lab runner; the helpers the verification tests use (test_verify_jobs too)."""
+
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
+        self.addCleanup(verifications.join_in_process)
         self.github = FakeGitHub()
         self.addCleanup(self.github.close)
         self.deployment = Deployment(SHA)
@@ -179,7 +185,19 @@ class VerificationTest(unittest.TestCase):
         return response.json() if "json" in response.headers.get("content-type", "") else response
 
     def post(self, path, **body):
+        if path.endswith("/verify"):  # Verify is a job: 202, then the verification to follow
+            return self.wait(self.ok(self.client.post(path, json=body or None), 202))
         return self.ok(self.client.post(path, json=body or None))
+
+    def wait(self, verification, timeout=60):
+        """The verification once it ended (the in-process worker runs it: TWINLAB_RUNNER)."""
+        end = time.monotonic() + timeout
+        while verification["state"] in ("queued", "running"):
+            self.assertLess(time.monotonic(), end, verification)
+            time.sleep(0.05)
+            verification = self.ok(self.client.get(f"/api/v1/verifications/{verification['id']}"))
+        verifications.join_in_process()
+        return verification
 
     def settings(self, **changes):
         values = {"required_checks": "", "target_platform": "web", "windows_check_pattern": "",
@@ -192,7 +210,8 @@ class VerificationTest(unittest.TestCase):
     def verify(self, sha=SHA, **body):
         if "pr_number" in body:
             body["pr_number"] = int(body["pr_number"])
-        outcome = self.ok(self.client.post("/api/v1/apps/1/verify-commit", json={"repo": REPO, "sha": sha, **body}))
+        outcome = self.wait(self.ok(self.client.post("/api/v1/apps/1/verify-commit",
+                                                     json={"repo": REPO, "sha": sha, **body}), 202))
         return outcome["release_id"]
 
     def detail(self, release_id):
@@ -213,6 +232,8 @@ class VerificationTest(unittest.TestCase):
         self.ok(self.client.put(f"/api/v1/releases/{release_id}/deployments",
                                 json={"environment": "Demo", "url": url or self.deployment.url}))
 
+
+class VerificationTest(VerificationWorld):
     def test_green_checks_make_the_built_commit_tested(self):
         self.green("build", "test")
         self.github.statuses[SHA] = [{"context": "ci/lint", "state": "success", "target_url": "https://ci.example/1",

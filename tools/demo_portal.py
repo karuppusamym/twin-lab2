@@ -75,6 +75,20 @@ def check(response, *codes):
     return response.json() if response.content and "json" in response.headers.get("content-type", "") else None
 
 
+def finished(client, verification, timeout=60):
+    """A verification once it ended."""
+    end = time.monotonic() + timeout
+    while verification["state"] in ("queued", "running"):
+        if time.monotonic() > end:
+            raise SystemExit(f"seeding failed: verification {verification['id']} did not end")
+        time.sleep(0.05)
+        verification = check(client.get(f"/api/v1/verifications/{verification['id']}"))
+    from twinlab2 import verifications
+
+    verifications.join_in_process()
+    return verification
+
+
 def seed(app, world, ctx, database):
     """Everything a demo needs, through the APIs, as the people who would do it."""
     from twinlab2 import builds, worker
@@ -297,12 +311,14 @@ def release(app, billing, build_id, deployment):
 
     alice = Client(app, remote="10.0.0.9")
     check(alice.post("/api/v1/session", json={"user": "alice", "password": USERS["alice"]}))
-    outcome = check(alice.post(f"/api/v1/apps/{billing}/verify-commit",
-                               json={"repo": REPO, "sha": SHA, "build_id": build_id}))
+    # Verify is a job: 202, then the verification (worked in this process: TWINLAB_RUNNER is a fake)
+    outcome = finished(alice, check(alice.post(f"/api/v1/apps/{billing}/verify-commit",
+                                               json={"repo": REPO, "sha": SHA, "build_id": build_id}), 202))
     release_id = outcome["release_id"]
     check(alice.put(f"/api/v1/releases/{release_id}/deployments", json={"environment": "Demo", "url": deployment.url}))
-    verified = check(alice.post(f"/api/v1/releases/{release_id}/verify"))
+    finished(alice, check(alice.post(f"/api/v1/releases/{release_id}/verify"), 202))
     detail = check(alice.get(f"/api/v1/releases/{release_id}"))
+    verified = detail
     check(alice.post(f"/api/v1/releases/{release_id}/tests", json={
         "commit": SHA, "platform": "Web", "launch": "python run.py", "reset_result": "pass",
         "results": {s["id"]: "pass" for s in detail["scenarios"]}}))

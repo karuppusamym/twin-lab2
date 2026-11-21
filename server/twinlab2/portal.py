@@ -167,30 +167,148 @@ def store_brief(connection, app_id, revision, contents, package):
                            (revision, b"", ref.id))
 
 
-def verify_commit(connection, app_id, repo, sha, github=None, runner=None, pr_number=None, ref="",
-                  base_url=None, user="verification", build_id=None, revision=None):
-    """“Verify this build”: a Packaged release of exactly `sha` (from GitHub), its checks, Twin
-    Lab's independent checks against a deployment reporting that commit, and the Tested
-    transition when all of it holds. The release stays Packaged otherwise. The verification
-    report is stored either way. Returns {release_id, tested, reasons, report, report_sha}."""
+def check_commit_request(connection, app_id, repo, sha, revision=None):
+    """What "Verify this build" checks before it queues anything: (repo, sha, revision of the
+    package the build answers). ValueError naming what is missing."""
     repo, sha = commit_checks.check_commit_args(repo, sha)
-    github = github or commit_checks.GitHub()
     if not scenarios.load(connection, app_id):
         raise ValueError("Add a business scenario before verifying a build.")
     # The package the build answers: the latest builder-approved (frozen) revision, the only
-    # artifact a builder was given.
-    # A build session answers the revision it was given (`revision`).
+    # artifact a builder was given. A build session answers the revision it was given.
     frozen = packages.by_revision(connection, app_id, revision) if revision else packages.latest(connection, app_id)
     if frozen is None:
         raise ValueError("Freeze a builder package before verifying a build: a build answers an approved package.")
-    revision = frozen["revision"]
-    release_id = commit_checks.package_commit(connection, app_id, repo, sha, github, revision, pr_number, ref,
-                                              build_id=build_id)
-    return verify_release(connection, release_id, github, runner, base_url, user)
+    return repo, sha, frozen["revision"]
 
 
-def verify_release(connection, release_id, github=None, runner=None, base_url=None, user="verification"):
-    """The verification of an existing release (see verify_commit)."""
+def package_for_verification(connection, app_id, repo, sha, github=None, pr_number=None, ref="", build_id=None,
+                             revision=None):
+    """The Packaged release of exactly `sha` (from GitHub) that a verification checks."""
+    repo, sha, revision = check_commit_request(connection, app_id, repo, sha, revision)
+    return commit_checks.package_commit(connection, app_id, repo, sha, github or commit_checks.GitHub(), revision,
+                                        pr_number, ref, build_id=build_id)
+
+
+def verify_commit(connection, app_id, repo, sha, github=None, runner=None, pr_number=None, ref="",
+                  base_url=None, user="verification", build_id=None, revision=None, targets=None):
+    """“Verify this build”, start to end in this process: a Packaged release of exactly `sha`
+    (from GitHub), its checks, Twin Lab's independent checks against a deployment reporting that
+    commit, and the Tested transition when all of it holds. The portal queues it as a job
+    instead (verifications.py); the worker runs these same steps. Returns {release_id, tested,
+    reasons, report, report_sha, report_id}."""
+    github = github or commit_checks.GitHub()
+    release_id = package_for_verification(connection, app_id, repo, sha, github, pr_number, ref, build_id, revision)
+    return verify_release(connection, release_id, github, runner, base_url, user, targets=targets)
+
+
+# A Windows desktop target platform says which CI check a release needs (verification.py), not
+# that every recording is a desktop one: such an application without identities replays every
+# surface its recordings have.
+PLATFORM_SURFACES = {"web": "web", "mainframe": "mainframe"}
+
+
+def app_surfaces(connection, app):
+    """The surfaces Verify replays for an application: those of its identities (web:,
+    mainframe:, desktop), else its target platform's (web, mainframe); None when neither says
+    (every surface a recording has)."""
+    found = sorted({row["surface"] for row in connection.execute(
+        "SELECT surface FROM app_identities WHERE app_id = ?", (app["id"],))} & set(independent.SURFACES))
+    if found:
+        return found
+    surface = PLATFORM_SURFACES.get(app["target_platform"] or "")
+    return [surface] if surface else None
+
+
+def _recordings_of(manifest, scenario_rows):
+    ids = []
+    for scenario in scenario_rows:
+        for rid in independent.scenario_recordings(manifest, scenario["id"]):
+            if rid not in ids:
+                ids.append(rid)
+    return ids
+
+
+def web_origins(connection, app_id, release_id, base_url, recording_ids):
+    """source (origin or origin + path prefix) -> replica, when the scenarios' recordings span
+    several applications on the web: each application's steps go to its own deployment (this
+    release's for this application, each other application's latest verified deployment).
+    ({}, notes) for a recording of this application alone (the replay rebases its first origin
+    to `base_url`, as before)."""
+    if not recording_ids:
+        return {}, []
+    marks = ", ".join("?" for _ in recording_ids)
+    rows = connection.execute(
+        f"SELECT DISTINCT app_id, key FROM recording_apps WHERE recording_id IN ({marks}) AND key LIKE 'web:%'",
+        recording_ids).fetchall()
+    others = {row["app_id"] for row in rows if row["app_id"] != app_id}
+    if not others:
+        return {}, []
+    origins, notes = {}, []
+    for row in rows:
+        source = row["key"][4:]
+        if row["app_id"] == app_id:
+            origins[source] = base_url
+            continue
+        found = connection.execute(
+            "SELECT deployments.url FROM deployments JOIN releases ON releases.id = deployments.release_id "
+            "WHERE releases.app_id = ? AND deployments.verification = 'verified' "
+            "ORDER BY CASE releases.state WHEN 'published' THEN 0 WHEN 'tested' THEN 1 ELSE 2 END, releases.id DESC "
+            "LIMIT 1", (row["app_id"],)).fetchone()
+        name = connection.execute("SELECT name FROM apps WHERE id = ?", (row["app_id"],)).fetchone()
+        label = name["name"] if name else f"application {row['app_id']}"
+        if found is None:
+            notes.append(f"{label} ({source}) has no verified deployment: its steps of the recording cannot "
+                         "be replayed")
+            continue
+        origins[source] = found["url"]
+        notes.append(f"{label} ({source}) is replayed against {found['url']}")
+    return origins, notes
+
+
+def mainframe_target(targets, base_url):
+    """host:port of the rebuilt TN3270 host: the request's, else the deployment URL's host and
+    port (a rebuilt host answers /.twinlab/version on its HTTP port beside the 3270 one, or on
+    the same port)."""
+    given = (targets or {}).get("mainframe")
+    if given:
+        return str(given)
+    if base_url:
+        parts = urlsplit(base_url)
+        if parts.hostname and parts.port:
+            return f"{parts.hostname}:{parts.port}"
+    return None
+
+
+def desktop_target(targets):
+    """(the built executable, the commit it reports, why not) for a desktop verification. The
+    executable is named relative to TWINLAB2_DESKTOP_BUILDS on the Windows verifier (nothing
+    outside it runs), and reports its commit in `.twinlab/version` beside it."""
+    given = (targets or {}).get("desktop")
+    root = os.environ.get("TWINLAB2_DESKTOP_BUILDS")
+    if not given:
+        return None, None, "Name the built executable to verify (targets.desktop, relative to the Windows verifier's builds folder)."
+    if not root:
+        return None, None, ("Desktop verification is not set up on this worker: it runs on a Windows verifier "
+                            "with TWINLAB2_DESKTOP_BUILDS (where the built executables are) and TWINLAB2_DESKTOP_VERIFY=1.")
+    base = Path(root).resolve()
+    exe = (base / str(given)).resolve()
+    if base not in exe.parents or exe.suffix.lower() != ".exe" or not exe.is_file():
+        return None, None, f"{given} is not an executable in the verifier's builds folder."
+    try:
+        commit = json.loads((exe.parent / VERSION_PATH).read_text(encoding="utf-8")).get("commit")
+    except (OSError, ValueError, AttributeError):
+        commit = None
+    commit = commit.lower() if isinstance(commit, str) and re.fullmatch(r"[0-9a-fA-F]{40}", commit) else None
+    return str(exe), commit, None
+
+
+def verify_release(connection, release_id, github=None, runner=None, base_url=None, user="verification",
+                   progress=None, targets=None):
+    """The verification of an existing release (see verify_commit). Commits as it goes: the
+    checks first, then (outside any transaction) the replays, then the results and the report,
+    so a replay of several minutes holds no lock. `progress` (verifications.Progress) is told
+    the stage and each scenario's state; `targets` names a mainframe host or a desktop
+    executable where the deployment URL does not."""
     release = connection.execute(
         "SELECT releases.*, briefs.manifest FROM releases JOIN briefs USING (revision) WHERE releases.id = ?",
         (release_id,)).fetchone()
@@ -198,36 +316,66 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
         raise LookupError("No such release.")
     app = connection.execute("SELECT * FROM apps WHERE id = ?", (release["app_id"],)).fetchone()
     sha, manifest = release["commit_sha"], json.loads(release["manifest"])
+    if progress is not None:
+        progress.stage("reading the commit's checks")
     gate = commit_checks.refresh(connection, release_id, github)
+    connection.commit()
     reasons = list(gate["reasons"])
+    surfaces = app_surfaces(connection, app)
+    scenario_rows = brief_scenarios(manifest)
+    deployment = {"url": None, "reported_commit": None, "commit": sha}
     if base_url is None:
-        row = connection.execute(
-            "SELECT url FROM deployments WHERE release_id = ? AND verification = 'verified' ORDER BY environment",
-            (release_id,)).fetchone()
-        base_url = row["url"] if row else None
-    twin = None
-    if not base_url:
+        base_url = verified_deployment(connection, release_id)
+    twin, plan, where = None, {"surfaces": surfaces}, base_url
+    if surfaces == ["desktop"] or (not base_url and (targets or {}).get("desktop")):
+        exe, observed, why = desktop_target(targets)
+        deployment.update(url=f"exe:{Path(exe).name}" if exe else None, reported_commit=observed)
+        where = deployment["url"]
+        if why:
+            reasons.append(why + " The scenario checks did not run.")
+        elif observed != sha:
+            reasons.append(f"{Path(exe).name} reports " + (f"commit {observed[:12]}" if observed else "no commit") +
+                           f" in {VERSION_PATH} beside it, not {sha[:12]}: the scenario checks need the built commit.")
+        else:
+            plan["desktop"] = exe
+    elif not base_url:
         reasons.append(f"No deployment reports this release's commit at /{VERSION_PATH}, "
                        "so the scenario checks did not run.")
     else:
         observed = deployed_commit(base_url)
+        deployment.update(url=base_url, reported_commit=observed)
         if observed != sha:
             reasons.append(f"{base_url} reports " + (f"commit {observed[:12]}" if observed else "no commit") +
                            f", not {sha[:12]}: the scenario checks need the built commit.")
         else:
-            twin = independent.run(runner or independent.TwinLabChecks(), brief_scenarios(manifest), manifest,
-                                   base_url, app["lab_url"] or "")
-            reasons += twin.get("problems") or []
+            origins, notes = web_origins(connection, app["id"], release_id, base_url,
+                                         _recordings_of(manifest, scenario_rows))
+            plan["web"] = {"origins": origins}
+            plan["notes"] = notes
+            target = mainframe_target(targets, base_url)
+            if target:
+                plan["mainframe"] = target
+            if targets and targets.get("desktop") and (surfaces is None or "desktop" in surfaces):
+                exe, _observed, why = desktop_target(targets)
+                if exe:
+                    plan["desktop"] = exe
+    if deployment["url"] is not None and deployment["reported_commit"] == sha:
+        twin = independent.run(runner or independent.TwinLabChecks(), scenario_rows, manifest,
+                               base_url, app["lab_url"] or "", progress=progress, plan=plan)
+        if plan.get("notes"):
+            twin["origin_notes"] = plan["notes"]
+        reasons += twin.get("problems") or []
+    if progress is not None:
+        progress.stage("recording the results")
     tested, scope = False, None
+    platform = commit_checks.PLATFORMS.get(app["target_platform"], app["target_platform"]) if app["target_platform"] else ""
     if twin is not None:  # what the replay covered, Tested or not
         role = tester_role(connection, release["app_id"], user)
-        platform = commit_checks.PLATFORMS[app["target_platform"]] if app["target_platform"] else ""
         scope = verified_scope(sha, platform, user, role, "twinlab",
                                [{"id": s["id"], "name": s["name"], "result": s["result"]} for s in twin["scenarios"]],
-                               base_url, registry.now())
+                               where, registry.now())
     if twin is not None and not twin.get("problems"):
         reset = twin["reset"] or {}
-        platform = commit_checks.PLATFORMS[app["target_platform"]] if app["target_platform"] else ""
         # Tested only when all of it holds: every scenario passed and the reset restored the
         # baseline. Otherwise the results are kept as evidence and the release stays Packaged.
         held = [f"Scenario “{s['name']}”: {s['result']}" + (f" ({s['why']})" if s.get("why") else "") + "."
@@ -237,12 +385,25 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
         try:
             scope = record_test(connection, release_id, sha, platform, app["launch"], reset.get("result"),
                                 reset.get("notes"), {s["id"]: s["result"] for s in twin["scenarios"]}, user,
-                                gate=gate, tested=not held, method="twinlab", deployment_url=base_url)
+                                gate=gate, tested=not held, method="twinlab", deployment_url=where)
             tested = not held
             reasons += [f"Not Tested: {item}" for item in held]
         except ValueError as error:
             if gate["ok"]:  # else its reasons are already listed
                 reasons.append(str(error))
+    dims = dict((twin or {}).get("dimensions") or independent.dimensions([], []))
+    reset = (twin or {}).get("reset") or {}
+    dep_ok = deployment["url"] is not None and deployment["reported_commit"] == sha
+    dims["deployment"] = {
+        "status": "pass" if dep_ok and gate["ok"] and reset.get("result") != "fail" else
+        "fail" if deployment["url"] is not None or not gate["ok"] else "not-checked",
+        "url": deployment["url"], "commit": sha, "reported_commit": deployment["reported_commit"],
+        "ci": "green" if gate["ok"] else "not green", "reset": reset.get("result"),
+        "reset_notes": reset.get("notes"), "origins": (twin or {}).get("origins") or {},
+        "scope": (f"the deployment at {deployment['url']} reports commit {sha[:12]}" if dep_ok else
+                  "no deployment of this commit was reached") + "; the commit's GitHub checks" +
+                 ("; the lab's reset to its baseline" if reset.get("result") else "; reset not checked"),
+    }
     report = {
         "format": "twinlab2-verification-report/1", "release_id": release_id, "app_id": release["app_id"],
         "version": release["version"], "repository": gate["repository"], "commit": sha,
@@ -250,12 +411,18 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
         "github": {"checks": commit_checks.stored_checks(connection, gate["repository"], sha)
                    if gate["repository"] else [],
                    "required": gate["required"], "windows": gate["windows"], "green": gate["ok"]},
-        "twinlab": twin, "tested": tested, "reasons": reasons,
+        "twinlab": twin, "tested": tested, "reasons": reasons, "surfaces": surfaces,
         # what "Tested" covers: scenarios run and passed, platform, role, commit, deployment URL
         "scope": scope,
+        # the results per dimension, each with what it covered
+        "dimensions": dims,
     }
     digest = commit_checks.put_report(connection, release_id, report)
-    return {"release_id": release_id, "tested": tested, "reasons": reasons, "report": report, "report_sha": digest}
+    row = connection.execute("SELECT id FROM release_artifacts WHERE release_id = ? AND kind = 'verification_report' "
+                             "AND sha256 = ? ORDER BY id DESC", (release_id, digest)).fetchone()
+    connection.commit()
+    return {"release_id": release_id, "tested": tested, "reasons": reasons, "report": report, "report_sha": digest,
+            "report_id": row["id"] if row else None}
 
 
 class PublishConflict(ValueError):

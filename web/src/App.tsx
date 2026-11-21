@@ -21,6 +21,7 @@ import { PackagePreviewPage } from "./pages/PackagePreviewPage";
 import { RecordingPage } from "./pages/RecordingPage";
 import { RecordingsPage } from "./pages/RecordingsPage";
 import { ReleasePage } from "./pages/ReleasePage";
+import { VerificationPage } from "./pages/VerificationPage";
 import { SetupPage } from "./pages/SetupPage";
 import { UsersPage } from "./pages/UsersPage";
 import { SessionProvider, useSessionQuery } from "./session";
@@ -50,6 +51,7 @@ export function AppRoutes() {
       <Route path="/apps/:appId/sessions/compare" element={<ComparePage />} />
       <Route path="/builds/:buildId" element={<BuildSessionPage />} />
       <Route path="/releases/:releaseId" element={<ReleasePage />} />
+      <Route path="/verifications/:verificationId" element={<VerificationPage />} />
       <Route path="/recordings" element={<RecordingsPage />} />
       <Route path="/recordings/:recordingId" element={<RecordingPage />} />
       <Route path="/sessions" element={<CapturePage />} />

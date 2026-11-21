@@ -2,7 +2,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import { HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
-import { on } from "./contract";
+import { example, on } from "./contract";
 import { renderApp, type Who } from "./render";
 import { server } from "./setup";
 
@@ -18,6 +18,7 @@ const PAGES: [path: string, heading: RegExp, who?: Who][] = [
   ["/apps/1/sessions/compare", /Compare results: Billing Desk/],
   ["/builds/7", /Build session #7: Billing Desk, Claude/],
   ["/releases/5", /Billing Desk 1.0.0/],
+  ["/verifications/12", /Verification #12/],
   ["/recordings", /^Recordings$/],
   ["/recordings/9f2c4e1a7b3d5f60", /Order to invoice/],
   ["/sessions", /^Request a recording$/],
@@ -43,6 +44,24 @@ describe("every page", () => {
     expect(await screen.findByTestId("verified-scope")).toHaveTextContent(/2 of 2 scenarios passed .* \(owner\), against https:\/\/billing-demo/);
     expect(screen.getByRole("link", { name: "OpenShift manifest (release)" })).toHaveAttribute("href", "/api/v1/releases/5/openshift.yaml");
   });
+
+  it("shows a running verification's progress on the release page, then its result per dimension", async () => {
+    const running = example("getVerification", "running");
+    const passed = example("getVerification", "passed");
+    let polls = 0;
+    server.use(
+      on("getRelease", () => HttpResponse.json({ ...example<Record<string, unknown>>("getRelease"), verification: running } as never)),
+      on("getVerification", () => HttpResponse.json((++polls > 1 ? passed : running) as never)),
+    );
+    renderApp("/releases/5", "owner");
+    const panel = await screen.findByTestId("verification");
+    expect(panel).toHaveTextContent(/Running.*replaying the scenarios.*1 of 2 scenarios done/);
+    expect(screen.getByRole("button", { name: "Verify this build" })).toBeDisabled();
+    await waitFor(() => expect(screen.getByTestId("verification")).toHaveTextContent(/Passed: Tested/), { timeout: 8000 });
+    const dims = screen.getByRole("table", { name: "Verification by dimension" });
+    expect(dims).toHaveTextContent(/Behavioural.*pass.*Structural.*title line and input fields.*Visual.*not-checked.*Deployment/);
+    expect(screen.getByRole("link", { name: "Verification report" })).toHaveAttribute("href", "/api/v1/releases/5/reports/31");
+  }, 15000);
 
   it("shows the portal's auth mode on the Users page", async () => {
     renderApp("/admin/users", "admin");

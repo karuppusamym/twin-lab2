@@ -27,7 +27,7 @@ from zipfile import ZipFile
 import contract
 import fake_provider
 from fakes import FakeGitHub
-from support import Client, connect, new_database, preview
+from support import Client, connect, new_database, preview, wait_verification
 from test_registry import DESK, WEB, references
 from test_verification import REPO, SHA, Deployment, FakeGitHub as ChecksGitHub, FakeTwinLab, run
 from twinlab2 import auth, builds, rest, verification, worker
@@ -140,12 +140,14 @@ class ApiTest(unittest.TestCase):
             "required_checks": "", "target_platform": "web", "windows_check_pattern": "", "lab_url": "http://lab.test/",
             "launch": "python run.py"}))
         cls.checks_github.runs[SHA] = [run("build", run_id=1), run("test", run_id=2)]
-        outcome = ok(alice.post(f"/api/v1/apps/{cls.billing}/verify-commit", json={"repo": REPO, "sha": SHA}))
+        outcome = wait_verification(alice, alice.post(f"/api/v1/apps/{cls.billing}/verify-commit",
+                                                      json={"repo": REPO, "sha": SHA}))
         cls.release = outcome["release_id"]
         ok(alice.put(f"/api/v1/releases/{cls.release}/deployments",
                      json={"environment": "Demo", "url": cls.deployment.url}))
-        verified = ok(alice.post(f"/api/v1/releases/{cls.release}/verify"))
-        assert verified["release"]["state"] == "tested", verified
+        verified = wait_verification(alice, alice.post(f"/api/v1/releases/{cls.release}/verify"))
+        assert verified["state"] == "passed", verified
+        assert ok(alice.get(f"/api/v1/releases/{cls.release}"))["release"]["state"] == "tested"
 
     # -- every operation ------------------------------------------------------------------------
 

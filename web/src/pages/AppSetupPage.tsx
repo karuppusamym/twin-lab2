@@ -202,7 +202,7 @@ function VerifyCommit({ appId, repo: initialRepo }: { appId: number; repo: strin
   const verify = useAction(async () => data(await api.POST("/api/v1/apps/{app_id}/verify-commit", {
     params: { path: { app_id: appId } },
     body: { repo: repo.trim(), sha: sha.trim().toLowerCase(), pr_number: pr ? Number(pr) : undefined },
-  })), (outcome) => navigate(`/releases/${outcome.release_id}#verification`));
+  })), (verification) => navigate(verification.release_id ? `/releases/${verification.release_id}#verification` : `/verifications/${verification.id}`));
   return (
     <form aria-label="Verify a commit" onSubmit={(e) => { e.preventDefault(); verify.mutate(undefined); }}>
       <label>Repository <input required placeholder="owner/name" value={repo} onChange={(e) => setRepo(e.target.value)} /></label>
