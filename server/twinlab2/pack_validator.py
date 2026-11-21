@@ -61,6 +61,10 @@ PAGES = {
 }
 
 
+# actions after which there is no window to hold a screen state
+GONE = {"window_close"}
+
+
 @dataclass(frozen=True)
 class Item:
     id: str
@@ -478,8 +482,9 @@ class _Checker:
     def check_screens_states(self):
         if not self.screens:
             return "n/a"
+        # A window that closed has no state after the step: the replay checks that it is gone.
         return [f"Event {e.get('recording_id')} #{e.get('seq')} ({e.get('action')}) resolves to no screen state."
-                for e in self.events if e.get("event_id") not in self.state_of]
+                for e in self.events if e.get("event_id") not in self.state_of and e.get("action") not in GONE]
 
     def check_screens_targets(self):
         out = []

@@ -1,4 +1,4 @@
-# Recorder contract 1.5.0
+# Recorder contract 1.6.0
 
 What a workstation recorder sends to the TwinLab2 portal, and how the two sides agree on a version. The
 machine-checkable form is [`contract/twinlab2_contract/recorder-contract.schema.json`](contract/twinlab2_contract/recorder-contract.schema.json)
@@ -224,7 +224,7 @@ desktop value-free control trees, 3270 field tables), see
 | `surface` | `web`, `desktop` or `mainframe` |
 | `states[]` | the distinct states the screen was seen in (at most 20), each with `id` (its content hash, which the portal computes again), the `events` after which the screen was in it, and `withheld` (how many identifiers, classes or labels were left out because they could be data) |
 | `states[].controls[]` | in page order: `kind` (web tag, or `checkbox`/`radio`/`link`; desktop ControlType; 3270 `field`), `tag`, `type`, `id`, `name`, `classes` (each an identifier: no digit, no `@`, at most 40 characters), `label` (a button's caption, an input's `<label>`, a desktop Name the toolkit marks as structure, a 3270 field's label: at most three words, no digit), `visible`, `enabled`, `readonly`, `required`, `checked`, `selected`, `value` (`empty` or `filled`, never the value), `options` (a count) and `option_texts` (only for a code list: at most 30 entries of at most 40 characters, no digit), `repeat` (a control repeated once per table row: the row-count shape), and for 3270 `row`, `col`, `len`, `numeric`, `hidden` (non-display), `intensified` |
-| `states[].regions[]` | other elements with an identifier (containers, messages, pagers; a form by its `name`): `kind`, `id` or `name`, `classes`, `visible` |
+| `states[].regions[]` | other elements with an identifier (containers, messages, pagers; a form by its `name`): `kind`, `id` or `name`, `classes`, `visible`, `in` (1.6: the region it is inside) |
 | `states[].grids[]` | tables, lists and data grids: `kind`, `id`, `columns` (header labels, at most four words, no digit; blank when withheld), `rows` as a shape: `0`, `1`, `few` (2 to 9), `many` (10 or more), `visible` |
 | `transitions[]` | the step that changed one state into another: `from_state`, `to` (a screen), `to_state`, the step's `action`, `control`, `label` and `key` as in the flow, `count` |
 
@@ -254,6 +254,29 @@ portal still accepts 1.0.x to 1.3.x. What changed, from the blind-rebuild proof'
 Privacy of the route rule: a lower-case single word after another route word that is not something
 the person typed is taken as the route's own name. A username slug in that place (`/projects/jdoe`,
 where `projects` is not in `PEOPLE`) would be kept; that is the risk accepted, and the list can grow.
+
+#### Contract 1.6: where a desktop control sits
+
+1.6.0 is a minor version with no new requirement; the portal still accepts 1.0.x to 1.5.x.
+
+A screen state's control, region or grid may carry `in`: the identifier of the nearest region it is
+inside. Desktop regions are the containers with an AutomationId: Pane, Group, Window, Tab, ToolBar,
+StatusBar and, from 1.6, `Custom` (a modern app's navigation view, such as Windows Calculator's
+`NavView`), `MenuBar` and `TitleBar`. The replay compares each control's chain of named ancestors,
+so a rebuild has to nest it the same way: without `in`, the package listed the containers but not
+what each held, and every control of the live Calculator recording differed in its parent path.
+
+```json
+{"regions": [{"kind": "Custom", "id": "NavView"}, {"kind": "Group", "id": "NumberPad", "in": "NavView"}],
+ "controls": [{"kind": "Button", "id": "num1Button", "label": "One", "in": "NumberPad"}]}
+```
+
+A navigation item (a ListItem outside any grid or list, with a plain-word identifier: `Standard`,
+`Scientific`) is a control of kind `ListItem`, not a record row. A tab (`TabItem` with an identifier)
+holds its page: what is on it says `"in": "<the tab's id>"`. A container named only by its caption
+(a Group, Pane or Custom whose name is structure, at most four plain words: Calculator's
+`Scientific functions`) is a region with `label` instead of `id`, and what it holds says
+`"in": "<that label>"`; so `in` is an identifier or such a label.
 
 #### Contract 1.5: applications excluded on this PC
 

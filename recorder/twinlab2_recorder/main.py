@@ -456,16 +456,41 @@ def choose_from_list(root, title: str, prompt: str, items: list[str]) -> list[st
     return got["items"]
 
 
+def dpi_aware() -> float:
+    """Declare this process DPI-aware before its first window, so Windows does not stretch the
+    window as a bitmap (blurred text, and PrintWindow shows it in a corner of a larger frame at
+    150 %). -> the scale of the primary display (1.0 at 96 dpi, 1.5 at 144 dpi). Only the
+    window's process: the collectors run in processes of their own."""
+    if sys.platform != "win32":
+        return 1.0
+    import ctypes
+
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per monitor
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()  # Windows 7: the system DPI
+        except (AttributeError, OSError):
+            return 1.0
+    try:
+        dpi = int(ctypes.windll.user32.GetDpiForSystem())
+    except (AttributeError, OSError, ValueError):
+        return 1.0
+    return max(1.0, dpi / 96.0)
+
+
 def gui(cfg: st.Settings, ca_bundle: str | None) -> None:
     import tkinter as tk
 
     _hide_own_console()
+    scale = dpi_aware()
     root = tk.Tk()
-    build_window(cfg, ca_bundle, root)
+    root.tk.call("tk", "scaling", 96.0 * scale / 72.0)  # points to pixels at this DPI
+    build_window(cfg, ca_bundle, root, scale=scale)
     root.mainloop()
 
 
-def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespace:  # noqa: C901 - one window
+def build_window(cfg: st.Settings, ca_bundle: str | None, root, scale: float = 1.0) -> SimpleNamespace:  # noqa: C901 - one window
     """The recorder's window in `root`. Nothing here waits: portal calls, sending, uploads and
     finishing a recording run as background jobs (twinlab2_recorder.uithread), whose results come
     back through the dispatcher drained on this thread. Returns the window's parts (tests)."""
@@ -475,8 +500,8 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
     mark_ui_thread()
     dispatcher = Dispatcher()
     root.title("TwinLab Recorder")
-    root.geometry("760x620")
-    root.minsize(600, 460)
+    root.geometry(f"{round(760 * scale)}x{round(620 * scale)}")
+    root.minsize(round(600 * scale), round(460 * scale))
     state = {"proc": None, "session": None, "deny": [], "apps": [], "polling": False, "closing": False,
              "recording": None, "watcher": None, "details": False, "box": None, "stop_asked": None}  # fmt: skip
     offered_model = ui.OfferedList()

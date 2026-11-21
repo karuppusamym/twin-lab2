@@ -524,3 +524,15 @@ class FreezeOverrideRouteTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WindowCloseTest(unittest.TestCase):
+    def test_a_closed_window_needs_no_screen_state(self):
+        data, files = PACKS["desktop"]()
+        gone = data["screens"][1]["states"][0]["events"].pop()
+        for s in data["scenarios"]:
+            for e in s.get("events") or []:
+                if e.get("event_id") == gone:
+                    e["action"] = "window_close"
+        result = pack_validator.validate(data, files)
+        self.assertNotIn("screens.states", [g["item"] for g in result["gaps"]])
