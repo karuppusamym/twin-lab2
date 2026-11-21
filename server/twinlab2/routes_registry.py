@@ -31,6 +31,7 @@ from twinlab2.registry import (CODE_ALPHABET, CODE_LENGTH, CODE_MINUTES, FAILURE
 from twinlab2.rest import Routes, db, fail, g, json_body
 from twinlab2.views import ensure_reviewer, get_app, get_recording, record, reviewer_of_recording
 from twinlab2_contract import recorder_contract as contract
+from twinlab2_contract import structure
 from twinlab2 import completeness as compl
 
 V1 = "/api/v1"
@@ -357,31 +358,45 @@ def app_for(item):
     return app_id, created
 
 
-def assign_steps(item, steps):
-    """The recorded application's steps per catalog application, as (app_id, identity key,
-    steps, created). A web origin's steps go by the path of their screen to the identity with
-    the longest matching path prefix; steps no identity claims go to `app_for(item)`."""
-    groups, rest = {}, []
+def _claim(item, screen):
+    """The (identity key, app_id) a web origin's step or screen on `screen` goes to: the identity
+    with the longest path prefix it is under, else None (the recorded application's own)."""
+    url = normalise_key(screen or "") if str(screen or "").startswith("http") else None
+    url = url if url and web_parts(url)[0] == web_parts(item["key"])[0] else item["key"]
+    return resolve_web(url)
+
+
+def assign_steps(item, steps, screens=()):
+    """The recorded application's steps and screens per catalog application, as (app_id,
+    identity key, steps, created, screens). A web origin's steps go by the path of their screen
+    to the identity with the longest matching path prefix, and its screens (contract 1.3) by the
+    same rule, so a screen lands on the application its steps land on; what no identity claims
+    goes to `app_for(item)`."""
+    groups, rest, shapes_of, rest_screens = {}, [], {}, []
     if item["key"].startswith("web:"):
-        origin = web_parts(item["key"])[0]
         for step in steps:
-            url = normalise_key(step.get("screen") or "") if str(step.get("screen", "")).startswith("http") else None
-            url = url if url and web_parts(url)[0] == origin else item["key"]
-            found = resolve_web(url)
+            found = _claim(item, step.get("screen"))
             if found is None:
                 rest.append(step)
             else:
                 groups.setdefault(found, []).append(step)
+        for screen in screens:
+            found = _claim(item, screen.get("screen"))
+            if found is None:
+                rest_screens.append(screen)
+            else:
+                groups.setdefault(found, [])
+                shapes_of.setdefault(found, []).append(screen)
         if not steps:
             found = resolve_web(item["key"])
             if found is not None:
-                groups[found] = []
+                groups.setdefault(found, [])
     else:
-        rest = list(steps)
-    out = [(app_id, key, group, False) for (key, app_id), group in groups.items()]
-    if rest or not groups:
+        rest, rest_screens = list(steps), list(screens)
+    out = [(app_id, key, group, False, shapes_of.get((key, app_id), [])) for (key, app_id), group in groups.items()]
+    if rest or rest_screens or not groups:
         app_id, created = app_for(item)
-        out.append((app_id, item["key"], rest, created))
+        out.append((app_id, item["key"], rest, created, rest_screens))
     return out
 
 
@@ -478,19 +493,22 @@ def agent_references(request: Request, doc=Depends(json_body)):
         received = {}  # app_id -> event ids in this send
         denied = {r[0] for r in db().execute("SELECT id FROM apps WHERE status = 'not_replicated'")}
         for item in refs["apps"]:
-            for app_id, key, steps, created in assign_steps(item, refs["flows"].get(item["key"], [])):
+            for app_id, key, steps, created, screens in assign_steps(item, refs["flows"].get(item["key"], []),
+                                                                     (refs.get("screens") or {}).get(item["key"], [])):
                 if app_id in denied and not created:
-                    # marked not replicated: no flow or evidence link for it (an older recorder, or a
-                    # path application on a shared host, may still send them)
+                    # marked not replicated: no flow, screens or evidence link for it (an older
+                    # recorder, or a path application on a shared host, may still send them)
                     continue
-                old = db().execute("SELECT flow FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",
+                old = db().execute("SELECT flow, screens FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",
                                    (recording_id, app_id, key)).fetchone()  # fmt: skip
                 if old is not None:  # two references resolved to one identity
                     steps = json.loads(old["flow"]) + steps
-                db().execute("""INSERT INTO recording_apps(recording_id, app_id, key, level, flow) VALUES (?, ?, ?, ?, ?)
+                    screens = structure.merge(json.loads(old["screens"]), screens)
+                db().execute("""INSERT INTO recording_apps(recording_id, app_id, key, level, flow, screens)
+                                VALUES (?, ?, ?, ?, ?, ?)
                                 ON CONFLICT(recording_id, app_id, key) DO UPDATE SET level = excluded.level,
-                                flow = excluded.flow""",
-                             (recording_id, app_id, key, item["level"], json.dumps(steps)))  # fmt: skip
+                                flow = excluded.flow, screens = excluded.screens""",
+                             (recording_id, app_id, key, item["level"], json.dumps(steps), json.dumps(screens)))  # fmt: skip
                 received.setdefault(app_id, set()).update(st["event_id"] for st in steps)
                 if automation_id is not None:
                     db().execute("INSERT INTO automation_apps(automation_id, app_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
@@ -571,7 +589,7 @@ def recording_refs(recording_id):
             "status": status,
             "ranges": compl.ranges(status["completeness"], payload["session"].get("started"),
                                    payload["session"].get("ended")),
-            "apps": [dict(a, steps=json.loads(a["flow"])) for a in apps]}  # fmt: skip
+            "apps": [_without_screens(dict(a, steps=json.loads(a["flow"]))) for a in apps]}  # fmt: skip
 
 
 def app_recordings(app_id):
@@ -583,7 +601,13 @@ def app_recordings(app_id):
         LEFT JOIN machines ON machines.id = session_refs.machine_id
         WHERE recording_apps.app_id = ? ORDER BY session_refs.received_at DESC NULLS LAST
     """, (app_id,)).fetchall()
-    return [dict(r, steps=json.loads(r["flow"])) for r in rows]
+    return [_without_screens(dict(r, steps=json.loads(r["flow"]))) for r in rows]
+
+
+def _without_screens(row):
+    """A recording_apps row for the pages: its screen structure goes to the build pack, not here."""
+    row.pop("screens", None)
+    return row
 
 
 def app_automations(app_id):
@@ -800,7 +824,7 @@ def merge_app(app_id: int, data: m.MergeInput):
     with db():
         db().execute("UPDATE app_identities SET app_id = ? WHERE app_id = ?", (into, app_id))
         for row in db().execute("SELECT * FROM recording_apps WHERE app_id = ?", (app_id,)).fetchall():
-            keep = db().execute("SELECT flow FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",
+            keep = db().execute("SELECT flow, screens FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",
                                 (row["recording_id"], into, row["key"])).fetchone()  # fmt: skip
             if keep is None:
                 db().execute("UPDATE recording_apps SET app_id = ? WHERE recording_id = ? AND app_id = ? AND key = ?",
@@ -809,8 +833,9 @@ def merge_app(app_id: int, data: m.MergeInput):
             steps = {st["event_id"]: st for st in json.loads(row["flow"])}
             steps.update({st["event_id"]: st for st in json.loads(keep["flow"])})
             merged = sorted(steps.values(), key=lambda st: (st.get("seq", st["n"]), st["event_id"]))
-            db().execute("UPDATE recording_apps SET flow = ? WHERE recording_id = ? AND app_id = ? AND key = ?",
-                         (json.dumps(merged), row["recording_id"], into, row["key"]))
+            screens = structure.merge(json.loads(keep["screens"]), json.loads(row["screens"]))
+            db().execute("UPDATE recording_apps SET flow = ?, screens = ? WHERE recording_id = ? AND app_id = ? AND key = ?",
+                         (json.dumps(merged), json.dumps(screens), row["recording_id"], into, row["key"]))
             db().execute("DELETE FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",
                          (row["recording_id"], app_id, row["key"]))  # fmt: skip
         for link in plan["combined"]:

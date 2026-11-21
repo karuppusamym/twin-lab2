@@ -78,6 +78,11 @@ also passed the reset check ("reset restored the baseline (1 table(s))"), as Ver
   `flow.route_template` keeps the longest target prefix a URL is under (`prefix_segments`), and
   `timeline.outbox` passes each origin's prefixes to `label_step`, lists `path` in
   `session.targets` and declares `1.2.0`. Twin Lab's outbox still declares 1.1.0.
+- Contract 1.3 (screen structure): `workstation/structure.py` is new (TwinLab2's own, not from
+  Twin Lab): it reads the files the copied collectors already write (web `dom/`, desktop
+  `trees/`, 3270 `screens/`). `timeline.build` adds its `screens` block and the outbox declares
+  `1.3.0`; `timeline.outbox` keeps each step's flow label on its row for it. The collectors
+  themselves are unchanged.
 
 ## Taking a later Twin Lab change
 

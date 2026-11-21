@@ -391,6 +391,14 @@ BUILD_SESSIONS = [
 ]
 
 
+# -- 8: screen structure (recorder contract 1.3) -------------------------------------------------------
+
+SCREEN_STRUCTURE = [
+    # per recording and application, the screens of that application only (twinlab2_contract.structure)
+    add_columns([("recording_apps", "screens", "TEXT NOT NULL DEFAULT '[]'")]),
+]
+
+
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
@@ -402,6 +410,7 @@ MIGRATIONS = [
     (5, "artifacts and uploads", ARTIFACTS),
     (6, "roles and audit", ROLES_AUDIT),
     (7, "build sessions", BUILD_SESSIONS),
+    (8, "screen structure", SCREEN_STRUCTURE),
 ]
 
 

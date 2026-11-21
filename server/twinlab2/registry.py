@@ -28,6 +28,8 @@ import re
 from urllib.parse import urlsplit
 
 from twinlab2 import completeness as compl
+from twinlab2_contract import recorder_contract as contract
+from twinlab2_contract import structure
 from twinlab2 import event_ids
 from twinlab2_contract import recorder_contract as contract
 
@@ -131,6 +133,9 @@ def _text(value, limit, required=False):
     return value
 
 
+STRUCTURE_FROM = (1, 3, 0)  # the first contract version with a screens block
+
+
 def clean_references(doc):
     """The references in the fixed schema, or ValueError. Anything not in the schema is dropped."""
     if not isinstance(doc, dict) or doc.get("format") != "twinlab-references/1":
@@ -215,6 +220,11 @@ def clean_references(doc):
         value = cleaner(doc.get(name))
         if value is not None:
             out[name] = value
+    # contract 1.3: the screen structure, per application, every word checked again here
+    if (contract.parse(doc.get("contract_version")) or (0, 0, 0)) >= STRUCTURE_FROM:
+        screens = structure.clean_screens(doc.get("screens"), keys, normalise_key)
+        if screens:
+            out["screens"] = screens
     return out
 
 
@@ -236,6 +246,14 @@ def merge_references(old, new):
         if key in old["flows"] or key in new["flows"]:
             flows[key] = sorted(steps.values(), key=lambda s: (s.get("captured_at") or "", s["n"], s["event_id"]))
     out = dict(new, apps=list(apps.values()), flows=flows)
+    screens = {}
+    for key in apps:
+        merged = structure.merge((old.get("screens") or {}).get(key, []), (new.get("screens") or {}).get(key, []))
+        if merged:
+            screens[key] = merged
+    out.pop("screens", None)
+    if screens:
+        out["screens"] = screens
     if not {a["key"] for a in old["apps"]} <= {a["key"] for a in new["apps"]}:
         timeline = []
         for run in old["timeline"] + new["timeline"]:

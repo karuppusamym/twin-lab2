@@ -49,7 +49,7 @@ class TenAppFixtureTest(unittest.TestCase):
 
     def test_the_references_are_in_the_contract(self):
         doc = agent_main.contract_references(json.loads(BUILT.read_text(encoding="utf-8")))
-        self.assertEqual(doc["contract_version"], "1.2.0")
+        self.assertEqual(doc["contract_version"], "1.3.0")
         self.assertEqual(contract.errors(doc, "references"), [])
         if jsonschema is not None:
             schema = contract.schema()

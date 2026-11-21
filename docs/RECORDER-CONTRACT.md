@@ -1,4 +1,4 @@
-# Recorder contract 1.2.0
+# Recorder contract 1.3.0
 
 What a workstation recorder sends to the TwinLab2 portal, and how the two sides agree on a version. The
 machine-checkable form is [`contract/twinlab2_contract/recorder-contract.schema.json`](contract/twinlab2_contract/recorder-contract.schema.json)
@@ -30,8 +30,8 @@ MINOR is accepted because the portal ignores fields it does not know.
 A refusal answers with this JSON:
 
 ```json
-{"error": "this recorder speaks contract 2.0.0, newer than this portal's 1.2.0 (supported >=1.0.0 <2.0.0). Update the portal, or use a recorder for contract 1.x.",
- "update": "portal", "contract": {"portal": "1.2.0", "supported": ">=1.0.0 <2.0.0"}}
+{"error": "this recorder speaks contract 2.0.0, newer than this portal's 1.3.0 (supported >=1.0.0 <2.0.0). Update the portal, or use a recorder for contract 1.x.",
+ "update": "portal", "contract": {"portal": "1.3.0", "supported": ">=1.0.0 <2.0.0"}}
 ```
 
 The portal checks the version before anything else. An outdated recorder hears what to update,
@@ -183,6 +183,57 @@ known by path opens the browser at the first target's page, not at the host's `/
 The portal assigns a web step to the identity with the longest path prefix its screen is under
 (`url_match: path`), whatever the version: a 1.1 screen such as `/finance/{id}/{id}` is under
 `/finance` and under no deeper prefix, so a 1.1 recording is assigned exactly as before.
+
+#### Contract 1.3: screen structure
+
+1.3.0 is a minor version with no new requirement: a 1.3 message is checked against the same
+`#/$defs/references_1_1`, and the portal still accepts 1.0.x, 1.1.x and 1.2.x (a `screens` block
+in a message that declares an older version is ignored). It adds one optional top-level block,
+`screens`: per application recorded at level `full` (by its key in `apps`), what its screens are
+made of, so that a builder can rebuild each screen with the controls and states an independent
+replay compares, without the owner describing them by hand. The rules are in
+[`twinlab2_contract.structure`](../contract/twinlab2_contract/structure.py); the recorder builds
+the block from the files its collectors already wrote (web after-snapshots with values blanked,
+desktop value-free control trees, 3270 field tables), see
+`twinlab2_recorder.workstation.structure`.
+
+```json
+{"screens": {"web:https://orders.example.test": [
+  {"screen": "https://orders.example.test/orders/search", "surface": "web",
+   "states": [
+     {"id": "721e806b29275f47", "events": ["01a1fa05-9cc5-749d-90f5-8d8e38d7c85a"], "withheld": 0,
+      "controls": [
+        {"kind": "select", "tag": "select", "id": "searchBy", "name": "by", "label": "Search by",
+         "visible": true, "enabled": true, "options": 2, "option_texts": ["Order number", "Customer name"]},
+        {"kind": "input", "tag": "input", "type": "text", "id": "q", "name": "q", "visible": true,
+         "enabled": true, "value": "empty"},
+        {"kind": "button", "tag": "button", "type": "button", "id": "nextPage", "label": "Next",
+         "visible": true, "enabled": false}],
+      "regions": [{"kind": "div", "id": "searchError", "classes": ["error"], "visible": false}],
+      "grids": [{"kind": "table", "id": "results", "columns": ["Number", "Customer"], "rows": "0",
+                 "visible": true}]}],
+   "transitions": [{"from_state": "721e806b29275f47", "to": "https://orders.example.test/orders/search",
+                    "to_state": "6d40019a94f531d4", "action": "click", "control": "button",
+                    "label": "searchBtn", "count": 1}]}]}}
+```
+
+| Field | Rule |
+|---|---|
+| `screen` | the screen reference the application's steps use (a web route template, a desktop window's automation id, a 3270 screen title or layout id); the portal assigns a web screen to an application by the same longest-path-prefix rule as its steps |
+| `surface` | `web`, `desktop` or `mainframe` |
+| `states[]` | the distinct states the screen was seen in (at most 20), each with `id` (its content hash, which the portal computes again), the `events` after which the screen was in it, and `withheld` (how many identifiers, classes or labels were left out because they could be data) |
+| `states[].controls[]` | in page order: `kind` (web tag, or `checkbox`/`radio`/`link`; desktop ControlType; 3270 `field`), `tag`, `type`, `id`, `name`, `classes` (each an identifier: no digit, no `@`, at most 40 characters), `label` (a button's caption, an input's `<label>`, a desktop Name the toolkit marks as structure, a 3270 field's label: at most three words, no digit), `visible`, `enabled`, `readonly`, `required`, `checked`, `selected`, `value` (`empty` or `filled`, never the value), `options` (a count) and `option_texts` (only for a code list: at most 30 entries of at most 40 characters, no digit), `repeat` (a control repeated once per table row: the row-count shape), and for 3270 `row`, `col`, `len`, `numeric`, `hidden` (non-display), `intensified` |
+| `states[].regions[]` | other elements with an identifier (containers, messages, pagers; a form by its `name`): `kind`, `id` or `name`, `classes`, `visible` |
+| `states[].grids[]` | tables, lists and data grids: `kind`, `id`, `columns` (header labels, at most four words, no digit; blank when withheld), `rows` as a shape: `0`, `1`, `few` (2 to 9), `many` (10 or more), `visible` |
+| `transitions[]` | the step that changed one state into another: `from_state`, `to` (a screen), `to_state`, the step's `action`, `control`, `label` and `key` as in the flow, `count` |
+
+Never in it: a typed or shown value, link or row text, a record's identifier (an id with a digit),
+an option text of a list that is not a code list, a cell, a window title, a picture. Inside a
+table's data rows nothing is described but the repeated controls' identifiers. The portal keeps
+only these fields, checks every word again by the same rules, and stores each application's
+screens with that application's recording link, so a screen never reaches another application's
+package. The build pack carries the states that the owner's selected events show (`screens` in
+`evidence.json`, "Screens and controls" in `BUILD_TASK.md`).
 
 #### Event ids in the portal
 
