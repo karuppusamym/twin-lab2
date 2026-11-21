@@ -6,22 +6,22 @@ import copy
 import io
 import json
 from pathlib import Path
-import re
 import tempfile
 import unittest
+from unittest import mock
 from zipfile import ZipFile
 
 from twinlab2 import completeness
 from twinlab2 import event_ids
 from twinlab2 import journey
 from twinlab2 import portal
+from twinlab2 import uploads
 from twinlab2.portal import create_app
 from support import freeze
-from twinlab2 import registry
 from twinlab2 import scenarios
 from test_registry import (DESK, EVENT_1, EVENT_2, EVENT_5, WEB, CV, completeness_report, eid, references,
                            references_1_1)
-from support import connect, new_database
+from support import Client, connect, new_database
 
 RECORDING = "ws-20261119T100000Z-0a1b2c3d"
 PARTIAL = completeness_report(
@@ -42,25 +42,29 @@ class Base(unittest.TestCase):
 
     def start(self):
         self.app = create_app(self.database)
-        self.app.testing = True
-        self.client = self.app.test_client()
-        self.assertEqual(self.client.get("/").status_code, 200)
-        with self.client.session_transaction() as session:
-            self.token = session["form_token"]
+        self.client = Client(self.app)
+        self.assertEqual(self.client.get("/api/v1/apps").status_code, 200)
 
-    def post(self, path, **values):
-        return self.client.post(path, data={"token": self.token, **values})
+    def ok(self, response, status=200):
+        self.assertEqual(response.status_code, status, response.text)
+        return response.json()
 
     def pair(self):
-        self.post("/machines/pair")
-        code = re.search(r'id="pair-code">([A-Z0-9-]+)<', self.client.get("/machines").data.decode()).group(1)
-        self.agent = {"Authorization": "Bearer " + self.client.post(
-            "/api/agent/pair", json={"contract_version": CV, "code": code, "name": "PC"}).json["token"]}
+        code = self.ok(self.client.post("/api/v1/machines/pairing-codes"), 201)["code"]
+        self.agent = {"Authorization": "Bearer " + self.client.http.post(
+            "/api/agent/pair", json={"contract_version": CV, "code": code, "name": "PC"}).json()["token"]}
 
     def send(self, refs, status=200):
-        response = self.client.post("/api/agent/references", json=refs, headers=self.agent)
-        self.assertEqual(response.status_code, status, response.data)
-        return response.json
+        response = self.client.http.post("/api/agent/references", json=refs, headers=self.agent)
+        self.assertEqual(response.status_code, status, response.text)
+        return response.json()
+
+    def recording(self):
+        return self.ok(self.client.get(f"/api/v1/recordings/{RECORDING}"))
+
+    def listed(self):
+        [found] = [r for r in self.ok(self.client.get("/api/v1/recordings"))["recordings"] if r["id"] == RECORDING]
+        return found["status"]["label"]
 
     def query(self, sql, *args):
         with closing(connect(self.database)) as db:
@@ -72,9 +76,9 @@ class Base(unittest.TestCase):
         return json.loads(row[0]), json.loads(row[1])
 
     def pack(self, app_id):
-        response = freeze(self.client, self.token, f"/apps/{app_id}")
-        self.assertEqual(response.status_code, 200, response.data)
-        with ZipFile(io.BytesIO(response.data)) as archive:
+        response = freeze(self.client, app_id)
+        self.assertEqual(response.status_code, 200, response.text)
+        with ZipFile(io.BytesIO(response.content)) as archive:
             return json.loads(archive.read("evidence.json")), archive.read("BUILD_TASK.md").decode()
 
 
@@ -91,9 +95,10 @@ class EventIdTest(Base):
     def test_ids_survive_a_resend_that_recomputes_seq(self):
         self.pair()
         self.send(references_1_1())
-        self.post(f"/recordings/{RECORDING}", app_id="1", event=EVENT_1, notes="Only the search")
-        self.post("/apps/1/scenarios", name="Find a case", expected="The case is shown.",
-                  event=f"{RECORDING}#{EVENT_1}")
+        self.ok(self.client.put(f"/api/v1/recordings/{RECORDING}/assignments/1",
+                                json={"events": [EVENT_1], "notes": "Only the search"}))
+        self.ok(self.client.post("/api/v1/apps/1/scenarios", json={
+            "name": "Find a case", "expected": "The case is shown.", "events": [f"{RECORDING}#{EVENT_1}"]}), 201)
         before, _ = self.pack(1)
         # crash recovery reordered the events: seq (and n) changed, event ids did not
         refs = references_1_1()
@@ -114,10 +119,11 @@ class EventIdTest(Base):
         self.assertEqual([e["event_id"] for e in after["scenarios"][0]["events"]], [EVENT_1])
         self.assertEqual(after["scenarios"][0]["unresolved_questions"], [])
         self.assertIn(f"(event `{EVENT_1}`)", task)
-        # the recording page selects by event id
-        page = self.client.get(f"/recordings/{RECORDING}?app_id=1").data.decode()
-        self.assertIn(f'value="{EVENT_1}" checked', page)
-        self.assertEqual(self.post(f"/recordings/{RECORDING}", app_id="1", event="1").status_code, 400)
+        # the recording's assignment selects by event id
+        assigned = self.ok(self.client.get(f"/api/v1/recordings/{RECORDING}/assignments/1"))
+        self.assertEqual(assigned["selected"], [EVENT_1])
+        self.assertEqual(self.client.put(f"/api/v1/recordings/{RECORDING}/assignments/1",
+                                         json={"events": ["1"]}).status_code, 400)
 
     def test_an_older_recorder_gets_ids_derived_once_and_reused(self):
         self.pair()
@@ -129,7 +135,7 @@ class EventIdTest(Base):
         self.assertTrue(all(event_ids.is_derived(i) for i in ids))
         self.send(references())  # a resend keeps the stored ids
         self.assertEqual(self.selection(1), (ids, []))
-        self.assertIn(completeness.UNKNOWN_OLDER, self.client.get(f"/recordings/{RECORDING}").data.decode())
+        self.assertEqual(self.recording()["status"]["summary"], completeness.UNKNOWN_OLDER)
 
     def test_an_event_id_appears_once_per_recording(self):
         self.pair()
@@ -140,16 +146,19 @@ class EventIdTest(Base):
     def test_an_imported_log_keeps_or_derives_ids_and_recovery_matches_by_id(self):
         log = (b'{"seq":1,"action":"click","event_id":"019a9f1c-0000-7000-8000-0000000000aa",'
                b'"session_id":"' + b"b" * 32 + b'"}\n{"seq":2,"action":"submit","session_id":"' + b"b" * 32 + b'"}\n')
-        location = self.post("/recordings", name="Imported", log=(io.BytesIO(log), "steps.jsonl")).location
+        imported = self.ok(self.client.post("/api/v1/recordings", data={"name": "Imported"},
+                                            files={"log": ("steps.jsonl", log, "application/jsonl")}), 201)["id"]
         events = json.loads(self.query("SELECT events FROM recordings")[0][0])
         self.assertEqual([e["event_id"] for e in events], ["019a9f1c-0000-7000-8000-0000000000aa", eid("b" * 32, 2)])
         # a recovered copy renumbered the first event: still the same event
         again = log.replace(b'"seq":1', b'"seq":7')
-        self.assertEqual(self.post("/recordings", name="Recovered", log=(io.BytesIO(again), "steps.jsonl")).location,
-                         location)
+        recovered = self.ok(self.client.post("/api/v1/recordings", data={"name": "Recovered"},
+                                             files={"log": ("steps.jsonl", again, "application/jsonl")}), 201)["id"]
+        self.assertEqual(recovered, imported)
         events = json.loads(self.query("SELECT events FROM recordings")[0][0])
         self.assertEqual(len(events), 2)
-        self.assertIn(completeness.UNKNOWN_IMPORTED, self.client.get(location).data.decode())
+        self.assertEqual(self.ok(self.client.get(f"/api/v1/recordings/{imported}"))["status"]["summary"],
+                         completeness.UNKNOWN_IMPORTED)
 
 
 class MigrationTest(unittest.TestCase):
@@ -182,11 +191,7 @@ class MigrationTest(unittest.TestCase):
             self.assertEqual((json.loads(link[0]), json.loads(link[1]), link[2]), ([one], [two], "kept"))
             self.assertEqual(linked, [f"{RECORDING}#{one}", "not-a-ref"])
             # the migrated links still make a build pack with the same event
-            client = app.test_client()
-            client.get("/")
-            with client.session_transaction() as session:
-                token = session["form_token"]
-            with ZipFile(io.BytesIO(freeze(client, token, "/apps/1").data)) as archive:
+            with ZipFile(io.BytesIO(freeze(Client(app), 1).content)) as archive:
                 manifest = json.loads(archive.read("evidence.json"))
             self.assertEqual(manifest["scenarios"][0]["events"][0]["label"], "txtSearch")
             self.assertEqual(manifest["scenarios"][0]["events"][0]["event_id"], one)
@@ -215,50 +220,49 @@ class CompletenessTest(Base):
         refs["preflight"]["checks"].append({"name": "Mainframe host", "ok": False, "detail": "no answer on 3270"})
         refs["preflight"]["ready"] = False
         self.send(refs)
-        page = self.client.get(f"/recordings/{RECORDING}").data.decode()
-        self.assertIn("Web complete; desktop interrupted 10:02–10:05; network evidence incomplete", page)
-        self.assertIn("Partial: needs attention", page)
-        self.assertIn("Recovered after the recorder stopped unexpectedly", page)
-        self.assertIn("up to 4 seconds before the interruption may be lost", page)
-        self.assertIn('class="gap" style="left: 40.0%; width: 60.0%"', page)  # 10:02–10:05 of 10:00–10:05
-        self.assertIn("collector restarted", page)
-        self.assertIn("UI Automation stopped answering", page)
-        self.assertIn("✗ Mainframe host", page)
-        self.assertIn("no answer on 3270", page)
-        self.assertIn("Not ready", page)
-        self.assertIn("Upload progress: not available.", page)
-        self.assertIn("Evidence preview", page)
-        self.assertIn("txtSearch", page)
-        self.assertIn("in an interrupted period", page)  # event 2 was captured at 10:02
-        self.assertIn("Partial: needs attention", self.client.get("/recordings").data.decode())
+        detail = self.recording()
+        status = detail["status"]
+        self.assertEqual(status["summary"], "Web complete; desktop interrupted 10:02–10:05; network evidence incomplete")
+        self.assertEqual(status["label"], "Partial: needs attention")
+        # recovered after the recorder stopped unexpectedly: up to 4 seconds before the interruption may be lost
+        self.assertTrue(status["completeness"]["recovered"])
+        self.assertEqual(status["completeness"]["loss_window_seconds"], 4)
+        [lane] = [lane for lane in detail["refs"]["ranges"] if lane["label"] == "Desktop"]
+        [gap] = lane["gaps"]
+        self.assertEqual((gap["left"], gap["width"]), (40.0, 60.0))  # 10:02-10:05 of 10:00-10:05
+        self.assertEqual(gap["reason"], "collector restarted")
+        self.assertIn("UI Automation stopped answering", status["completeness"]["channels"]["desktop"]["notes"])
+        self.assertIn({"name": "Mainframe host", "ok": False, "detail": "no answer on 3270"},
+                      status["preflight"]["checks"])
+        self.assertFalse(status["preflight"]["ready"])  # not ready
+        self.assertIsNone(detail["upload"])  # upload progress: not available
+        [preview] = [p for p in detail["preview"] if p["app_id"] == 1]  # the evidence preview
+        self.assertIn("txtSearch", [e.get("label") for e in preview["events"]])
+        in_gap = {e["event_id"]: e["in_gap"] for e in detail["events"]}
+        self.assertEqual((in_gap[EVENT_1], in_gap[EVENT_2]), (False, True))  # event 2 was captured at 10:02
+        self.assertEqual(self.listed(), "Partial: needs attention")
 
     def test_a_complete_recording_has_no_warning(self):
         self.pair()
         self.send(references_1_1())
-        page = self.client.get(f"/recordings/{RECORDING}").data.decode()
-        self.assertIn(">Complete</span>", page)
-        self.assertNotIn('id="attention"', page)
-        self.assertNotIn('id="recovered"', page)
-        self.assertIn("✓ UI Automation", page)
+        status = self.recording()["status"]
+        self.assertEqual(status["label"], "Complete")
+        self.assertFalse(status["attention"])
+        self.assertFalse(status["completeness"]["recovered"])
+        self.assertIn({"name": "UI Automation", "ok": True, "detail": "available"}, status["preflight"]["checks"])
 
     def test_upload_progress_comes_from_the_storage_api_when_there_is_one(self):
-        self.app = create_app(self.database)  # the storage API (uploads.py), answering a known progress
-
-        def upload(recording_id):
+        def upload(recording_id):  # the storage API (uploads.py), answering a known progress
             return {"state": "receiving", "received_bytes": 4096, "total_bytes": 10240, "last_error": None}
 
-        self.app.view_functions["recording_upload"] = upload
-
-        self.app.testing = True
-        self.client = self.app.test_client()
-        self.client.get("/")
-        with self.client.session_transaction() as session:
-            self.token = session["form_token"]
         self.pair()
         self.send(references_1_1())
-        page = self.client.get(f"/recordings/{RECORDING}").data.decode()
-        self.assertIn("Receiving 40% (4.0 KB of 10.0 KB)", page)
-        self.assertIn(f'data-upload-url="/api/recordings/{RECORDING}/upload"', page)
+        with mock.patch.object(uploads, "recording_upload", upload):
+            shown = self.recording()["upload"]
+        self.assertEqual(shown, {"text": "Receiving 40% (4.0 KB of 10.0 KB)", "percent": 40, "complete": False})
+        # the progress the web app polls
+        polled = self.client.http.get(f"/api/recordings/{RECORDING}/upload")
+        self.assertEqual((polled.status_code, polled.json()["state"]), (200, "none"))
         self.assertEqual(portal.upload_view({"status": "complete"})["text"], "Complete")
         self.assertTrue(portal.upload_view({"state": "confirmed", "received_bytes": 1, "total_bytes": 1})["complete"])
         self.assertIsNone(portal.upload_view({"state": "none", "received_bytes": 0, "total_bytes": 0}))
@@ -269,12 +273,12 @@ class AttentionTest(Base):
     def test_a_partial_recording_needs_attention_until_accepted(self):
         self.pair()
         self.send(references_1_1(report=PARTIAL))
-        self.post("/apps/1/scenarios", name="Find a case")
-        self.post("/apps/1", owner="Pat", purpose="Case lookup demo")
+        self.ok(self.client.post("/api/v1/apps/1/scenarios", json={"name": "Find a case"}), 201)
+        self.ok(self.client.patch("/api/v1/apps/1", json={"owner": "Pat", "purpose": "Case lookup demo"}))
         with closing(connect(self.database)) as db:
             app = db.execute("SELECT * FROM apps WHERE id = 1").fetchone()
             j = journey.for_app(db, app)
-        self.post("/apps/1/status", status="known")
+        self.ok(self.client.patch("/api/v1/apps/1", json={"status": "known"}))
         with closing(connect(self.database)) as db:
             j = journey.for_app(db, db.execute("SELECT * FROM apps WHERE id = 1").fetchone())
         # the examples exist, but the recording stopped partial: it needs attention, not "done"
@@ -283,16 +287,16 @@ class AttentionTest(Base):
         self.assertEqual(j.next.href, f"/recordings/{RECORDING}")
         self.assertIn("desktop interrupted 10:02–10:05", j.next.hint)
         self.assertIn("Complete recording (Order to invoice is partial)", j.missing)
-        self.assertIn("Review partial recording", self.client.get("/apps/1").data.decode())
-        page = self.client.get(f"/recordings/{RECORDING}").data.decode()
-        self.assertIn('id="attention"', page)
-        self.assertIn("A stopped recording is not complete by itself", page)
+        app_journey = self.ok(self.client.get("/api/v1/apps/1"))["journey"]
+        self.assertEqual(app_journey["next"]["action"], "Review partial recording")
+        self.assertTrue(self.recording()["status"]["attention"])  # a stopped recording is not complete by itself
         # the owner accepts it as it is: the journey moves on
-        self.assertEqual(self.post(f"/recordings/{RECORDING}/completeness/accept").status_code, 302)
+        accepted = self.ok(self.client.post(f"/api/v1/recordings/{RECORDING}/completeness/accept"))
+        self.assertEqual((accepted["status"]["accepted"], accepted["status"]["attention"]), (True, False))
         with closing(connect(self.database)) as db:
             j = journey.for_app(db, db.execute("SELECT * FROM apps WHERE id = 1").fetchone())
         self.assertEqual(j.stage, "Build")
-        self.assertIn("Partial: accepted as it is", self.client.get("/recordings").data.decode())
+        self.assertEqual(self.listed(), "Partial: accepted as it is")
         # a resend with other completeness needs a fresh look
         failed = copy.deepcopy(PARTIAL)
         failed["overall"] = "failed"
@@ -301,19 +305,19 @@ class AttentionTest(Base):
             j = journey.for_app(db, db.execute("SELECT * FROM apps WHERE id = 1").fetchone())
         self.assertEqual(j.next.action, "Review failed recording")
         # the same completeness again keeps the acceptance
-        self.post(f"/recordings/{RECORDING}/completeness/accept")
+        self.ok(self.client.post(f"/api/v1/recordings/{RECORDING}/completeness/accept"))
         self.send(references_1_1(report=failed))
-        self.assertIn("Failed: accepted as it is", self.client.get("/recordings").data.decode())
+        self.assertEqual(self.listed(), "Failed: accepted as it is")
 
     def test_an_older_recording_does_not_hold_up_the_journey(self):
         self.pair()
         self.send(references())
-        self.post("/apps/1/status", status="known")
-        self.post("/apps/1", owner="Pat", purpose="Case lookup demo")
+        self.ok(self.client.patch("/api/v1/apps/1", json={"status": "known"}))
+        self.ok(self.client.patch("/api/v1/apps/1", json={"owner": "Pat", "purpose": "Case lookup demo"}))
         with closing(connect(self.database)) as db:
             j = journey.for_app(db, db.execute("SELECT * FROM apps WHERE id = 1").fetchone())
         self.assertEqual(j.stage, "Review required behaviour")
-        self.assertEqual(self.post(f"/recordings/{RECORDING}/completeness/accept").status_code, 404)
+        self.assertEqual(self.client.post(f"/api/v1/recordings/{RECORDING}/completeness/accept").status_code, 404)
 
     def test_the_journey_function_takes_attention(self):
         facts = dict(status="known", owner="Pat", purpose="Demo", identities=1, machines=1, examples=2,

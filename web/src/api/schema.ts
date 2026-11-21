@@ -1939,7 +1939,7 @@ export interface components {
             app: components["schemas"]["AppRef"];
             /** @description The change summary. */
             summary: string;
-            /** @description Against the previous revision; empty for the first. */
+            /** @description Against the previous revision; the first revision is diffed against nothing (every line added). */
             diff: string;
             files: components["schemas"]["PackageFile"][];
             /** @description The pre-freeze report; null unless the caller is an owner. */

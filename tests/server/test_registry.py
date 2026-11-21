@@ -1,8 +1,5 @@
-import io
 import json
 import os
-from pathlib import Path
-import re
 from contextlib import closing
 import tempfile
 import unittest
@@ -12,7 +9,7 @@ from twinlab2.portal import create_app
 from twinlab2 import event_ids
 from twinlab2_contract import recorder_contract
 from twinlab2 import registry
-from support import connect, new_database
+from support import Client, connect, new_database
 
 DESK = "desktop:Twin Lab reference/CaseDesk"
 WEB = "web:http://127.0.0.1:8080"
@@ -95,99 +92,111 @@ def references_1_1(session_id="20261119T100000Z-0a1b2c3d", **completeness):
     return doc
 
 
+RECORDING = "ws-20261119T100000Z-0a1b2c3d"
+
+
 class RegistryTest(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
         self.database = new_database(self.work.name)
         self.app = create_app(self.database)
-        self.app.testing = True
-        self.client = self.app.test_client()
-        self.assertEqual(self.client.get("/").status_code, 200)
-        with self.client.session_transaction() as session:
-            self.token = session["form_token"]
+        self.client = Client(self.app)
+        self.assertEqual(self.client.get("/api/v1/apps").status_code, 200)
 
-    def post(self, path, **values):
-        return self.client.post(path, data={"token": self.token, **values})
+    def ok(self, response, status=200):
+        self.assertEqual(response.status_code, status, response.text)
+        return response.json()
 
     def pair(self, name="Workstation 7"):
-        self.assertEqual(self.post("/machines/pair").status_code, 302)
-        page = self.client.get("/machines").data.decode()
-        code = re.search(r'id="pair-code">([A-Z0-9-]+)<', page).group(1)
-        self.assertNotIn(code, self.client.get("/machines").data.decode())  # shown once
-        response = self.client.post("/api/agent/pair", json={"contract_version": CV, "code": code.lower(), "name": name})
-        self.assertEqual(response.status_code, 200, response.data)
-        return code, response.json["token"]
+        made = self.ok(self.client.post("/api/v1/machines/pairing-codes"), 201)
+        code = made["code"]
+        self.assertEqual(made["display"].replace("-", ""), code)
+        self.assertNotIn(code, self.client.get("/api/v1/machines").text)  # shown once
+        response = self.client.http.post("/api/agent/pair", json={
+            "contract_version": CV, "code": made["display"].lower(), "name": name})
+        self.assertEqual(response.status_code, 200, response.text)
+        return code, response.json()["token"]
 
     def agent(self, token):
         return {"Authorization": f"Bearer {token}"}
 
+    def send(self, refs, token):
+        return self.client.http.post("/api/agent/references", json=refs, headers=self.agent(token))
+
     def test_pairing_codes_are_single_use_and_tokens_are_stored_hashed(self):
         code, token = self.pair()
-        again = self.client.post("/api/agent/pair", json={"contract_version": CV, "code": code, "name": "Other"})
+        http = self.client.http
+        again = http.post("/api/agent/pair", json={"contract_version": CV, "code": code, "name": "Other"})
         self.assertEqual(again.status_code, 403)
-        self.assertEqual(self.client.post("/api/agent/pair", json={"contract_version": CV, "code": "AAAAAAAAAA", "name": "X"}).status_code, 403)
+        self.assertEqual(http.post("/api/agent/pair", json={"contract_version": CV, "code": "AAAAAAAAAA",
+                                                            "name": "X"}).status_code, 403)
         with closing(connect(self.database)) as db, db:
             stored = db.execute("SELECT token_sha FROM machines").fetchone()[0]
             codes = [r[0] for r in db.execute("SELECT code_sha FROM pairing_codes")]
         self.assertEqual(stored, registry.sha(token))
         self.assertNotIn(token, stored)
         self.assertNotIn(code.replace("-", ""), " ".join(codes))
-        self.assertEqual(self.client.get("/api/agent/sessions", headers=self.agent(token)).status_code, 200)
-        self.assertEqual(self.client.get("/api/agent/sessions").status_code, 401)
-        self.assertEqual(self.client.get("/api/agent/sessions", headers=self.agent("x" * 43)).status_code, 401)
-        self.assertEqual(self.post("/machines/1/revoke").status_code, 302)
-        self.assertEqual(self.client.get("/api/agent/sessions", headers=self.agent(token)).status_code, 401)
+        self.assertEqual(http.get("/api/agent/sessions", headers=self.agent(token)).status_code, 200)
+        self.assertEqual(http.get("/api/agent/sessions").status_code, 401)
+        self.assertEqual(http.get("/api/agent/sessions", headers=self.agent("x" * 43)).status_code, 401)
+        self.assertIsNotNone(self.ok(self.client.post("/api/v1/machines/1/revoke"))["revoked_at"])
+        self.assertEqual(http.get("/api/agent/sessions", headers=self.agent(token)).status_code, 401)
 
     def test_expired_codes_and_too_many_failures_are_refused(self):
-        self.post("/machines/pair")
-        code = re.search(r'id="pair-code">([A-Z0-9-]+)<', self.client.get("/machines").data.decode()).group(1)
+        code = self.ok(self.client.post("/api/v1/machines/pairing-codes"), 201)["code"]
+        http = self.client.http
         with closing(connect(self.database)) as db, db:
             db.execute("UPDATE pairing_codes SET expires_at = '2000-01-01T00:00:00+00:00'")
-        self.assertEqual(self.client.post("/api/agent/pair", json={"contract_version": CV, "code": code, "name": "X"}).status_code, 403)
+        self.assertEqual(http.post("/api/agent/pair", json={"contract_version": CV, "code": code,
+                                                            "name": "X"}).status_code, 403)
         for _ in range(registry.FAILURES_PER_10_MIN):
-            self.client.post("/api/agent/pair", json={"contract_version": CV, "code": "BBBBBBBBBB", "name": "X"})
-        self.assertEqual(self.client.post("/api/agent/pair", json={"contract_version": CV, "code": "BBBBBBBBBB", "name": "X"}).status_code, 429)
+            http.post("/api/agent/pair", json={"contract_version": CV, "code": "BBBBBBBBBB", "name": "X"})
+        self.assertEqual(http.post("/api/agent/pair", json={"contract_version": CV, "code": "BBBBBBBBBB",
+                                                            "name": "X"}).status_code, 429)
 
     def test_references_register_discovered_apps_and_map_the_recording(self):
         _, token = self.pair()
-        response = self.client.post("/api/agent/references", json=references(), headers=self.agent(token))
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(len(response.json["discovered"]), 2)
-        recording = self.client.get("/recordings/ws-20261119T100000Z-0a1b2c3d").data.decode()
-        self.assertIn("CaseDesk", recording)
-        self.assertIn("btnOpen", recording)
-        self.assertIn("Other applications", recording)
-        self.assertNotIn("dropped", recording)
-        app_page = self.client.get("/apps/1").data.decode()
-        self.assertIn("discovered", app_page)
-        self.assertIn("txtSearch", app_page)
-        self.assertIn("No automation yet", app_page)
-        self.assertNotIn(DESK, app_page)  # identities are on the Setup / Advanced page
-        self.assertIn(DESK, self.client.get("/apps/1/setup").data.decode())
-        listing = self.client.get("/recordings").data.decode()
-        self.assertIn("Workstation 7", listing)
-        self.assertIn("CaseDesk (full)", listing)
+        response = self.send(references(), token)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(len(response.json()["discovered"]), 2)
+        detail = self.client.get(f"/api/v1/recordings/{RECORDING}")
+        refs = self.ok(detail)["refs"]
+        [desk] = [a for a in refs["apps"] if a["key"] == DESK]
+        self.assertEqual(desk["name"], "CaseDesk")
+        self.assertIn("btnOpen", [s["label"] for s in desk["steps"]])
+        self.assertIn("Other applications", [run["name"] for run in refs["timeline"]])
+        self.assertNotIn("dropped", detail.text)
+        app = self.client.get("/api/v1/apps/1")
+        self.assertEqual(self.ok(app)["status"], "discovered")
+        self.assertNotIn(DESK, app.text)  # identities are on the Setup page
+        evidence = self.ok(self.client.get("/api/v1/apps/1/evidence"))
+        self.assertIn("txtSearch", [s["label"] for f in evidence["recorded_flows"] for s in f["steps"]])
+        self.assertEqual(evidence["automations"], [])  # no automation yet
+        self.assertIn(DESK, [i["key"] for i in self.ok(self.client.get("/api/v1/apps/1/setup"))["identities"]])
+        [listed] = self.ok(self.client.get("/api/v1/recordings"))["recordings"]
+        self.assertEqual(listed["machine"], "Workstation 7")
+        self.assertIn("CaseDesk (full)", listed["apps"])
         # sent again (a retry): the same recording, no new application
-        again = self.client.post("/api/agent/references", json=references(), headers=self.agent(token))
-        self.assertEqual(again.json["discovered"], [])
-        self.assertEqual(sorted(again.json["mapped"]), [1, 2])
+        again = self.send(references(), token).json()
+        self.assertEqual(again["discovered"], [])
+        self.assertEqual(sorted(again["mapped"]), [1, 2])
         # the catalog's evidence links: each application's steps are selected
         with closing(connect(self.database)) as db, db:
             links = dict(db.execute("SELECT app_id, selection FROM evidence").fetchall())
-        recording_id = "ws-20261119T100000Z-0a1b2c3d"
-        self.assertEqual(json.loads(links[1]), sorted([eid(recording_id, 1), eid(recording_id, 2)]))
+        self.assertEqual(json.loads(links[1]), sorted([eid(RECORDING, 1), eid(RECORDING, 2)]))
 
     def test_offered_session_targets_known_apps_and_links_its_automation(self):
         _, token = self.pair()
-        self.post("/apps", name="Case desk")
-        self.assertEqual(self.post("/apps/1/identity", key="CaseDesk.exe").status_code, 302)
-        self.assertEqual(self.post("/apps/1/identity", key="https://Billing.example.test:443/x").status_code, 302)
-        self.assertEqual(self.post("/apps/1/identity", key="not an identity").status_code, 400)
-        self.post("/automations", name="UiPath order to invoice", kind="uipath")
-        self.assertEqual(self.post("/sessions", name="Trial", machine_id="1", automation_id="1",
-                                   app="1", level_1="steps").status_code, 302)
-        offered = self.client.get("/api/agent/sessions", headers=self.agent(token)).json
+        http = self.client.http
+        self.ok(self.client.post("/api/v1/apps", json={"name": "Case desk"}), 201)
+        self.ok(self.client.post("/api/v1/apps/1/identities", json={"key": "CaseDesk.exe"}), 201)
+        self.ok(self.client.post("/api/v1/apps/1/identities", json={"key": "https://Billing.example.test:443/x"}), 201)
+        self.assertEqual(self.client.post("/api/v1/apps/1/identities", json={"key": "not an identity"}).status_code, 400)
+        self.ok(self.client.post("/api/v1/automations", json={"name": "UiPath order to invoice", "kind": "uipath"}), 201)
+        self.ok(self.client.post("/api/v1/capture-sessions", json={
+            "name": "Trial", "machine_id": 1, "automation_id": 1, "targets": [{"app_id": 1, "level": "steps"}]}), 201)
+        offered = http.get("/api/agent/sessions", headers=self.agent(token)).json()
         self.assertEqual(len(offered["sessions"]), 1)
         targets = offered["sessions"][0]["targets"]
         self.assertIn({"level": "steps", "app_id": 1, "name": "Case desk", "exe": "casedesk.exe"}, targets)
@@ -196,18 +205,21 @@ class RegistryTest(unittest.TestCase):
         refs = references(portal_session_id=1, apps=[
             {"key": DESK, "level": "steps", "display": "CaseDesk", "exe": "CaseDesk.exe", "app_id": 1}])
         refs["timeline"] = [{"app": DESK, "steps": 2}, {"app": "presence", "steps": 1}]
-        response = self.client.post("/api/agent/references", json=refs, headers=self.agent(token))
-        self.assertEqual(response.json["mapped"], [1])
-        self.assertIn("UiPath order to invoice", self.client.get("/apps/1").data.decode())
-        self.assertIn("recorded", self.client.get("/sessions").data.decode())
-        self.assertEqual(self.client.get("/api/agent/sessions", headers=self.agent(token)).json["sessions"], [])
-        self.assertIn("Order to invoice", self.client.get("/automations/1").data.decode())
+        response = self.send(refs, token)
+        self.assertEqual(response.json()["mapped"], [1])
+        evidence = self.ok(self.client.get("/api/v1/apps/1/evidence"))
+        self.assertIn("UiPath order to invoice", [a["name"] for a in evidence["automations"]])
+        sessions = self.ok(self.client.get("/api/v1/capture-sessions"))["sessions"]
+        self.assertEqual([s["status"] for s in sessions], ["recorded"])
+        self.assertEqual(http.get("/api/agent/sessions", headers=self.agent(token)).json()["sessions"], [])
+        automation = self.ok(self.client.get("/api/v1/automations/1"))
+        self.assertIn("Order to invoice", [r["name"] for r in automation["recordings"]])
 
     def test_not_replicated_apps_are_sent_as_deny_keys(self):
         _, token = self.pair()
-        self.client.post("/api/agent/references", json=references(), headers=self.agent(token))
-        self.assertEqual(self.post("/apps/2/status", status="not_replicated").status_code, 302)
-        offered = self.client.get("/api/agent/sessions", headers=self.agent(token)).json
+        self.send(references(), token)
+        self.ok(self.client.patch("/api/v1/apps/2", json={"status": "not_replicated"}))
+        offered = self.client.http.get("/api/agent/sessions", headers=self.agent(token)).json()
         self.assertEqual(offered["deny_keys"], [WEB])
 
     def test_invalid_references_are_refused(self):
@@ -216,33 +228,31 @@ class RegistryTest(unittest.TestCase):
                        dict(references(), session={"id": "../../etc"}),
                        dict(references(), apps=[{"key": "desktop:\nX", "level": "full"}]),
                        dict(references(), timeline=[{"app": "web:http://elsewhere", "steps": 1}])):
-            response = self.client.post("/api/agent/references", json=broken, headers=self.agent(token))
+            response = self.send(broken, token)
             self.assertEqual(response.status_code, 400, broken)
 
     def test_another_machine_cannot_overwrite_a_recording(self):
         _, first = self.pair("A")
         _, second = self.pair("B")
-        self.client.post("/api/agent/references", json=references(), headers=self.agent(first))
-        response = self.client.post("/api/agent/references", json=references(), headers=self.agent(second))
-        self.assertEqual(response.status_code, 409)
+        self.send(references(), first)
+        self.assertEqual(self.send(references(), second).status_code, 409)
 
     def test_merge_and_import_automation_yaml(self):
         _, token = self.pair()
-        self.client.post("/api/agent/references", json=references(), headers=self.agent(token))
-        self.post("/apps", name="Showcase")
-        unconfirmed = self.post("/apps/2/merge", into="3")
-        self.assertEqual(unconfirmed.location, "/apps/2/merge?into=3")  # the preview first
-        preview = self.client.get(unconfirmed.location).data.decode()
-        fingerprint = re.search(r'name="confirm" value="([0-9a-f]+)"', preview).group(1)
-        self.assertEqual(self.post("/apps/2/merge", into="3", confirm=fingerprint).location, "/apps/3")
-        self.assertIn(WEB, self.client.get("/apps/3/setup").data.decode())
+        self.send(references(), token)
+        self.ok(self.client.post("/api/v1/apps", json={"name": "Showcase"}), 201)
+        unconfirmed = self.client.post("/api/v1/apps/2/merge", json={"into": 3, "confirm": ""})
+        self.assertEqual((unconfirmed.status_code, unconfirmed.json()["code"]), (409, "plan_changed"))  # preview first
+        fingerprint = self.ok(self.client.get("/api/v1/apps/2/merge-plan?into=3"))["fingerprint"]
+        merged = self.ok(self.client.post("/api/v1/apps/2/merge", json={"into": 3, "confirm": fingerprint}))
+        self.assertEqual(merged["id"], 3)
+        self.assertIn(WEB, [i["key"] for i in self.ok(self.client.get("/api/v1/apps/3/setup"))["identities"]])
         yaml_doc = b"id: case-update\nname: Case update\ntype: uipath\ntouches:\n- app: showcase\n- app: missing\n"
-        response = self.client.post("/automations/import", data={"token": self.token,
-                                    "file": (io.BytesIO(yaml_doc), "automation.yaml")})
-        self.assertEqual(response.status_code, 302)
-        automation = self.client.get(response.location).data.decode()
-        self.assertIn("Showcase", automation)
-        self.assertIn("missing", automation)
+        automation = self.ok(self.client.post("/api/v1/automations/import",
+                                              files={"file": ("automation.yaml", yaml_doc, "application/yaml")}), 201)
+        self.assertIn("Showcase", [a["name"] for a in automation["apps"]])
+        self.assertIn("missing", automation["automation"]["notes"])
+        self.assertEqual(self.ok(self.client.get(f"/api/v1/automations/{automation['automation']['id']}")), automation)
 
 
 class SignInTest(unittest.TestCase):
@@ -251,35 +261,34 @@ class SignInTest(unittest.TestCase):
         self.addCleanup(self.work.cleanup)
         self.database = new_database(self.work.name)
 
-    def make(self, **env):
+    def make(self, remote="127.0.0.1", **env):
         with mock.patch.dict(os.environ, env):
             app = create_app(self.database)
-        app.testing = True
-        return app.test_client()
+        return Client(app, remote=remote)
 
     def test_only_this_machine_without_a_password_or_proxy(self):
-        client = self.make()
-        self.assertEqual(client.get("/", environ_base={"REMOTE_ADDR": "10.1.2.3"}).status_code, 403)
-        self.assertEqual(client.get("/healthz", environ_base={"REMOTE_ADDR": "10.1.2.3"}).status_code, 200)
+        client = self.make(remote="10.1.2.3")
+        self.assertEqual(client.get("/api/v1/apps").status_code, 403)
+        self.assertEqual(client.http.get("/healthz").status_code, 200)
 
     def test_password_sign_in(self):
         client = self.make(TWINLAB2_PASSWORD="s3cret-demo")
-        self.assertEqual(client.get("/machines").status_code, 302)
-        client.get("/login")
-        with client.session_transaction() as session:
-            token = session["form_token"]
-        bad = client.post("/login", data={"token": token, "user": "ana", "password": "nope"})
-        self.assertEqual(bad.status_code, 401)
-        good = client.post("/login?next=/machines", data={"token": token, "user": "ana", "password": "s3cret-demo"})
-        self.assertEqual(good.location, "/machines")
-        self.assertIn("ana", client.get("/machines").data.decode())
+        signed_out = client.get("/api/v1/machines")
+        self.assertEqual((signed_out.status_code, signed_out.json()["code"]), (401, "signed_out"))
+        bad = client.post("/api/v1/session", json={"user": "ana", "password": "nope"})
+        self.assertEqual((bad.status_code, bad.json()["code"]), (401, "wrong_credentials"))
+        good = client.post("/api/v1/session", json={"user": "ana", "password": "s3cret-demo"})
+        self.assertEqual(good.status_code, 200, good.text)
+        self.assertEqual(good.json()["user"], "ana")
+        self.assertEqual(client.get("/api/v1/machines").status_code, 200)
+        self.assertEqual(client.get("/api/v1/session").json()["user"], "ana")
 
     def test_proxy_user(self):
         client = self.make(TWINLAB2_TRUST_PROXY_USER="1")
-        self.assertEqual(client.get("/").status_code, 401)
-        page = client.get("/", headers={"X-Forwarded-User": "ana@example.test"})
-        self.assertEqual(page.status_code, 200)
-        self.assertIn("ana@example.test", page.data.decode())
+        self.assertEqual(client.get("/api/v1/apps").status_code, 401)
+        ana = client.as_user("ana@example.test")
+        self.assertEqual(ana.get("/api/v1/apps").status_code, 200)
+        self.assertEqual(ana.get("/api/v1/session").json()["user"], "ana@example.test")
 
 
 if __name__ == "__main__":

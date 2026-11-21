@@ -5,8 +5,23 @@
 ```powershell
 cd twin-lab2
 python -m pip install -r requirements.txt
-python -m twinlab2.portal
+cd web; npm ci; npm run build; cd ..      # the web app, once (web/dist)
+python -m twinlab2.portal                 # http://127.0.0.1:8765
 ```
+
+The portal is one ASGI application (FastAPI, `server/twinlab2/app.py`) that serves the JSON API
+`/api/v1` ([api/openapi.yaml](api/openapi.yaml)), the recorder's agent API (`/api/agent/…`,
+`/api/uploads…`), the downloads and the built React app (`web/dist`; every other page address
+answers `index.html`, so `/apps/1` or `/login` open the app's own page). `python -m twinlab2.portal`
+runs it with uvicorn (`--port`, `--host`, `--database`, `--reload`); a server runs
+`gunicorn -k uvicorn_worker.UvicornWorker "twinlab2.app:asgi()"` (or `uvicorn --factory
+twinlab2.app:asgi`). The build worker is its own process: `python -m twinlab2.worker`.
+
+**Working on the web app.** Start the portal (`python -m twinlab2.portal`), then in `web/` run
+`npm run dev` and open `http://localhost:5173`: Vite serves the app with hot reload and forwards
+`/api` and `/artifacts` to the portal on 127.0.0.1:8765 (`TWINLAB2_PORTAL` changes it). A change to
+`api/openapi.yaml` is followed by `npm run gen` (the web types) and
+`python tools/gen_api_models.py` (the server's Pydantic models); CI fails when either is stale.
 
 `requirements.txt` installs the two packages the portal is made of, editable: `contract/` (what the
 portal and the recorder share) and `server/` (the portal). It is the same as
@@ -15,10 +30,11 @@ Twin Lab code it runs ([docs/UPSTREAM.md](docs/UPSTREAM.md)).
 
 | Folder | What it is |
 |---|---|
-| `server/twinlab2/` | the portal (`portal`, `db`, `migrations`, `auth`, `registry`, `builds`, `twinlab2/providers/`, `worker`, ...), its `templates/` and `static/`, and Verify's replay (`replay/`) |
+| `server/twinlab2/` | the portal: the ASGI app (`app`, `rest`, `auth`, `routes_*`, `api_models` generated from the spec), the domain modules (`portal`, `db`, `migrations`, `registry`, `packages`, `buildpack`, `builds`, `verification`, `artifacts`, `audit`, `twinlab2/providers/`, `worker`, ...) and Verify's replay (`replay/`) |
 | `recorder/twinlab2_recorder/` | TwinLabRecorder and its collectors (`workstation/`, `desktop/`, `web/`, `botlog/`); `recorder/build.py` builds the exe |
 | `contract/twinlab2_contract/` | what both sides share: the recorder contract and its schema, and the recording format (`evidence/`) |
-| `api/`, `web/` | the `/api/v1` contract (`api/openapi.yaml`) and the React web app |
+| `api/`, `web/` | the `/api/v1` contract (`api/openapi.yaml`) and the React web app the portal serves |
+| `tools/` | `gen_api_models.py`: the server's request and response models from the contract |
 | `deploy/` | the Dockerfile, Docker Compose and OpenShift files |
 | `docs/` | the guides: recorder contract, recording guide, verification results, Twin Lab provenance, plan |
 | `tests/server`, `tests/recorder` | the test suite (`python -m pip install -r requirements-test.txt`, then `python -m pytest`) |
@@ -146,9 +162,9 @@ Follow these rules in every new query and table so they work on SQLite and Postg
 
 ## Access, evidence and builder packages
 
-**Roles are enforced by the server** (`twinlab2.auth`). Per application a user is an `owner` (reviews restricted evidence, writes scenarios, freezes packages, records tests, verifies and publishes releases, assigns roles), a `builder` (an owner's read access minus evidence, plus the frozen packages, starting builds and re-checking deployments) or a `viewer` (the application page without evidence, its releases, published downloads). A **portal admin** manages users and every application's roles but does not read evidence unless they assign themself owner (audited). Whoever creates an application owns it; an application a recorder discovers is owned by whoever paired that machine; the old free-text Owner field became an owner assignment. Every route carries `require_role(...)` (or `public` / `signed_in` / `agent_token`); a route without one answers 403.
+**Roles are enforced by the server** (`twinlab2.auth`). Per application a user is an `owner` (reviews restricted evidence, writes scenarios, freezes packages, records tests, verifies and publishes releases, assigns roles), a `builder` (an owner's read access minus evidence, plus the frozen packages, starting builds and re-checking deployments) or a `viewer` (the application page without evidence, its releases, published downloads). A **portal admin** manages users and every application's roles but does not read evidence unless they assign themself owner (audited). Whoever creates an application owns it; an application a recorder discovers is owned by whoever paired that machine; the old free-text Owner field became an owner assignment. Every route is added with its policy, `require_role(...)` (or `public` / `signed_in` / `agent_token`), which runs as the route's FastAPI dependency; a route without one answers 403, and a test lists every route's policy. Every `/api/v1` request that changes something sends the session's `X-CSRF-Token`.
 
-**Sign-in.** Behind an SSO / OAuth proxy set `TWINLAB2_TRUST_PROXY_USER=1`: the user comes from `X-Forwarded-User`, admins from `TWINLAB2_ADMINS` (comma separated), `TWINLAB2_ADMIN_GROUP` (matched against `X-Forwarded-Groups`) or `python -m twinlab2.portal user NAME --admin`. For development, the local user store signs people in with their own password (`python -m twinlab2.portal user NAME --password`, or *Users* in the portal); `TWINLAB2_PASSWORD` still lets any other name in with the shared password. Without either, the portal serves only this machine as the admin user `local`. To take identity from elsewhere (JWT, mTLS), replace `auth.proxy_identity`.
+**Sign-in.** Behind an SSO / OAuth proxy set `TWINLAB2_TRUST_PROXY_USER=1`: the user comes from `X-Forwarded-User`, admins from `TWINLAB2_ADMINS` (comma separated), `TWINLAB2_ADMIN_GROUP` (matched against `X-Forwarded-Groups`) or `python -m twinlab2.portal user NAME --admin`. For development, the local user store signs people in (the web app's sign-in page, `POST /api/v1/session`, a signed session cookie) with their own password (`python -m twinlab2.portal user NAME --password`, or *Users* in the portal); `TWINLAB2_PASSWORD` still lets any other name in with the shared password. Without either, the portal serves only this machine as the admin user `local`. To take identity from elsewhere (JWT, mTLS), replace `auth.proxy_identity`.
 
 **Two artifact classes.** Recordings and uploads are *restricted evidence*: only the uploader and the application's owners see them, and uploading never shares anything. A *builder-approved package* is the only thing a builder gets: the owner previews the draft with its **pre-freeze report** ("N items excluded, reasons"; what was redacted), approves that exact SHA-256, and freezes it as revision 1, 2, … Each revision records who approved it, when, the SHA-256, the report, a change summary and a diff against the previous revision; revisions are never changed (SQLite triggers refuse it). A build session sends only a frozen revision, and releases and build verification answer one.
 
@@ -231,7 +247,7 @@ A registered release is **Packaged**: its committed tree is archived, nothing mo
 
 **Tested is bound to the exact built commit** (`twinlab2.verification`). Before a release becomes Tested, the portal reads GitHub's check runs and commit statuses for exactly the release's SHA (`TWINLAB2_GITHUB_TOKEN`, API at `TWINLAB2_GITHUB_API`) and stores each check's name, conclusion, URL and completion time against that SHA. Every **required check** must be green: per application in *Setup / Advanced → Release verification*, one check name or glob per line, or, when empty, every check reported on the commit (at least one) for a GitHub repository. An application whose **target platform** is Windows desktop also needs a green check from a Windows validation environment (a name matching `*windows*`, such as a `windows-latest` matrix job, or the configured pattern); without one the page says *Windows validation missing*. A result GitHub attributes to another SHA never counts, and a release made from a pull request or branch is refused, and goes back from Tested to Packaged, once that head moves (a new push or a force-push).
 
-**Verify this build** (`portal.verify_commit(connection, app_id, repo, sha, …)`, `POST /apps/<id>/verify-commit` with `repo`, `sha` and optionally `pr_number`/`ref`; on a release page, `POST /releases/<id>/verify`) packages the commit from GitHub as a Packaged release, reads its checks, and runs Twin Lab's checks, copied into TwinLab2 (`twinlab2.independent`), against the deployment that reports that commit at `/.twinlab/version`: each scenario's recordings are replayed (`python -m twinlab2.replay`, which needs `pip install -e "server[replay]"` and `python -m playwright install chromium`; folders from `TWINLAB2_RECORDINGS`), the required acceptance cases decide the business outcome, and the lab agent (the application's *Lab agent URL*, `TWINLAB2_LAB_TOKEN`) is reset and must equal its baseline. A scenario passes only when every replay passed and its outcome was met; a replay that reaches a Twin Lab path TwinLab2 did not copy makes it not run, never passed. When all of it holds, with the application's platform and launch instructions, the release becomes Tested; either way a verification report (JSON) is stored for the release and linked on its page.
+**Verify this build** (`portal.verify_commit(connection, app_id, repo, sha, …)`, `POST /api/v1/apps/<id>/verify-commit` with `repo`, `sha` and optionally `pr_number`/`ref`; on a release page, `POST /api/v1/releases/<id>/verify`) packages the commit from GitHub as a Packaged release, reads its checks, and runs Twin Lab's checks, copied into TwinLab2 (`twinlab2.independent`), against the deployment that reports that commit at `/.twinlab/version`: each scenario's recordings are replayed (`python -m twinlab2.replay`, which needs `pip install -e "server[replay]"` and `python -m playwright install chromium`; folders from `TWINLAB2_RECORDINGS`), the required acceptance cases decide the business outcome, and the lab agent (the application's *Lab agent URL*, `TWINLAB2_LAB_TOKEN`) is reset and must equal its baseline. A scenario passes only when every replay passed and its outcome was met; a replay that reaches a Twin Lab path TwinLab2 did not copy makes it not run, never passed. When all of it holds, with the application's platform and launch instructions, the release becomes Tested; either way a verification report (JSON) is stored for the release and linked on its page.
 
 TwinLab2 helps a demo owner turn examples of an application into a runnable, versioned demo. The owner opens an app in the catalog, adds recordings and requirements, reviews what the demo should do, and gives the resulting build brief to a coding agent. A customer of the catalog can download a release or open a deployed demo.
 

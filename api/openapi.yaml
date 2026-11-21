@@ -2484,7 +2484,7 @@ components:
           properties:
             app: { $ref: "#/components/schemas/AppRef" }
             summary: { type: string, description: "The change summary." }
-            diff: { type: string, description: "Against the previous revision; empty for the first." }
+            diff: { type: string, description: "Against the previous revision; the first revision is diffed against nothing (every line added)." }
             files: { type: array, items: { $ref: "#/components/schemas/PackageFile" } }
             report:
               description: The pre-freeze report; null unless the caller is an owner.

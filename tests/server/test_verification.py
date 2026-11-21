@@ -14,7 +14,7 @@ from zipfile import ZipFile
 from unittest import mock
 from twinlab2 import independent
 from twinlab2 import portal
-from support import freeze
+from support import Client, freeze
 from twinlab2.portal import create_app
 from test_registry import eid
 from twinlab2 import verification
@@ -157,41 +157,50 @@ class VerificationTest(unittest.TestCase):
         self.twin = FakeTwinLab()
         self.database = new_database(self.work.name)
         self.app = create_app(self.database)
-        self.app.testing = True
         self.app.config.update(GITHUB=verification.GitHub(token="test-token", api=self.github.url),
                                TWINLAB_RUNNER=self.twin)
-        self.client = self.app.test_client()
-        self.client.get("/")
-        with self.client.session_transaction() as session:
-            self.token = session["form_token"]
-        self.post("/apps", name="Billing", git_url=f"https://github.com/{REPO}.git")
-        recording = self.post("/recordings", name="Invoice", log=(
-            io.BytesIO(b'{"seq":1,"action":"submit","url":"http://billing.local/"}\n'), "steps.jsonl")).location
-        self.recording_id = recording.rsplit("/", 1)[1]
-        self.post(recording, app_id="1", event=eid(self.recording_id, 1), notes="Invoice is saved")
-        self.post("/apps/1/scenarios", name="Invoice is saved", expected="The invoice has its number.",
-                  event=f"{self.recording_id}#{eid(self.recording_id, 1)}")
-        self.assertEqual(freeze(self.client, self.token, "/apps/1").status_code, 200)
+        self.client = Client(self.app)
+        app_id = self.ok(self.client.post("/api/v1/apps", json={"name": "Billing"}), 201)["id"]
+        self.assertEqual(app_id, 1)
+        self.ok(self.client.patch("/api/v1/apps/1", json={"git_url": f"https://github.com/{REPO}.git"}))
+        recording = self.ok(self.client.post("/api/v1/recordings", data={"name": "Invoice"}, files={"log": (
+            "steps.jsonl", b'{"seq":1,"action":"submit","url":"http://billing.local/"}\n', "application/x-ndjson")}), 201)
+        self.recording_id = recording["id"]
+        self.ok(self.client.put(f"/api/v1/recordings/{self.recording_id}/assignments/1",
+                                json={"events": [eid(self.recording_id, 1)], "notes": "Invoice is saved"}))
+        self.ok(self.client.post("/api/v1/apps/1/scenarios", json={
+            "name": "Invoice is saved", "expected": "The invoice has its number.",
+            "events": [f"{self.recording_id}#{eid(self.recording_id, 1)}"]}), 201)
+        self.assertEqual(freeze(self.client, 1).status_code, 200)
         self.settings()
 
-    def post(self, path, **values):
-        response = self.client.post(path, data={"token": self.token, **values})
-        self.assertLess(response.status_code, 400, response.get_data(as_text=True)[:800])
-        return response
+    def ok(self, response, status=200):
+        self.assertEqual(response.status_code, status, response.text[:800])
+        return response.json() if "json" in response.headers.get("content-type", "") else response
+
+    def post(self, path, **body):
+        return self.ok(self.client.post(path, json=body or None))
 
     def settings(self, **changes):
         values = {"required_checks": "", "target_platform": "web", "windows_check_pattern": "",
                   "lab_url": "http://lab.test/", "launch": "python run.py", **changes}
-        self.post("/apps/1/verification", **values)
+        self.ok(self.client.put("/api/v1/apps/1/verification-settings", json=values))
 
     def green(self, *names, sha=SHA):
         self.github.runs[sha] = [run(name, run_id=n) for n, name in enumerate(names or ("build", "test"), 1)]
 
-    def verify(self, sha=SHA, **form):
-        response = self.client.post("/apps/1/verify-commit", data={"token": self.token, "repo": REPO, "sha": sha, **form})
-        self.assertEqual(response.status_code, 302, response.get_data(as_text=True)[:800])
-        release_id = int(response.location.split("/releases/")[1].split("#")[0])
-        return release_id
+    def verify(self, sha=SHA, **body):
+        if "pr_number" in body:
+            body["pr_number"] = int(body["pr_number"])
+        outcome = self.ok(self.client.post("/api/v1/apps/1/verify-commit", json={"repo": REPO, "sha": sha, **body}))
+        return outcome["release_id"]
+
+    def detail(self, release_id):
+        return self.ok(self.client.get(f"/api/v1/releases/{release_id}"))
+
+    def reasons(self, release_id):
+        """Why the release is not Tested (the release's check summary), as one string."""
+        return " ".join(self.detail(release_id)["checks"]["reasons"])
 
     def row(self, sql, *args):
         with closing(connect(self.database)) as db:
@@ -201,7 +210,8 @@ class VerificationTest(unittest.TestCase):
         return self.row("SELECT state FROM releases WHERE id = ?", release_id)[0]["state"]
 
     def deploy(self, release_id, url=None):
-        self.post(f"/releases/{release_id}", environment="Demo", url=url or self.deployment.url)
+        self.ok(self.client.put(f"/api/v1/releases/{release_id}/deployments",
+                                json={"environment": "Demo", "url": url or self.deployment.url}))
 
     def test_green_checks_make_the_built_commit_tested(self):
         self.green("build", "test")
@@ -210,7 +220,7 @@ class VerificationTest(unittest.TestCase):
         release_id = self.verify()
         self.assertEqual(self.state(release_id), "packaged")  # no deployment of the commit yet
         self.deploy(release_id)
-        self.post(f"/releases/{release_id}/verify")
+        self.post(f"/api/v1/releases/{release_id}/verify")
         self.assertEqual(self.state(release_id), "tested")
         release = self.row("SELECT commit_sha, version, repository FROM releases WHERE id = ?", release_id)[0]
         self.assertEqual((release["commit_sha"], release["version"], release["repository"]), (SHA, SHA[:12], REPO))
@@ -227,31 +237,32 @@ class VerificationTest(unittest.TestCase):
         self.assertIn(("replay", self.recording_id, self.deployment.url), self.twin.calls)
         self.assertIn(("reset", "http://lab.test/"), self.twin.calls)
         self.assertTrue(all(auth == "Bearer test-token" for _, auth in self.github.requests))
-        page = self.client.get(f"/releases/{release_id}").get_data(as_text=True)
-        self.assertIn("CI green", page)
-        self.assertIn("every check reported on this commit", page)
+        checks = self.detail(release_id)["checks"]
+        self.assertEqual(checks["reasons"], [])  # CI green
+        self.assertIsNotNone(checks["checked_at"])
+        self.assertEqual(checks["required"], [{"pattern": "*", "state": "success"}])  # every check reported
 
     def test_report_artifact_is_stored(self):
         self.green()
         release_id = self.verify()
         self.deploy(release_id)
-        self.post(f"/releases/{release_id}/verify")
+        self.post(f"/api/v1/releases/{release_id}/verify")
         reports = self.row("SELECT id, kind, sha256 FROM release_artifacts WHERE release_id = ? ORDER BY id", release_id)
         self.assertEqual([r["kind"] for r in reports], ["verification_report"] * 2)
-        response = self.client.get(f"/releases/{release_id}/reports/{reports[-1]['id']}")
+        response = self.client.get(f"/api/v1/releases/{release_id}/reports/{reports[-1]['id']}")
         self.assertEqual(response.status_code, 200)
-        report = json.loads(response.data)
+        report = json.loads(response.content)
         import hashlib
-        self.assertEqual(hashlib.sha256(response.data).hexdigest(), reports[-1]["sha256"])
+        self.assertEqual(hashlib.sha256(response.content).hexdigest(), reports[-1]["sha256"])
         self.assertEqual((report["commit"], report["repository"], report["tested"]), (SHA, REPO, True))
         self.assertEqual({c["name"] for c in report["github"]["checks"]}, {"build", "test"})
         self.assertEqual(report["twinlab"]["scenarios"][0]["outcome"], "MET")
         self.assertEqual(report["twinlab"]["reset"]["result"], "pass")
         self.assertEqual(report["twinlab"]["twinlab"]["commit"], "430dfe538965b46ccbe824f8f2b4f415c5576483")
-        first = json.loads(self.client.get(f"/releases/{release_id}/reports/{reports[0]['id']}").data)
+        first = json.loads(self.client.get(f"/api/v1/releases/{release_id}/reports/{reports[0]['id']}").content)
         self.assertFalse(first["tested"])
         self.assertTrue(any("No deployment reports" in reason for reason in first["reasons"]))
-        self.assertEqual(self.client.get(f"/releases/{release_id + 1}/reports/{reports[0]['id']}").status_code, 404)
+        self.assertEqual(self.client.get(f"/api/v1/releases/{release_id + 1}/reports/{reports[0]['id']}").status_code, 404)
 
     def verified_with(self, runs, statuses=None, **settings):
         if settings:
@@ -260,8 +271,8 @@ class VerificationTest(unittest.TestCase):
         self.github.statuses[SHA] = statuses or []
         release_id = self.verify()
         self.deploy(release_id)
-        self.post(f"/releases/{release_id}/verify")
-        return release_id, self.client.get(f"/releases/{release_id}").get_data(as_text=True)
+        self.post(f"/api/v1/releases/{release_id}/verify")
+        return release_id, self.reasons(release_id)
 
     def test_a_red_check_is_refused(self):
         release_id, page = self.verified_with([run("build"), run("test", "failure", run_id=2)])
@@ -285,7 +296,7 @@ class VerificationTest(unittest.TestCase):
         # Checks that are not required do not block: a red lint passes when only build is required.
         self.settings(required_checks="build")
         self.github.runs[SHA].append(run("lint", "failure", run_id=3))
-        self.post(f"/releases/{release_id}/verify")
+        self.post(f"/api/v1/releases/{release_id}/verify")
         self.assertEqual(self.state(release_id), "tested")
 
     def test_no_checks_at_all_is_refused(self):
@@ -311,7 +322,7 @@ class VerificationTest(unittest.TestCase):
         self.github.runs[SHA] = [run("build", "failure")]
         release_id = self.verify()
         self.deploy(release_id)
-        self.post(f"/releases/{release_id}/verify")
+        self.post(f"/api/v1/releases/{release_id}/verify")
         self.assertEqual(self.state(release_id), "packaged")
 
     def test_a_deployment_of_another_commit_is_not_verified_by_twin_lab(self):
@@ -319,7 +330,7 @@ class VerificationTest(unittest.TestCase):
         release_id = self.verify()
         other = Deployment(OTHER)
         self.addCleanup(other.close)
-        self.post(f"/releases/{release_id}", environment="Demo", url=other.url)
+        self.deploy(release_id, other.url)
         with closing(connect(self.database)) as db, db:
             outcome = portal.verify_release(db, release_id, self.app.config["GITHUB"], self.twin,
                                             base_url=other.url)
@@ -330,16 +341,16 @@ class VerificationTest(unittest.TestCase):
     def test_manual_test_results_need_green_checks_and_the_packaged_sha(self):
         self.github.runs[SHA] = [run("build", "failure")]
         release_id = self.verify()
-        form = {"token": self.token, "commit": SHA, "result:scenario-1": "pass", "platform": "Web",
+        form = {"commit": SHA, "results": {"scenario-1": "pass"}, "platform": "Web",
                 "launch": "python run.py", "reset_result": "pass"}
-        refused = self.client.post(f"/releases/{release_id}/test", data=form)
+        refused = self.client.post(f"/api/v1/releases/{release_id}/tests", json=form)
         self.assertEqual(refused.status_code, 400)
-        self.assertIn("Required check “build” is failure.", refused.get_data(as_text=True))
+        self.assertIn("Required check “build” is failure.", refused.json()["detail"])
         self.green()
-        wrong = self.client.post(f"/releases/{release_id}/test", data=dict(form, commit=OTHER))
+        wrong = self.client.post(f"/api/v1/releases/{release_id}/tests", json=dict(form, commit=OTHER))
         self.assertEqual(wrong.status_code, 400)
-        self.assertIn("must be the packaged commit", wrong.get_data(as_text=True))
-        self.assertEqual(self.client.post(f"/releases/{release_id}/test", data=form).status_code, 302)
+        self.assertIn("must be the packaged commit", wrong.json()["detail"])
+        self.ok(self.client.post(f"/api/v1/releases/{release_id}/tests", json=form))
         self.assertEqual(self.state(release_id), "tested")
 
     def test_a_moved_pull_request_head_invalidates_the_verification(self):
@@ -347,14 +358,13 @@ class VerificationTest(unittest.TestCase):
         self.github.pr_heads["7"] = SHA
         release_id = self.verify(pr_number="7")
         self.deploy(release_id)
-        self.post(f"/releases/{release_id}/verify")
+        self.post(f"/api/v1/releases/{release_id}/verify")
         self.assertEqual(self.state(release_id), "tested")
         self.github.pr_heads["7"] = OTHER  # a new push, or a force-push, to the pull request
-        self.post(f"/releases/{release_id}/checks")
+        self.post(f"/api/v1/releases/{release_id}/checks/refresh")
         self.assertEqual(self.state(release_id), "packaged")
-        page = self.client.get(f"/releases/{release_id}").get_data(as_text=True)
-        self.assertIn(f"Pull request #7 now points at {OTHER[:12]}", page)
-        self.post(f"/releases/{release_id}/verify")
+        self.assertIn(f"Pull request #7 now points at {OTHER[:12]}", self.reasons(release_id))
+        self.post(f"/api/v1/releases/{release_id}/verify")
         self.assertEqual(self.state(release_id), "packaged")
         # The new head is a release of its own.
         self.green(sha=OTHER)
@@ -365,19 +375,19 @@ class VerificationTest(unittest.TestCase):
         self.github.branch_heads["main"] = OTHER
         release_id = self.verify(ref="main")
         self.deploy(release_id)
-        self.post(f"/releases/{release_id}/verify")
+        self.post(f"/api/v1/releases/{release_id}/verify")
         self.assertEqual(self.state(release_id), "packaged")
-        self.assertIn("Branch main now points at", self.client.get(f"/releases/{release_id}").get_data(as_text=True))
+        self.assertIn("Branch main now points at", self.reasons(release_id))
 
     def test_windows_desktop_needs_a_windows_validation_check(self):
         release_id, page = self.verified_with([run("build (ubuntu-latest)")], target_platform="windows-desktop")
         self.assertEqual(self.state(release_id), "packaged")
         self.assertIn("Windows validation missing", page)
         self.github.runs[SHA].append(run("build (windows-latest)", "failure", run_id=2))
-        self.post(f"/releases/{release_id}/verify")
-        self.assertIn("Windows validation is not green", self.client.get(f"/releases/{release_id}").get_data(as_text=True))
+        self.post(f"/api/v1/releases/{release_id}/verify")
+        self.assertIn("Windows validation is not green", self.reasons(release_id))
         self.github.runs[SHA][1] = run("build (windows-latest)", run_id=2)
-        self.post(f"/releases/{release_id}/verify")
+        self.post(f"/api/v1/releases/{release_id}/verify")
         self.assertEqual(self.state(release_id), "tested")
         test = self.row("SELECT platform FROM release_tests WHERE release_id = ?", release_id)[0]
         self.assertEqual(test["platform"], "Windows desktop")
@@ -410,28 +420,28 @@ class VerificationTest(unittest.TestCase):
         self.assertIn("The reset check failed", page_reasons(self, release_id))
         self.twin.reset_result = {"result": "pass", "notes": "reset restored the baseline (3 table(s))"}
         self.twin.default = {"status": "pass", "cases": []}  # replayed, but nothing judged the outcome
-        self.post(f"/releases/{release_id}/verify")
+        self.post(f"/api/v1/releases/{release_id}/verify")
         self.assertEqual(self.state(release_id), "packaged")
         self.assertIn("not-run", page_reasons(self, release_id))
         # a later verification where all of it holds makes the same release Tested
         self.twin.default = FakeTwinLab().default
-        self.post(f"/releases/{release_id}/verify")
+        self.post(f"/api/v1/releases/{release_id}/verify")
         self.assertEqual(self.state(release_id), "tested")
         # and one that fails again takes it back to Packaged (the latest evidence decides)
         self.twin.reset_result = {"result": "fail", "notes": "differs"}
-        self.post(f"/releases/{release_id}/verify")
+        self.post(f"/api/v1/releases/{release_id}/verify")
         self.assertEqual(self.state(release_id), "packaged")
 
     def test_a_repository_without_github_has_no_ci_gate(self):
-        self.post("/apps/1", git_url="", next="setup")
-        page = self.client.get("/apps/1/setup").get_data(as_text=True)
-        self.assertIn("none (set a github.com Demo repository above)", page)
-        self.assertIn("Release verification", page)
+        self.ok(self.client.patch("/api/v1/apps/1", json={"git_url": ""}))
+        setup = self.ok(self.client.get("/api/v1/apps/1/setup"))
+        self.assertFalse(setup["github_repo"])  # no GitHub repository: no CI checks are read
+        self.assertEqual(setup["app"]["target_platform"], "web")  # the release verification settings stay
 
     def test_verify_commit_needs_a_full_sha_and_a_repository(self):
-        response = self.client.post("/apps/1/verify-commit", data={"token": self.token, "repo": REPO, "sha": "abc"})
+        response = self.client.post("/api/v1/apps/1/verify-commit", json={"repo": REPO, "sha": "abc"})
         self.assertEqual(response.status_code, 400)
-        response = self.client.post("/apps/1/verify-commit", data={"token": self.token, "repo": "x", "sha": SHA})
+        response = self.client.post("/api/v1/apps/1/verify-commit", json={"repo": "x", "sha": SHA})
         self.assertEqual(response.status_code, 400)
 
 

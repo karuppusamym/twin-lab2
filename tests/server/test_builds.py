@@ -18,7 +18,7 @@ import unittest
 from unittest import mock
 from zipfile import ZipFile
 
-from support import freeze as freeze_package
+from support import Client, freeze as freeze_package
 from twinlab2 import builds
 from twinlab2 import jobqueue
 from twinlab2.portal import create_app
@@ -59,38 +59,45 @@ class BuildTest(unittest.TestCase):
     # --- helpers ---
 
     def portal(self):
-        app = create_app(self.database)
-        app.testing = True
-        client = app.test_client()
-        self.assertEqual(client.get("/").status_code, 200)
-        with client.session_transaction() as session:
-            self.token = session["form_token"]
+        client = Client(create_app(self.database))
+        self.assertEqual(client.get("/api/v1/apps").status_code, 200)
         return client
 
     def post(self, path, **values):
-        return self.client.post(path, data={"token": self.token, **values})
+        return self.client.post(path, json=values)
 
     def page(self, path):
         response = self.client.get(path)
-        self.assertEqual(response.status_code, 200, response.data[:500])
-        return response.data.decode()
+        self.assertEqual(response.status_code, 200, response.text[:500])
+        return response.json()
 
     def ready_app(self, connect=True, freeze=True):
-        app_id = int(self.post("/apps", name="Orders").location.rstrip("/").rsplit("/", 1)[-1])
-        self.assertEqual(self.post(f"/apps/{app_id}/scenarios", name="Show the order screen.").status_code, 302)
+        response = self.post("/api/v1/apps", name="Orders")
+        self.assertEqual(response.status_code, 201, response.text)
+        app_id = response.json()["id"]
+        self.assertEqual(self.post(f"/api/v1/apps/{app_id}/scenarios", name="Show the order screen.").status_code, 201)
         if connect:
-            self.post("/setup/builds/repos", repo=REPO)
+            self.assertEqual(self.post("/api/v1/setup/builds/repos", repo=REPO).status_code, 201)
         if not freeze:  # the draft an owner has not approved
-            page = self.page(f"/apps/{app_id}/build-pack/preview")
-            return app_id, re.search(r"Revision <code>([0-9a-f]{64})</code>", page).group(1)
-        self.assertEqual(freeze_package(self.client, self.token, f"/apps/{app_id}").status_code, 200)
+            return app_id, self.page(f"/api/v1/apps/{app_id}/package-draft")["revision"]
+        self.assertEqual(freeze_package(self.client, app_id).status_code, 200)
         return app_id, self.revision(app_id)
 
     def revision(self, app_id):
-        return re.search(r'<option value="([0-9a-f]{64})" selected', self.page(f"/apps/{app_id}/build")).group(1)
+        return self.page(f"/api/v1/apps/{app_id}/builds")["pack"]["revision"]
 
-    def request_build(self, app_id, revision, **values):
-        return self.post(f"/apps/{app_id}/build", revision=revision, repo=REPO, base_branch="", acu_budget="7", **values)
+    def request_build(self, app_id, revision, request_key="", **values):
+        # an empty key is a request from a form without one: matched to the same unfinished request
+        return self.post(f"/api/v1/apps/{app_id}/builds", provider="devin", revision=revision, repo=REPO,
+                         base_branch="", budget=7, request_key=request_key, **values)
+
+    def started(self, response):
+        """The session id a start (or retry) answered."""
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["build"]["id"]
+
+    def detail(self, build_id=1):
+        return self.page(f"/api/v1/builds/{build_id}")
 
     def run_worker(self, jobs=1, **kwargs):
         return worker.run(self.database, once=True, ctx=self.ctx, max_jobs=jobs, lease=5, **kwargs)
@@ -108,21 +115,25 @@ class BuildTest(unittest.TestCase):
 
     def test_a_pack_that_is_not_frozen_is_not_built(self):
         app_id, revision = self.ready_app(freeze=False)
-        self.assertIn("No builder-approved package yet", self.client.get(f"/apps/{app_id}/build").data.decode())
+        page = self.page(f"/api/v1/apps/{app_id}/builds")
+        self.assertIsNone(page["pack"])
+        self.assertIn("No builder-approved package yet", page["problem"])
         response = self.request_build(app_id, revision)
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("Freeze the build pack before building", self.client.get(f"/apps/{app_id}/build").data.decode())
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Freeze the build pack before building", response.json()["detail"])
         self.assertEqual(self.db().execute("SELECT COUNT(*) FROM builds").fetchone()[0], 0)
         self.assertEqual(self.devin.requests, [])
 
     def test_build_binds_pack_repo_commit_session_and_pull_request(self):
         app_id, revision = self.ready_app()
-        page = self.page(f"/apps/{app_id}/build")
-        self.assertIn("BUILD_TASK.md", page)  # the exact pack preview
-        self.assertIn("Start build session", page)
+        page = self.page(f"/api/v1/apps/{app_id}/builds")
+        self.assertIn("BUILD_TASK.md", [f["path"] for f in page["pack"]["files"]])  # the exact pack preview
+        devin_choice = [p for p in page["providers"] if p["name"] == "devin"][0]
+        self.assertIsNone(devin_choice["ready"])  # a session can be started
         response = self.request_build(app_id, revision)
-        self.assertEqual(response.location, "/builds/1")
-        self.assertIn("Queued", self.page("/builds/1"))
+        self.assertEqual(self.started(response), 1)
+        self.assertTrue(response.json()["created"])
+        self.assertEqual(self.detail()["build"]["state_label"], "Queued")
         self.run_worker()
         build = self.build()
         session = self.devin.only_session()
@@ -140,7 +151,7 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(hashlib.sha256(archive).hexdigest(), frozen)
         self.assertIn(archive, uploaded)
         self.assertIn("BUILD_TASK.md", ZipFile(io.BytesIO(archive)).namelist())
-        self.assertIn(session["url"], self.page("/builds/1"))
+        self.assertEqual(self.detail()["build"]["provider_url"], session["url"])
 
         self.devin.finish(session["session_id"], pr=12)
         self.github.add_pull(REPO, 12, HEAD)
@@ -148,15 +159,13 @@ class BuildTest(unittest.TestCase):
         build = self.build()
         self.assertEqual((build["state"], build["pr_number"], build["head_sha"], build["provider_session_id"]),
                          ("ready_for_verification", 12, HEAD, session["session_id"]))
-        page = self.page("/builds/1")
-        self.assertIn("Ready for verification", page)
-        self.assertIn(HEAD, page)
-        self.assertNotIn(">Tested<", page)
-        self.assertNotIn("Cancel build", page)
-        verify = re.search(r'<form[^>]*id="verify-form".*?</form>', page, re.S).group(0)
-        self.assertIn(f'action="/apps/{app_id}/verify-commit"', verify)
-        self.assertIn(f'name="sha" value="{HEAD}"', verify)
-        self.assertIn('name="pr_number" value="12"', verify)
+        shown = self.detail()["build"]
+        self.assertEqual(shown["state_label"], "Ready for verification")
+        self.assertTrue(shown["final"])  # nothing left to cancel; not Tested until verified
+        # what "Verify this build" sends (POST /api/v1/apps/{id}/verify-commit)
+        self.assertEqual((shown["app_id"], shown["repo"], shown["head_sha"], shown["pr_number"]),
+                         (app_id, REPO, HEAD, 12))
+        self.assertEqual(self.db().execute("SELECT COUNT(*) FROM releases").fetchone()[0], 0)
 
     def test_answering_a_question_sends_it_to_the_session(self):
         app_id, revision = self.ready_app()
@@ -166,28 +175,33 @@ class BuildTest(unittest.TestCase):
         self.devin.ask(sid, "Should closed orders be searchable?")
         self.run_worker()
         self.assertEqual(self.build()["state"], "waiting_for_answer")
-        page = self.page("/builds/1")
-        self.assertIn("Waiting for your answer", page)
-        self.assertIn("Should closed orders be searchable?", page)
-        self.assertIn('name="answer"', page)
-        self.post("/builds/1/answer", answer="Yes, read-only.")
-        self.assertIn('data-delivery="queued"', self.page("/builds/1"))
+        detail = self.detail()
+        self.assertEqual(detail["build"]["state_label"], "Waiting for your answer")
+        self.assertIn("Should closed orders be searchable?",
+                      detail["questions"] + [m["body"] for m in detail["messages"]])
+        answered = self.post("/api/v1/builds/1/messages", answer="Yes, read-only.", request_key="")
+        self.assertEqual(answered.status_code, 201, answered.text)
+        self.assertEqual(answered.json()["message"]["state"], "queued")
+        sent = [m for m in self.detail()["messages"] if m["direction"] == "to_provider"]
+        self.assertEqual([m["state"] for m in sent], ["queued"])
         self.run_worker(jobs=2)
         self.assertEqual(self.devin.sessions[sid]["messages"][-1],
                          {"source": "user", "message": "Yes, read-only."})
         build = self.build()
         self.assertEqual(build["state"], "running")
-        self.assertIn('data-delivery="sent"', self.page("/builds/1"))
+        sent = [m for m in self.detail()["messages"] if m["direction"] == "to_provider"]
+        self.assertEqual([m["state"] for m in sent], ["sent"])
 
     def test_duplicate_build_clicks_make_one_build(self):
         app_id, revision = self.ready_app()
         first = self.request_build(app_id, revision, request_key="click-1")
         second = self.request_build(app_id, revision, request_key="click-1")
-        self.assertEqual(first.location, second.location)
-        self.assertIn("already started session #1", self.page(second.location))
+        self.assertEqual(self.started(first), self.started(second))
+        self.assertFalse(second.json()["created"])
+        self.assertIn("already started session #1", second.json()["notice"])
         # a request from a page without a key is matched to the same unfinished request
-        self.assertEqual(self.request_build(app_id, revision).location, "/builds/2")
-        self.assertEqual(self.request_build(app_id, revision).location, "/builds/2")
+        self.assertEqual(self.started(self.request_build(app_id, revision)), 2)
+        self.assertEqual(self.started(self.request_build(app_id, revision)), 2)
         db = self.db()
         self.assertEqual(db.execute("SELECT COUNT(*) FROM builds").fetchone()[0], 2)
         self.assertEqual(db.execute("SELECT COUNT(*) FROM jobs WHERE type = 'build'").fetchone()[0], 2)
@@ -211,7 +225,7 @@ class BuildTest(unittest.TestCase):
                 self.request_build(app_id, revision)
                 self.run_worker()
                 self.assertEqual(self.build()["state"], "checking_started")
-                self.assertIn("Checking whether the session started", self.page("/builds/1"))
+                self.assertEqual(self.detail()["build"]["state_label"], "Checking whether the session started")
                 self.run_worker()
                 build = self.build()
                 self.assertEqual(build["state"], "running")
@@ -271,17 +285,17 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(build["devin_session_id"], self.devin.only_session()["session_id"])
         job = self.db().execute("SELECT attempts FROM jobs WHERE type = 'build'").fetchone()
         self.assertEqual(job[0], 0)  # rescheduled to poll: the count starts again
-        self.assertIn("stopped", self.page("/setup/builds"))
+        self.assertIn("stopped", [w["state"] for w in self.page("/api/v1/setup/builds")["workers"]])
 
     def test_a_portal_restart_keeps_builds_and_their_jobs(self):
         app_id, revision = self.ready_app()
         self.request_build(app_id, revision)
         self.client = self.portal()  # a new portal process on the same catalog
-        self.assertIn("Queued", self.page("/builds/1"))
-        self.assertEqual(self.request_build(app_id, revision).location, "/builds/1")
+        self.assertEqual(self.detail()["build"]["state"], "queued")
+        self.assertEqual(self.started(self.request_build(app_id, revision)), 1)
         self.run_worker()
         self.client = self.portal()
-        self.assertIn("Running", self.page("/builds/1"))
+        self.assertEqual(self.detail()["build"]["state"], "running")
         self.assertEqual(self.devin.create_calls, 1)
 
     def test_an_expired_devin_key_fails_clearly_and_retry_works_after_the_fix(self):
@@ -293,54 +307,67 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(build["state"], "failed")
         self.assertIn("refused the key", build["error"])
         self.assertIn("DEVIN_API_KEY", build["error"])
-        page = self.page("/builds/1")
-        self.assertIn("refused the key", page)
-        self.assertIn("Retry", page)
+        shown = self.detail()["build"]
+        self.assertIn("refused the key", shown["error"])
+        self.assertEqual((shown["state"], shown["final"]), ("failed", True))  # it can be retried
         self.assertEqual(self.devin.create_calls, 0)
         os.environ["DEVIN_API_KEY"] = self.devin.key
-        self.assertEqual(self.post("/builds/1/retry").location, "/builds/2")
+        self.assertEqual(self.started(self.post("/api/v1/builds/1/retry", request_key="")), 2)
         self.run_worker()
         self.assertEqual((self.build(2)["state"], self.build(2)["attempt"]), ("running", 2))
 
     def test_an_expired_github_token_is_explained_and_starts_nothing(self):
         app_id, revision = self.ready_app()
         os.environ["TWINLAB2_GITHUB_TOKEN"] = "ghp_expired"
-        self.request_build(app_id, revision)
-        self.assertIn("GitHub refused the token", self.page(f"/apps/{app_id}/build"))
+        response = self.request_build(app_id, revision)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("GitHub refused the token", response.json()["detail"])
         self.assertEqual(self.db().execute("SELECT COUNT(*) FROM builds").fetchone()[0], 0)
-        self.post("/setup/builds/repos", repo="acme/other")
-        self.assertIn("GitHub refused the token", self.page("/setup/builds"))
+        response = self.post("/api/v1/setup/builds/repos", repo="acme/other")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("GitHub refused the token", response.json()["detail"])
+        check = self.client.post("/api/v1/setup/builds/check").json()["results"]
+        github_check = [r for r in check if r["service"] == "github"][0]
+        self.assertFalse(github_check["ok"])
+        self.assertIn("GitHub refused the token", github_check["message"])
 
     def test_setup_never_shows_secrets(self):
         os.environ.pop("DEVIN_API_KEY")
         os.environ.pop("TWINLAB2_GITHUB_TOKEN")
-        self.post("/setup/builds/settings", DEVIN_API_KEY="cog_saved_secret_value", GITHUB_TOKEN="ghp_saved_secret",
-                  DEVIN_ORG_ID="org-test", DEVIN_BASE_URL=self.devin.url, GITHUB_API=self.github.url,
-                  DEFAULT_ACU_BUDGET="9")
-        page = self.page("/setup/builds")
-        self.assertNotIn("cog_saved_secret_value", page)
-        self.assertNotIn("ghp_saved_secret", page)
-        self.assertIn("set (Setup)", page)
+        response = self.client.put("/api/v1/setup/builds/settings", json={"settings": {
+            "DEVIN_API_KEY": "cog_saved_secret_value", "GITHUB_TOKEN": "ghp_saved_secret",
+            "DEVIN_ORG_ID": "org-test", "DEVIN_BASE_URL": self.devin.url, "GITHUB_API": self.github.url,
+            "DEFAULT_ACU_BUDGET": "9"}})
+        self.assertEqual(response.status_code, 200, response.text)
+        for shown in (response, self.client.get("/api/v1/setup/builds")):
+            self.assertNotIn("cog_saved_secret_value", shown.text)
+            self.assertNotIn("ghp_saved_secret", shown.text)
+        setup = self.page("/api/v1/setup/builds")
+        self.assertEqual((setup["devin"]["api_key_set"], setup["devin"]["api_key_source"]), (True, "Setup"))
+        self.assertEqual((setup["github"]["token_set"], setup["github"]["source"]), (True, "Setup"))
+        self.assertTrue(setup["saved"]["DEVIN_API_KEY"])
         # an empty box keeps the saved secret
-        self.post("/setup/builds/settings", DEVIN_API_KEY="", GITHUB_TOKEN="")
+        self.client.put("/api/v1/setup/builds/settings", json={"settings": {"DEVIN_API_KEY": "", "GITHUB_TOKEN": ""}})
         self.assertEqual(builds.stored_settings(self.db())["DEVIN_API_KEY"], "cog_saved_secret_value")
-        self.post("/setup/builds/check")
-        self.assertIn("refused the key", self.page("/setup/builds"))  # the fake accepts only its own key
+        check = self.client.post("/api/v1/setup/builds/check").json()["results"]
+        devin_check = [r for r in check if r["service"] == "devin"][0]
+        self.assertFalse(devin_check["ok"])
+        self.assertIn("refused the key", devin_check["message"])  # the fake accepts only its own key
 
     def test_cancel_stops_the_session(self):
         app_id, revision = self.ready_app()
         self.request_build(app_id, revision)
         self.run_worker()
-        self.post("/builds/1/cancel")
+        response = self.post("/api/v1/builds/1/cancel")
+        self.assertEqual(response.status_code, 200, response.text)
         build = self.build()
         self.assertEqual(build["state"], "cancelled")
         self.run_worker(jobs=3)
         self.assertTrue(self.devin.only_session()["terminated"])
         self.assertEqual(self.build()["state"], "cancelled")
-        page = self.page("/builds/1")
-        self.assertIn("Cancelled", page)
-        self.assertIn("Retry", page)
-        self.assertEqual(self.request_build(app_id, revision).location, "/builds/2")
+        shown = self.detail()["build"]
+        self.assertEqual((shown["state_label"], shown["final"]), ("Cancelled", True))  # it can be retried
+        self.assertEqual(self.started(self.request_build(app_id, revision)), 2)
 
     def test_cancel_while_checking_stops_a_session_the_create_made(self):
         self.devin.create_plan = ["fail_after_create"]
@@ -348,7 +375,7 @@ class BuildTest(unittest.TestCase):
         self.request_build(app_id, revision)
         self.run_worker()
         self.assertEqual(self.build()["state"], "checking_started")
-        self.post("/builds/1/cancel")
+        self.post("/api/v1/builds/1/cancel")
         self.run_worker(jobs=3)
         self.assertTrue(self.devin.only_session()["terminated"])
         self.assertEqual(self.devin.create_calls, 1)
@@ -361,12 +388,14 @@ class BuildTest(unittest.TestCase):
         self.devin.finish(sid, pr=3)
         self.github.add_pull(REPO, 3, HEAD)
         self.run_worker()
-        self.post(f"/apps/{app_id}/scenarios", name="Print the invoice.")
-        freeze_package(self.client, self.token, f"/apps/{app_id}")
+        self.post(f"/api/v1/apps/{app_id}/scenarios", name="Print the invoice.")
+        freeze_package(self.client, app_id)
         second = self.revision(app_id)
         self.assertNotEqual(first, second)
-        self.request_build(app_id, second)
-        self.assertIn("Say what changed since the previous build", self.page(f"/apps/{app_id}/build"))
+        response = self.request_build(app_id, second)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Say what changed since the previous build", response.json()["detail"])
+        self.assertTrue(self.page(f"/api/v1/apps/{app_id}/builds")["changes"])  # what changed, to summarise
         self.request_build(app_id, second, change_summary="Added the invoice scenario.")
         self.run_worker()
         later = self.build(2)
@@ -379,11 +408,11 @@ class BuildTest(unittest.TestCase):
         self.assertIn("changed evidence.json", prompt)
 
     def test_every_build_route_requires_a_role(self):
-        source = (SERVER / "twinlab2" / "builds_web.py").read_text(encoding="utf-8")
-        routes = re.findall(r"@app\.(?:get|post|route)\([^\n]*\n\s+(@[^\n]*)\n\s+def \w+", source)
+        source = (SERVER / "twinlab2" / "routes_builds.py").read_text(encoding="utf-8")
+        routes = re.findall(r"@routes\.(?:get|post|put|patch|delete)\((.*?)\)\s*\ndef \w+", source, re.S)
         self.assertGreater(len(routes), 10)
         for decorator in routes:
-            self.assertRegex(decorator, r"@require_role\(")
+            self.assertRegex(decorator, r"require_role\(")
 
 
 class JobQueueTest(unittest.TestCase):

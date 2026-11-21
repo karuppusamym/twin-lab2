@@ -25,7 +25,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
@@ -34,12 +33,11 @@ import time
 import unittest
 from unittest import mock
 
-from werkzeug.serving import make_server
 
 from twinlab2_recorder import main as agent_main
 from twinlab2_recorder import settings as st
 from twinlab2.portal import create_app
-from support import new_database
+from support import Client, Server, new_database
 
 PAGE = b"""<!DOCTYPE html><html><head><title>Orders</title></head><body>
 <form id="f" onsubmit="event.preventDefault(); fetch('/api/find?q=' + q.value).then(r => r.json())
@@ -112,24 +110,19 @@ class EndToEndTest(unittest.TestCase):
         threading.Thread(target=site.serve_forever, daemon=True).start()
         site_url = f"http://127.0.0.1:{site.server_address[1]}"
         app = create_app(new_database(work))
-        server = make_server("127.0.0.1", 0, app, threaded=True)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        portal = f"http://127.0.0.1:{server.server_port}"
-        ui = app.test_client()
-        ui.get("/")
-        with ui.session_transaction() as session:
-            token = session["form_token"]
+        server = Server(app)
+        portal = server.url
+        ui = Client(app)
         try:
             with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(work / "local")}):
                 # in the portal: a pairing code, an application, an automation, a session
-                ui.post("/machines/pair", data={"token": token})
-                code = re.search(r'id="pair-code">([A-Z0-9-]+)<', ui.get("/machines").data.decode()).group(1)
+                code = ui.post("/api/v1/machines/pairing-codes").json()["display"]
                 self.assertEqual(agent_main.main(["pair", "--portal", portal, "--code", code, "--name", "Test PC"]), 0)
-                ui.post("/apps", data={"token": token, "name": "Orders web"})
-                ui.post("/apps/1/identity", data={"token": token, "key": site_url})
-                ui.post("/automations", data={"token": token, "name": "UiPath orders", "kind": "uipath", "app": "1"})
-                ui.post("/sessions", data={"token": token, "name": "Orders trial", "machine_id": "1",
-                                           "automation_id": "1", "app": "1", "level_1": "full"})
+                ui.post("/api/v1/apps", json={"name": "Orders web"})
+                ui.post("/api/v1/apps/1/identities", json={"key": site_url})
+                ui.post("/api/v1/automations", json={"name": "UiPath orders", "kind": "uipath", "apps": [1]})
+                ui.post("/api/v1/capture-sessions", json={"name": "Orders trial", "machine_id": 1, "automation_id": 1,
+                                                          "targets": [{"app_id": 1, "level": "full"}]})
                 # on the PC: the offered session, CaseDesk added as its own target
                 cfg = st.Settings(st.data_dir())
                 offered = agent_main._portal(cfg, None).sessions()
@@ -170,28 +163,28 @@ class EndToEndTest(unittest.TestCase):
                 self.assertFalse([n for n in notes if "script failed" in n], notes)
                 result = agent_main.send(cfg, folder.name)
             # in the portal: the recording, mapped
-            recording = ui.get(f"/recordings/{result['recording_id']}").data.decode()
-            self.assertIn("Orders web", recording)
-            self.assertIn("CaseDesk", recording)
-            self.assertIn("discovered", recording)
-            self.assertIn("Other applications", recording)
-            self.assertIn("UiPath orders", recording)
+            detail = ui.get(f"/api/v1/recordings/{result['recording_id']}").json()
+            recording = json.dumps(detail)
+            names = {a["name"]: a for a in detail["refs"]["apps"]}
+            self.assertIn("Orders web", names)
+            self.assertIn("CaseDesk", names)
+            self.assertEqual(names["CaseDesk"]["status"], "discovered")
+            self.assertIn("Other applications", [run["name"] for run in detail["refs"]["timeline"]])
+            self.assertEqual(detail["refs"]["automation"], "UiPath orders")
             for leak in ("otepad", "C-7", "tester"):
                 self.assertNotIn(leak, recording)
-            web_app = ui.get("/apps/1").data.decode()
-            self.assertIn("UiPath orders", web_app)
-            self.assertIn("<td>go</td>", web_app)  # the web flow: button#go
-            self.assertIn("<td>q</td>", web_app)  # and input#q, never what was typed
-            desk = next(a for a in json.loads(ui.get("/api/agent/apps", headers={
-                "Authorization": f"Bearer {st.Settings(work / 'local' / st.APP).token()}"}).data)["apps"]
-                if a["name"] == "CaseDesk")  # fmt: skip
-            desk_page = ui.get(f"/apps/{desk['app_id']}").data.decode()
-            self.assertIn("btnSave", desk_page)
-            self.assertIn("UiPath orders", desk_page)
-            self.assertIn("recorded", ui.get("/sessions").data.decode())
+            web = ui.get("/api/v1/apps/1/evidence").json()
+            self.assertIn("UiPath orders", [a["name"] for a in web["automations"]])
+            labels = [step.get("label") for flow in web["recorded_flows"] for step in flow["steps"]]
+            self.assertIn("go", labels)  # the web flow: button#go
+            self.assertIn("q", labels)  # and input#q, never what was typed
+            desk = ui.get(f"/api/v1/apps/{names['CaseDesk']['app_id']}/evidence").json()
+            self.assertIn("btnSave", [s.get("label") for flow in desk["recorded_flows"] for s in flow["steps"]])
+            self.assertIn("UiPath orders", [a["name"] for a in desk["automations"]])
+            self.assertEqual(ui.get("/api/v1/capture-sessions").json()["sessions"][0]["status"], "recorded")
             print(f"\nE2E session folder: {folder}\nportal recording: {result['recording_id']}")
         finally:
-            server.shutdown()
+            server.stop()
             site.shutdown()
 
 

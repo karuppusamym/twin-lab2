@@ -7,10 +7,8 @@ import io
 import json
 import os
 from pathlib import Path
-import re
 from contextlib import closing
 import tempfile
-import threading
 import time
 import unittest
 from unittest import mock
@@ -25,13 +23,12 @@ import boto3  # noqa: E402
 from botocore.config import Config  # noqa: E402
 from moto import mock_aws  # noqa: E402
 from moto.server import ThreadedMotoServer  # noqa: E402
-from werkzeug.serving import make_server  # noqa: E402
 
 from twinlab2 import artifacts  # noqa: E402
 from twinlab2_recorder.client import Portal, PortalError  # noqa: E402
 from twinlab2_recorder.upload_queue import UploadQueue  # noqa: E402
 from twinlab2.portal import create_app  # noqa: E402
-from support import freeze  # noqa: E402
+from support import Client, Server, freeze  # noqa: E402
 from test_registry import CV, references  # noqa: E402
 from twinlab2.db import state_dir
 from support import connect, new_database
@@ -93,18 +90,22 @@ class LocalStoreTest(unittest.TestCase):
 
     def test_presigned_local_url_expires(self):
         app = create_app(new_database(self.root))
-        with app.test_request_context():
+        # what a portal request binds: the app's store, its secret and its /artifacts/<token> route
+        bound = artifacts.bind(artifacts.Binding(app.state.artifacts, app.config["SECRET_KEY"],
+                                                 lambda token: f"http://localhost/artifacts/{token}"))
+        try:
             ref = artifacts.put(b"pack", kind="builder_package", app_id=1, content_type="application/zip")
             url = artifacts.presign_get(ref, 60, filename="pack.zip")
-        client = app.test_client()
+        finally:
+            artifacts.unbind(bound)
+        client = Client(app).http
         path = url.split("localhost", 1)[-1]
-        with client.get(path) as response:
-            self.assertEqual((response.status_code, response.data), (200, b"pack"))
-            self.assertIn("pack.zip", response.headers["Content-Disposition"])
-        with client.get(path[:-3] + "xyz") as response:
-            self.assertEqual(response.status_code, 403)
-        with mock.patch("twinlab2.artifacts.time.time", return_value=time.time() + 120), client.get(path) as response:
-            self.assertEqual(response.status_code, 403)
+        response = client.get(path)
+        self.assertEqual((response.status_code, response.content), (200, b"pack"))
+        self.assertIn("pack.zip", response.headers["Content-Disposition"])
+        self.assertEqual(client.get(path[:-3] + "xyz").status_code, 403)
+        with mock.patch("twinlab2.artifacts.time.time", return_value=time.time() + 120):
+            self.assertEqual(client.get(path).status_code, 403)
 
 
 @mock_aws
@@ -138,20 +139,17 @@ class S3StoreTest(unittest.TestCase):
     def test_portal_on_s3_redirects_downloads_to_presigned_urls(self):
         with tempfile.TemporaryDirectory() as work, mock.patch.dict(
                 os.environ, {"TWINLAB2_ARTIFACT_BACKEND": "s3", "TWINLAB2_S3_BUCKET": "evidence"}):
-            app = create_app(new_database(work))
-            app.extensions["artifacts"] = self.store
-            client = app.test_client()
-            client.get("/")
-            with client.session_transaction() as session:
-                token = session["form_token"]
-            client.post("/apps", data={"token": token, "name": "Orders"})
-            client.post("/apps/1/scenarios", data={"token": token, "name": "Find", "expected": "Found."})
-            response = freeze(client, token, "/apps/1")
-            self.assertEqual(response.status_code, 302)
+            app = create_app(new_database(work), store=self.store)
+            client = Client(app)
+            self.assertEqual(client.post("/api/v1/apps", json={"name": "Orders"}).status_code, 201)
+            self.assertEqual(client.post("/api/v1/apps/1/scenarios", json={"name": "Find", "expected": "Found."})
+                             .status_code, 201)
+            response = freeze(client, 1)
+            self.assertEqual(response.status_code, 302, response.text[:500])
             self.assertIn("X-Amz-Signature", response.headers["Location"])
-            page = client.get("/setup").data.decode()
-            self.assertIn("evidence", page)
-            self.assertNotIn("testing", page)
+            storage = client.get("/api/v1/setup").json()["storage"]
+            self.assertIn("evidence", str(storage))
+            self.assertNotIn("testing", str(storage))
 
 
 class MigrationTest(unittest.TestCase):
@@ -182,33 +180,31 @@ class MigrationTest(unittest.TestCase):
 
     def test_old_rows_work_before_during_and_after_the_migration(self):
         with mock.patch.dict(os.environ, {"TWINLAB2_ARTIFACT_MIGRATE": "0"}):
-            client = create_app(self.database).test_client()
-        self.assertEqual(client.get("/apps/1/briefs/r1").data, self.pack)  # not migrated yet: from the blob
-        self.assertEqual(client.get("/releases/1/download").data, self.release)
+            client = Client(create_app(self.database))
+        self.assertEqual(client.get("/api/v1/apps/1/briefs/r1/download").content, self.pack)  # not migrated yet: from the blob
+        self.assertEqual(client.get("/api/v1/releases/1/download").content, self.release)
 
-        client = create_app(self.database).test_client()  # the start copies and checks
+        client = Client(create_app(self.database))  # the start copies and checks
         rows = self.rows()
         self.assertIsNotNone(rows["attachments"][0][0])
         self.assertIsNotNone(rows["packs"][0][0])
         self.assertEqual([(v, a is not None) for v, a, _ in rows["releases"]], [("1.0", True), ("1.1", False)])
-        self.assertEqual(client.get("/apps/1/briefs/r1").data, self.pack)
-        self.assertEqual(client.get("/releases/1/download").data, self.release)
-        self.assertEqual(client.get("/releases/2/download").data, b"PK-bad")  # not copied: still its blob
+        self.assertEqual(client.get("/api/v1/apps/1/briefs/r1/download").content, self.pack)
+        self.assertEqual(client.get("/api/v1/releases/1/download").content, self.release)
+        self.assertEqual(client.get("/api/v1/releases/2/download").content, b"PK-bad")  # not copied: still its blob
         with closing(connect(self.database)) as db:
             store = artifacts.from_env(self.database)
             self.assertEqual(artifacts.migrate_blobs(db, store)["copied"], 0)  # runs again, copies nothing twice
             self.assertEqual(artifacts.purge_blobs(db, store)["purged"], 3)
         rows = self.rows()
         self.assertEqual(rows["packs"][0][1], 0)
-        self.assertEqual(client.get("/apps/1/briefs/r1").data, self.pack)  # now from the artifact
-        self.assertEqual(client.get("/releases/1/download").data, self.release)
-        client.get("/")
-        with client.session_transaction() as session:
-            token = session["form_token"]
-        client.post("/apps/1/scenarios", data={"token": token, "name": "Find", "expected": "Found."})
+        self.assertEqual(client.get("/api/v1/apps/1/briefs/r1/download").content, self.pack)  # now from the artifact
+        self.assertEqual(client.get("/api/v1/releases/1/download").content, self.release)
+        self.assertEqual(client.post("/api/v1/apps/1/scenarios", json={"name": "Find", "expected": "Found."})
+                         .status_code, 201)
         # an attachment stored before roles is restricted evidence until the owner shares it
-        client.post("/apps/1/attachments/1/share", data={"token": token, "share": "reviewed"})
-        with ZipFile(io.BytesIO(freeze(client, token, "/apps/1").data)) as pack:
+        self.assertEqual(client.patch("/api/v1/apps/1/attachments/1", json={"share": "reviewed"}).status_code, 200)
+        with ZipFile(io.BytesIO(freeze(client, 1).content)) as pack:
             content = pack.read([n for n in pack.namelist() if n.startswith("attachments/")][0])
             self.assertEqual(json.loads(content), {"a": 1})
 
@@ -224,11 +220,11 @@ class MigrationTest(unittest.TestCase):
         with mock.patch("twinlab2.artifacts.put", corrupting_put):
             create_app(self.database)
         self.assertEqual(self.rows()["packs"][0][0], None)
-        self.assertEqual(create_app(self.database).test_client().get("/apps/1/briefs/r1").data, self.pack)
+        self.assertEqual(Client(create_app(self.database)).get("/api/v1/apps/1/briefs/r1/download").content, self.pack)
 
 
 class UploadApiTest(unittest.TestCase):
-    """The resumable upload API against the local backend, through Flask's test client."""
+    """The resumable upload API against the local backend, through the ASGI test client."""
 
     def setUp(self):
         work = tempfile.TemporaryDirectory()
@@ -238,17 +234,13 @@ class UploadApiTest(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.start_portal()
-        self.client.get("/")
-        with self.client.session_transaction() as session:
-            form = session["form_token"]
-        self.client.post("/machines/pair", data={"token": form})
-        code = re.search(r'id="pair-code">([A-Z0-9-]+)<', self.client.get("/machines").data.decode()).group(1)
-        self.machine = self.client.post("/api/agent/pair", json={"contract_version": CV, "code": code, "name": "PC"}).json["token"]
+        code = Client(self.app).post("/api/v1/machines/pairing-codes").json()["code"]
+        self.machine = self.client.post("/api/agent/pair", json={"contract_version": CV, "code": code, "name": "PC"}).json()["token"]
         self.data = os.urandom(CHUNK * 3 + 100)
 
     def start_portal(self):
         self.app = create_app(self.database)
-        self.client = self.app.test_client()
+        self.client = Client(self.app).http  # the recorder's API: no CSRF, not under /api/v1
 
     def init(self, sha=None, size=None, token=None):
         return self.client.post("/api/uploads", headers={"Authorization": f"Bearer {token or self.machine}"},
@@ -256,7 +248,7 @@ class UploadApiTest(unittest.TestCase):
                                       "sha256": sha or digest(self.data)})
 
     def put(self, up, offset):
-        return self.client.put(f"/api/uploads/{up['upload_id']}?offset={offset}", data=self.data[offset:offset + CHUNK],
+        return self.client.put(f"/api/uploads/{up['upload_id']}?offset={offset}", content=self.data[offset:offset + CHUNK],
                                headers={"Authorization": f"Bearer {up['upload_token']}"})
 
     def call(self, method, up, suffix=""):
@@ -264,11 +256,11 @@ class UploadApiTest(unittest.TestCase):
                                             headers={"Authorization": f"Bearer {up['upload_token']}"})
 
     def progress(self):
-        return self.client.get(f"/api/recordings/ws-{SESSION}/upload").json
+        return self.client.get(f"/api/recordings/ws-{SESSION}/upload").json()
 
     def test_interrupted_upload_resumes_across_a_portal_restart(self):
         self.assertEqual(self.client.get(f"/api/recordings/ws-{SESSION}/upload").status_code, 404)
-        up = self.init().json
+        up = self.init().json()
         self.assertEqual((up["state"], up["received_bytes"], up["mode"], up["chunk_size"]), ("receiving", 0, "portal", CHUNK))
         self.assertEqual(self.put(up, 0).status_code, 200)
         self.assertEqual(self.put(up, CHUNK).status_code, 200)
@@ -278,38 +270,39 @@ class UploadApiTest(unittest.TestCase):
 
         self.start_portal()  # the portal restarts in the middle of the upload
         status = self.call("get", up)
-        self.assertEqual((status.status_code, status.json["received_bytes"]), (200, 2 * CHUNK))
+        self.assertEqual((status.status_code, status.json()["received_bytes"]), (200, 2 * CHUNK))
         self.assertEqual(status.headers["Upload-Offset"], str(2 * CHUNK))
         wrong = self.put(up, 0)  # a chunk at the wrong offset is refused with the right one
-        self.assertEqual((wrong.status_code, wrong.json["received_bytes"]), (409, 2 * CHUNK))
-        again = self.init().json  # the recorder restarted too: init resumes the same upload
+        self.assertEqual((wrong.status_code, wrong.json()["received_bytes"]), (409, 2 * CHUNK))
+        again = self.init().json()  # the recorder restarted too: init resumes the same upload
         self.assertEqual((again["upload_id"], again["received_bytes"]), (up["upload_id"], 2 * CHUNK))
         self.assertEqual(self.call("get", up).status_code, 401)  # the old authorisation was replaced
         for offset in (2 * CHUNK, 3 * CHUNK):
             self.assertEqual(self.put(again, offset).status_code, 200)
         done = self.call("post", again, "/complete")
-        self.assertEqual((done.status_code, done.json["state"]), (200, "confirmed"))
-        self.assertEqual(done.json["artifact"]["sha256"], digest(self.data))
+        self.assertEqual((done.status_code, done.json()["state"]), (200, "confirmed"))
+        self.assertEqual(done.json()["artifact"]["sha256"], digest(self.data))
         self.assertEqual(self.progress()["state"], "confirmed")
-        with self.app.app_context(), closing(connect(self.database)) as db:
+        with closing(connect(self.database)) as db:
             row = db.execute("SELECT artifact_id FROM uploads").fetchone()
             ref = artifacts.load(db, row["artifact_id"])
-            self.assertEqual((ref.kind, artifacts.read(ref)), ("restricted_evidence", self.data))
+            self.assertEqual((ref.kind, artifacts.read(ref, target=self.app.state.artifacts)),
+                             ("restricted_evidence", self.data))
         self.assertEqual(list((state_dir(self.database) / "artifacts" / "uploads").iterdir()), [])  # staging gone
-        self.assertEqual(self.init().json["state"], "confirmed")  # sending it again changes nothing
+        self.assertEqual(self.init().json()["state"], "confirmed")  # sending it again changes nothing
 
     def test_a_checksum_mismatch_is_rejected(self):
-        up = self.init(sha="1" * 64).json
+        up = self.init(sha="1" * 64).json()
         for offset in range(0, len(self.data), CHUNK):
             self.put(up, offset)
         done = self.call("post", up, "/complete")
         self.assertEqual(done.status_code, 422)
-        self.assertIn("checksum mismatch", done.json["error"])
+        self.assertIn("checksum mismatch", done.json()["error"])
         self.assertEqual(self.progress()["state"], "rejected")
         self.assertIn("checksum mismatch", self.progress()["last_error"])
         with closing(connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM artifacts").fetchone()[0], 0)
-        retry = self.init(sha="1" * 64).json  # a new upload, from the beginning
+        retry = self.init(sha="1" * 64).json()  # a new upload, from the beginning
         self.assertNotEqual(retry["upload_id"], up["upload_id"])
         self.assertEqual(retry["received_bytes"], 0)
 
@@ -317,27 +310,16 @@ class UploadApiTest(unittest.TestCase):
         self.assertEqual(self.init(token="x" * 50).status_code, 401)
         old = self.client.post("/api/uploads", headers={"Authorization": f"Bearer {self.machine}"},
                                json={"session_id": SESSION, "size": 1, "sha256": "0" * 64})
-        self.assertEqual((old.status_code, old.json["update"]), (426, "recorder"))
+        self.assertEqual((old.status_code, old.json()["update"]), (426, "recorder"))
         self.assertEqual(self.init(size=-1).status_code, 400)
-        up = self.init().json
-        short = self.client.put(f"/api/uploads/{up['upload_id']}?offset=0", data=b"short",
+        up = self.init().json()
+        short = self.client.put(f"/api/uploads/{up['upload_id']}?offset=0", content=b"short",
                                 headers={"Authorization": f"Bearer {up['upload_token']}"})
         self.assertEqual(short.status_code, 400)  # only the last chunk may be short
         with mock.patch("twinlab2.uploads._now", return_value=datetime.now(timezone.utc) + timedelta(hours=2)):
             expired = self.put(up, 0)
-        self.assertEqual((expired.status_code, expired.json["expired"]), (401, True))
+        self.assertEqual((expired.status_code, expired.json()["expired"]), (401, True))
         self.assertEqual(self.client.get("/api/uploads/nope", headers={"Authorization": "Bearer x"}).status_code, 404)
-
-
-class Server:
-    def __init__(self, app):
-        self.server = make_server("127.0.0.1", 0, app, threaded=True)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.url = f"http://127.0.0.1:{self.server.server_port}"
-
-    def stop(self):
-        self.server.shutdown()
-        self.server.server_close()
 
 
 class FlakyPortal:
@@ -378,12 +360,7 @@ class QueueTest(unittest.TestCase):
         self.addCleanup(env.stop)
         self.server = Server(create_app(self.database))
         self.addCleanup(lambda: self.server.stop())
-        ui = self.server.server.app.test_client()
-        ui.get("/")
-        with ui.session_transaction() as session:
-            form = session["form_token"]
-        ui.post("/machines/pair", data={"token": form})
-        code = re.search(r'id="pair-code">([A-Z0-9-]+)<', ui.get("/machines").data.decode()).group(1)
+        code = Client(self.server.app).post("/api/v1/machines/pairing-codes").json()["code"]
         self.token = Portal(self.server.url).pair(code, "PC")["token"]
         self.session = self.root / "recorder" / "recordings" / SESSION
         self.session.mkdir(parents=True)
@@ -400,7 +377,7 @@ class QueueTest(unittest.TestCase):
     def stored(self):
         with closing(connect(self.database)) as db:
             row = db.execute("SELECT artifact_id FROM uploads WHERE state = 'confirmed'").fetchone()
-            return artifacts.read(artifacts.load(db, row["artifact_id"]), target=self.server.server.app.extensions["artifacts"])
+            return artifacts.read(artifacts.load(db, row["artifact_id"]), target=self.server.app.state.artifacts)
 
     def test_queue_survives_network_loss_and_restarts_and_resumes(self):
         queue = UploadQueue(self.root / "recorder")
@@ -427,7 +404,7 @@ class QueueTest(unittest.TestCase):
         with ZipFile(io.BytesIO(self.stored())) as archive:
             self.assertEqual(sorted(archive.namelist()), ["steps.jsonl"])
             self.assertEqual(archive.read("steps.jsonl"), (self.session / "steps.jsonl").read_bytes())
-        status = self.server.server.app.test_client().get(f"/api/recordings/ws-{SESSION}/upload").json
+        status = Client(self.server.app).http.get(f"/api/recordings/ws-{SESSION}/upload").json()
         self.assertEqual(status["state"], "confirmed")
 
     def test_portal_restart_in_the_middle_of_a_chunked_upload(self):

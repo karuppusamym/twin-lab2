@@ -24,7 +24,7 @@ from twinlab2 import auth
 from twinlab2 import event_ids
 from twinlab2 import shapes
 from twinlab2.auth import require_role
-from twinlab2.registry import (CODE_ALPHABET, CODE_LENGTH, CODE_MINUTES, FAILURES_PER_10_MIN, LEVELS, STATUSES,
+from twinlab2.registry import (CODE_ALPHABET, CODE_LENGTH, CODE_MINUTES, FAILURES_PER_10_MIN, LEVELS,
                                clean_references, contract_refusal, discovered_name, merge_references,
                                normalise_key, now, path_matches,
                                recorder_of, recording_status, sha, target_of, web_parts)

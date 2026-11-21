@@ -13,7 +13,6 @@ Tests of catalogs made by older portals stay on SQLite: those catalogs only exis
 
 import atexit
 import os
-import re
 from pathlib import Path
 import uuid
 from urllib.parse import urlsplit, urlunsplit

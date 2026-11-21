@@ -8,7 +8,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": { target: "http://127.0.0.1:5000", changeOrigin: false },
+      "/api": { target: process.env.TWINLAB2_PORTAL ?? "http://127.0.0.1:8765", changeOrigin: false },
+      "/artifacts": { target: process.env.TWINLAB2_PORTAL ?? "http://127.0.0.1:8765", changeOrigin: false },
     },
   },
   build: {
