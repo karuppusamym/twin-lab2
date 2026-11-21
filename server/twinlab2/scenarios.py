@@ -9,6 +9,8 @@ unresolved questions and free notes. Scenarios replace the single free-text requ
 import json
 import re
 
+from twinlab2 import readiness_cache
+
 # The table is created by migrations.py (baseline).
 
 # The text fields of a scenario, the form label of each, and its size limit.
@@ -34,6 +36,7 @@ def import_requirements(db):
         db.execute("INSERT INTO scenarios(app_id, position, name, notes) VALUES (?, ?, ?, ?)",
                    (app_id, next_position(db, app_id), MIGRATED_NAME, text.strip()))
         db.execute("UPDATE apps SET requirements = '' WHERE id = ?", (app_id,))
+        readiness_cache.forget(db, app_id)
 
 
 def next_position(db, app_id):
@@ -83,6 +86,7 @@ def save(db, app_id, values, scenario_id=None, expected_revision=None):
     """Add a scenario, or change one (+1 revision). With `expected_revision`, a scenario changed
     since raises Stale and nothing is written."""
     with db:
+        readiness_cache.forget(db, app_id)
         if scenario_id is None:
             return db.execute(
                 f"INSERT INTO scenarios(app_id, position, {', '.join(values)}) VALUES (?, ?{', ?' * len(values)}) RETURNING id",
@@ -103,6 +107,7 @@ def save(db, app_id, values, scenario_id=None, expected_revision=None):
 
 def remove(db, app_id, scenario_id, expected_revision=None):
     with db:
+        readiness_cache.forget(db, app_id)
         guard, args = ("", ()) if expected_revision is None else (" AND revision = ?", (expected_revision,))
         gone = db.execute(f"DELETE FROM scenarios WHERE id = ? AND app_id = ?{guard}",
                           (scenario_id, app_id, *args)).rowcount

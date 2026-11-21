@@ -239,6 +239,7 @@ def build(state, scale=False):
         "TWINLAB2_GITHUB_TOKEN": builds_github.token, "TWINLAB2_GITHUB_API": builds_github.url,
         "TWINLAB2_WORKSPACES": str(state / "workspaces"), "TWINLAB2_STATE": str(state),
         "TWINLAB2_DEV_WORKER": "0", "TWINLAB2_SECRET_KEY": "demo-only", "TWINLAB2_HOSTS": "localhost,127.0.0.1",
+        "TWINLAB2_BIND_HOST": "127.0.0.1",  # uvicorn.run below listens there
         # everyone signs in with their own password (alice, bob, vera), even on this machine
         "TWINLAB2_AUTH_MODE": "individual",
         # a demo portal: the stand-in build provider is offered on the Build page

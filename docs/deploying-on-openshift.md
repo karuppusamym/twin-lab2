@@ -59,6 +59,13 @@ Then run `oc apply -f deploy/openshift-portal.yaml`.
 - `TWINLAB2_SECURE_COOKIES=1`: the session cookie is sent over HTTPS only.
 - Recorders reach `/api/agent/` and `/api/uploads` through the proxy without a sign-in, using their
   machine token. The kubelet reaches `/livez`, `/readyz` and `/healthz` the same way.
+- The portal listens on `127.0.0.1:8080` (the Dockerfile's `gunicorn --bind`): only the sidecar
+  reaches it, so no `TWINLAB2_PROXY_SECRET` is needed. If you change the bind to `0.0.0.0` and
+  widen `TWINLAB2_TRUSTED_PROXIES` to a network, the portal refuses to start until
+  `TWINLAB2_PROXY_SECRET` is set (the proxy then sends it as `X-TwinLab-Proxy-Secret`).
+- The agent API's machine tokens have scopes (`record`, `upload`) and a per-machine rate limit
+  (`TWINLAB2_AGENT_RATE`, default 600 a minute, shared by every replica): see
+  [AGENT-API-SECURITY.md](AGENT-API-SECURITY.md).
 
 ## Health checks
 

@@ -175,7 +175,11 @@ class ApiTest(unittest.TestCase):
     def test_catalog_and_application(self):
         alice = self.as_("alice")
         catalog = self.ok(alice.get("/api/v1/apps"))
-        self.assertEqual([a["name"] for a in catalog["apps"]], ["Billing Desk", "CaseDesk"])
+        # grouped by status family: CaseDesk is in build, Billing Desk has a Tested release
+        self.assertEqual([(a["name"], a["family"]) for a in catalog["apps"]],
+                         [("CaseDesk", "build"), ("Billing Desk", "tested")])
+        self.assertEqual({g["family"]: g["count"] for g in catalog["groups"]},
+                         {"decide": 0, "build": 1, "tested": 1, "published": 0, "not_replicated": 0})
         self.assertIn(RECORDING, [r["id"] for r in catalog["recordings"]])
         detail = self.ok(alice.get(f"/api/v1/apps/{self.billing}"))
         self.assertEqual(detail["packages"][0]["rev"], 1)

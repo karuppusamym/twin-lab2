@@ -34,6 +34,7 @@ from twinlab2 import journey
 from twinlab2 import pack_validator
 from twinlab2 import packages
 from twinlab2 import portal
+from twinlab2 import readiness_cache
 from twinlab2 import recording_export
 from twinlab2 import redact
 from twinlab2 import registry
@@ -142,9 +143,22 @@ def tested_releases():
     return found
 
 
-def app_summary(row, tested=None):
+def release_states(app_id=None):
+    """{app_id: the states of its releases}, of one application or of all."""
+    sql, args = "SELECT app_id, state FROM releases", ()
+    if app_id is not None:
+        sql, args = sql + " WHERE app_id = ?", (app_id,)
+    found = {}
+    for row in db().execute(sql, args).fetchall():
+        found.setdefault(row["app_id"], set()).add(row["state"])
+    return found
+
+
+def app_summary(row, tested=None, states=None):
+    states = states if states is not None else release_states(row["id"])
     return {"id": row["id"], "name": row["name"], "status": row["status"],
-            "status_label": shapes.status_label(row["status"]), "owner": row["owner"] or "",
+            "status_label": shapes.status_label(row["status"]),
+            "family": journey.family(row["status"], states.get(row["id"], ())), "owner": row["owner"] or "",
             "purpose": row["purpose"] or "", "my_role": auth.role_of(db(), row["id"], g.user),
             "journey": shapes.journey(journey.for_app(db(), row)),
             "tested_release": (tested if tested is not None else tested_releases()).get(row["id"])}
@@ -253,8 +267,8 @@ def list_apps():
     if sort and sort.lstrip("-") not in APP_SORTS:
         fail(400, "Sort by name, owner, status or stage.", errors=[{"field": "sort", "message": "unknown sort"}])
     rows = visible(db().execute("SELECT * FROM apps ORDER BY status = 'not_replicated', name").fetchall())
-    tested = tested_releases()
-    apps = [app_summary(row, tested) for row in rows]
+    tested, states = tested_releases(), release_states()
+    apps = [app_summary(row, tested, states) for row in rows]
     owners = sorted({o.strip() for a in apps for o in a["owner"].split(",") if o.strip()}, key=str.casefold)
     stages = [s for s in journey.JOURNEY if any(a["journey"]["stage"] == s for a in apps)]
     stages += sorted({a["journey"]["stage"] for a in apps} - set(stages))
@@ -271,6 +285,20 @@ def list_apps():
         apps.sort(key=APP_SORTS[sort.lstrip("-")], reverse=sort.startswith("-"))
         if sort.lstrip("-") == "stage":  # out of scope (no journey stage) last, either way
             apps.sort(key=lambda a: a["journey"]["stage"] not in journey.JOURNEY)
+    # grouped by status family, the sort within each; a collapsed family is counted, not paged
+    order = list(journey.FAMILY_LABELS)
+    apps.sort(key=lambda a: order.index(a["family"]))
+    collapsed = set(query.getlist("collapsed"))
+    if collapsed - set(order):
+        fail(400, "Collapse decide, build, tested, published or not_replicated.",
+             errors=[{"field": "collapsed", "message": "unknown family"}])
+    counts = {f: sum(a["family"] == f for a in apps) for f in order}
+    apps = [a for a in apps if a["family"] not in collapsed]
+    starts = {}
+    for index, a in enumerate(apps):
+        starts.setdefault(a["family"], index)
+    groups = [{"family": f, "label": label, "count": counts[f], "collapsed": f in collapsed,
+               "offset": starts.get(f)} for f, label in journey.FAMILY_LABELS.items()]
     page, where = paged(apps, limit, offset)
     recordings = []
     for r in db().execute("SELECT id, name FROM recordings ORDER BY name").fetchall():
@@ -278,7 +306,7 @@ def list_apps():
             break
         if reviewer_of_recording(r["id"]):
             recordings.append({"id": r["id"], "name": r["name"]})
-    return {"apps": page, "page": where, "filters": {"owners": owners, "stages": stages},
+    return {"apps": page, "page": where, "groups": groups, "filters": {"owners": owners, "stages": stages},
             "recordings": recordings, "journey_titles": list(journey.JOURNEY)}
 
 
@@ -292,6 +320,7 @@ def change_app(app_id, data, current=None):
         sql, args = sql + " AND revision = ?", args + [want]
     if db().execute(sql, tuple(args)).rowcount != 1:
         raise revisions.conflict((current or app_detail)(app_id), "this application")
+    readiness_cache.forget(db(), app_id)
 
 
 @routes.post(V1 + "/apps", auth.signed_in, response_model=m.AppRef, status_code=201,
@@ -646,6 +675,7 @@ def add_attachment(app_id: int, file: UploadFile | None = File(None), title: str
             "VALUES (?,?,?,?,?,?,?,?) RETURNING id",
             (app_id, title, kind, extension, b"", ref.id, share, g.user),
         ).fetchone()[0]
+        readiness_cache.forget(db(), app_id)
         record("evidence.upload", "attachment", attachment_id, app_id=app_id, title=title, kind=kind,
                sha256=hashlib.sha256(content).hexdigest(), share=share)
     row = db().execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
@@ -666,6 +696,7 @@ def share_attachment(app_id: int, attachment_id: int, body: m.ShareInput):
         if row["share"] != share:
             db().execute("UPDATE attachments SET share = ? WHERE app_id = ? AND id = ?",
                          (share, app_id, attachment_id))
+            readiness_cache.forget(db(), app_id)
             record("evidence.share", "attachment", attachment_id, app_id=app_id, share=share,
                    previous=row["share"])
     return attachment_view(db().execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone())
@@ -682,6 +713,7 @@ def remove_attachment(app_id: int, attachment_id: int):
         removed = db().execute("DELETE FROM attachments WHERE app_id = ? AND id = ?",
                                (app_id, attachment_id)).rowcount
         if removed:
+            readiness_cache.forget(db(), app_id)
             record("evidence.remove", "attachment", attachment_id, app_id=app_id)
             # the stored bytes go too, unless another attachment holds the same object
             if row["artifact_id"] is not None and db().execute(
@@ -727,6 +759,7 @@ def import_recording(name: str = Form(""), log: UploadFile | None = File(None)):
             ))
         db().execute("INSERT INTO recording_uploads(recording_id, added_by, added_at) VALUES (?, ?, ?) "
                      "ON CONFLICT DO NOTHING", (digest, g.user, registry.now()))
+        readiness_cache.forget_recording(db(), digest)
         record("recording.import", "recording", digest, name=name, events=len(events))
     return {"id": digest, "name": get_recording(digest)["name"]}
 
@@ -926,6 +959,7 @@ def save_assignment(recording_id: str, app_id: int, body: m.AssignmentInput):
                 INSERT INTO evidence(app_id, recording_id, selection, notes, reviewed, suggested, revision)
                 VALUES (?, ?, ?, ?, 1, '[]', ?)
             """, (app_id, recording_id, *value, current["revision"] + 1))
+        readiness_cache.forget(db(), app_id)
         record("evidence.review", "recording", recording_id, app_id=app_id,
                selected=sorted(selected), notes_changed=bool(notes))
     return assignment(recording_id, app_id)
@@ -949,6 +983,7 @@ def remove_assignment(recording_id: str, app_id: int):
         db().execute("DELETE FROM evidence_removals WHERE app_id = ? AND recording_id = ?", (app_id, recording_id))
         db().execute("INSERT INTO evidence_removals(app_id, recording_id, revision, removed_by, removed_at) "
                      "VALUES (?, ?, ?, ?, ?)", (app_id, recording_id, current["revision"] + 1, g.user, registry.now()))
+        readiness_cache.forget(db(), app_id)
         record("evidence.remove", "recording", recording_id, app_id=app_id, removed=current["selected"],
                suggested=current["suggested"], notes_removed=bool(current["notes"]))
     return assignment(recording_id, app_id)

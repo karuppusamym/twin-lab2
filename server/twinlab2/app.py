@@ -170,6 +170,37 @@ def web_routes(secret, store):
     return routes
 
 
+def bind_host(argv=None, environ=None):
+    """The address the portal listens on, as far as the process can tell before it serves:
+    TWINLAB2_BIND_HOST (portal.py and tools/demo_portal.py set it), else the server's command line
+    (gunicorn `--bind`/`-b` and GUNICORN_CMD_ARGS, uvicorn `--host`). "" when unknown (uvicorn's
+    default is 127.0.0.1)."""
+    import shlex
+    import sys
+
+    environ = os.environ if environ is None else environ
+    if environ.get("TWINLAB2_BIND_HOST", "").strip():
+        return environ["TWINLAB2_BIND_HOST"].strip()
+    args = list(sys.argv if argv is None else argv)
+    args += shlex.split(environ.get("GUNICORN_CMD_ARGS", ""))
+    hosts = []
+    for i, arg in enumerate(args):
+        for flag in ("--bind", "-b", "--host"):
+            if arg == flag and i + 1 < len(args):
+                hosts.append((flag, args[i + 1]))
+            elif arg.startswith(flag + "=") and flag.startswith("--"):
+                hosts.append((flag, arg.split("=", 1)[1]))
+    for flag, value in hosts:
+        if flag == "--host":
+            return value
+        if value.startswith(("unix:", "fd://")):
+            continue
+        host = value.rsplit(":", 1)[0] if value.count(":") == 1 or value.startswith("[") else value
+        if not auth.is_loopback(host):
+            return host  # any of several binds that others can reach
+    return hosts[0][1].rsplit(":", 1)[0] if hosts else ""
+
+
 def prepare(target, store):
     """Apply pending migrations and the data steps older catalogs need (once, at start)."""
     token = artifacts.bind(artifacts.Binding(store))
@@ -191,6 +222,12 @@ def prepare(target, store):
             migrate_owners(connection, auth.LOCAL_USER if local_dev else None)
         # refuses unsafe settings (ConfigError) before the portal serves anything
         log.info(auth.check_settings(settings, connection, bool(os.environ.get("TWINLAB2_SECRET_KEY"))))
+        host = bind_host()
+        refusal, warnings = auth.bind_check(settings, connection, host)
+        if refusal:
+            raise auth.ConfigError(refusal)
+        for warning in warnings:
+            log.warning("%s", warning)
     finally:
         connection.close()
         artifacts.unbind(token)
@@ -200,7 +237,7 @@ def create_app(target, store=None):
     """The portal on the database at `target`: a DATABASE_URL (sqlite:///…, postgresql://…) or a
     SQLite file path. Pending migrations are applied first. `store` is the artifact store
     (default: from the environment)."""
-    from twinlab2 import routes_admin, routes_builds, routes_portal, routes_registry, routes_workboard, uploads
+    from twinlab2 import routes_access, routes_admin, routes_builds, routes_portal, routes_registry, routes_workboard, uploads
 
     target = str(target)
     if database.engine_of(target) == "sqlite":
@@ -227,7 +264,8 @@ def create_app(target, store=None):
                                    f"This file was deleted on {error.deleted_at} ({error.reason}).", "gone",
                                    extra={"tombstone_id": error.tombstone_id})
 
-    for module in (routes_portal, routes_registry, routes_builds, routes_workboard, uploads, routes_admin):
+    for module in (routes_portal, routes_registry, routes_builds, routes_workboard, routes_access, uploads,
+                   routes_admin):
         app.include_router(module.routes.router)
     app.include_router(web_routes(secret, store).router)  # last: its fallbacks match every other path
 
