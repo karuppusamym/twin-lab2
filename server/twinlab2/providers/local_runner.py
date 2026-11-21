@@ -46,7 +46,10 @@ class LocalRunnerProvider(base.Provider):
 
     def _spawn(self, folder, resume=False):
         log = open(folder / "runner.log", "ab")
-        flags = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS}
+        # Windows: its own process group and a console without a window. A DETACHED_PROCESS has no
+        # console at all, so every console program it runs (git) opened a new terminal window on
+        # the desktop; with CREATE_NO_WINDOW they share the runner's hidden console.
+        flags = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
                  if sys.platform == "win32" else {"start_new_session": True})
         env = dict(self.env if self.env is not None else os.environ)
         for name in list(env):

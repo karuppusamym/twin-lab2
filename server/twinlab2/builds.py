@@ -944,7 +944,9 @@ def start_dev_worker(target):
     folder = database.state_dir(target)
     folder.mkdir(parents=True, exist_ok=True)
     log = folder / "worker.log"
-    flags = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}
+    # Windows: a console without a window, so neither the worker nor the git it runs flashes one
+    flags = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+             if sys.platform == "win32" else {"start_new_session": True})
     with open(log, "ab") as out:
         _dev_worker = subprocess.Popen([sys.executable, "-m", "twinlab2.worker", "--database", str(target)],
                                        cwd=paths.ROOT, env=paths.child_env(), stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **flags)

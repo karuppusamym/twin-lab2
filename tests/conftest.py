@@ -19,7 +19,8 @@ def _no_console_windows():
     a new console window for every console program it starts (git, python, the worker), and those
     windows flash on the desktop of whoever uses the PC. Tests start them with CREATE_NO_WINDOW
     instead. A program that asks for its own console (CREATE_NEW_CONSOLE, DETACHED_PROCESS) is left
-    as it asked; GUI programs (the opt-in e2e's Notepad and CaseDesk) are not affected."""
+    as it asked (the portal's own launches use CREATE_NO_WINDOW too: builds.start_dev_worker,
+    providers.local_runner); GUI programs (the opt-in e2e's Notepad and CaseDesk) are not affected."""
     import subprocess
 
     if sys.platform != "win32" or getattr(subprocess.Popen, "_twinlab2_no_window", False):
