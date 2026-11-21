@@ -29,8 +29,8 @@ The Python SBOMs are taken on Linux, so the recorder's Windows-only dependency (
 in them; the recorder's PyInstaller folder itself is not scanned yet.
 
 The dependency-review job needs the repository's dependency graph (Settings, Code security). While
-it is off the job is refused by GitHub and, being `continue-on-error`, does not block; enable the
-graph and remove `continue-on-error` from `supply-chain.yml` to make it count. That is a repository
+it is off the job is refused by GitHub and, being `continue-on-error`, only warns; enable the
+graph and remove the step's `continue-on-error` in `supply-chain.yml` to make it count. That is a repository
 setting for the admin (the office, for a private mirror).
 
 ## The gate and the allowlist

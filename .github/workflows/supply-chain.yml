@@ -132,12 +132,18 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     # Needs the repository's dependency graph (Settings > Code security); without it the action is
-    # refused (403) and this job reports that instead of blocking. The Trivy and npm audit gates
-    # above do not depend on it. Turn this off once the graph is enabled (docs/security-supply-chain.md).
-    continue-on-error: true
+    # refused (403) and the step warns instead of failing the job. A real finding warns too until the
+    # graph is enabled and continue-on-error is removed (docs/security-supply-chain.md). Trivy and
+    # npm audit above gate regardless.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+      - id: review
+        continue-on-error: true # a step, so the job reports success
+        uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
         with:
           fail-on-severity: high
           comment-summary-in-pr: never
+      - name: Dependency graph not available
+        if: steps.review.outcome == 'failure'
+        run: |
+          echo "::warning::Dependency review did not run or found a problem, see the step above. If GitHub refused it (403), enable the dependency graph in the repository's Code security settings."
