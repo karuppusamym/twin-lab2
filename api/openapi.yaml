@@ -45,8 +45,54 @@ info:
     * Builders (and owners) get frozen packages, start build sessions and chat with them.
 
     ## Errors
-    Every error is `application/problem+json` (RFC 9457) with the `Problem` shape: `status`,
-    `title`, `detail` (the sentence to show), optionally `code` and per-field `errors`.
+    Every error is `application/problem+json` (RFC 9457) with the `Problem` shape: `type`,
+    `status`, `title`, `detail` (the sentence to show), `code`, `request_id`, and per-field
+    `errors` where a request body is not valid. `code` is one of `ErrorCode` (a status without a
+    more specific reason has its default: 400 `invalid_request`, 403 `forbidden`, 404
+    `not_found`, 409 `state_conflict`, 500 `internal`, ...). `type` is the URI reference
+    `/errors/<code>`, relative to the portal: stable per code, and `GET /errors/<code>` answers
+    what it means. A client acts on `code` (or `type`), never on the `detail` text. A 403 `role`
+    on an application says how to get access: `owners` lists the application's owners when the
+    caller may see them (they hold a role on it, or are an admin).
+
+    ## Request ids
+    Every response carries `Request-Id`. A request's own `Request-Id` (or `X-Request-Id`) of 8
+    to 128 characters `[A-Za-z0-9._:-]` is kept, otherwise the portal makes one. The portal logs
+    every request with it, and a problem repeats it as `request_id`: quote it when reporting an
+    error.
+
+    ## Idempotency
+    The create-type POSTs take an `Idempotency-Key` header (1 to 255 visible ASCII characters,
+    one per intended action, e.g. per rendered form). The portal keeps the key with the caller for
+    24 hours:
+    * the same key with the same request (method, path and body) gives the first outcome again,
+      with `Idempotent-Replayed: true`, and creates nothing twice;
+    * the same key with a different request is refused with 422 `idempotency_key_reused`;
+    * the same key while the first request is still running gives 409 `idempotency_in_progress`
+      (retry after `Retry-After`);
+    * a request that failed keeps nothing: send it again with the same key.
+
+    The build-session operations had a `request_key` body member for this; it stays accepted as an
+    alias of the header (both given must be equal, else 400 `idempotency_key_mismatch`). Their
+    replay answers from the session as it is now, with `created: false`.
+
+    ## Conditional GETs
+    The polling endpoints of the build chat (`GET /api/v1/builds/{build_id}`,
+    `GET /api/v1/apps/{app_id}/builds`) send an `ETag`. A poll that sends it back as
+    `If-None-Match` gets 304 without a body while nothing changed.
+
+    ## Deprecations
+    A deprecated member or operation is marked `deprecated: true` here, and responses that carry
+    it send `Deprecation: true`; the description names the replacement. It keeps working within
+    `/api/v1` (see Versioning).
+
+    ## Versioning
+    `/api/v1` changes only additively: new operations, new optional request members, new response
+    members, new `ErrorCode` values and new enum values in responses a client must tolerate.
+    Nothing is removed, renamed or made stricter within v1; a breaking change means `/api/v2`,
+    served alongside v1 for a transition. `info.version` follows semver for the document. The
+    recorder agent API (`/api/agent`, `/api/uploads`) is versioned separately by its recorder
+    contract version (RECORDER-CONTRACT.md); see docs/api-versioning.md.
 
     ## Conditional updates (revisions)
     Owner-edited resources carry a `revision`: an assignment of a recording's events
@@ -220,6 +266,8 @@ paths:
     post:
       tags: [apps]
       operationId: createApp
+      x-twinlab-idempotent: stored
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Add an application
       description: Whoever creates an application owns it; a named `owner` is assigned the owner role too.
       x-twinlab-role: signed-in
@@ -400,6 +448,8 @@ paths:
     post:
       tags: [apps]
       operationId: addIdentity
+      x-twinlab-idempotent: stored
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Add an identity (executable, web address, mainframe host, desktop product)
       description: Owner. 409 when another application already has it or matches the same host and path.
       x-twinlab-role: owner
@@ -689,6 +739,8 @@ paths:
     post:
       tags: [evidence]
       operationId: createScenario
+      x-twinlab-idempotent: stored
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Add a scenario
       x-twinlab-role: owner
       requestBody:
@@ -774,6 +826,8 @@ paths:
     post:
       tags: [packages]
       operationId: freezePackage
+      x-twinlab-idempotent: stored
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Freeze the previewed draft as the next revision
       description: |
         Owner. The owner's explicit approval (`approve: true`) of exactly the bytes previewed:
@@ -933,10 +987,18 @@ paths:
       description: |
         Builder. The approved package (`pack`, null with `problem` before an owner froze one), the
         providers and whether each is ready, connected repositories, revisions, and every session.
+        Conditional: `If-None-Match` with the last `ETag` gives 304 while nothing changed.
       x-twinlab-role: builder
+      parameters: [{ $ref: "#/components/parameters/IfNoneMatch" }]
       responses:
+        "304":
+          description: Unchanged since the `ETag` sent.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
         "200":
           description: The build page.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/BuildPage" }
@@ -946,6 +1008,8 @@ paths:
     post:
       tags: [builds]
       operationId: startBuild
+      x-twinlab-idempotent: native
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Start a build session
       description: |
         Builder. Sends only an owner-frozen revision. `request_key` makes the start idempotent: the
@@ -1023,11 +1087,20 @@ paths:
       tags: [builds]
       operationId: getBuild
       summary: One build session with its conversation
-      description: Builder of the session's application. Poll while `build.final` is false (the old page refreshed every 10 s).
+      description: |
+        Builder of the session's application. Poll while `build.final` is false (the old page
+        refreshed every 10 s), sending the last `ETag` as `If-None-Match`: 304 while nothing changed.
       x-twinlab-role: builder
+      parameters: [{ $ref: "#/components/parameters/IfNoneMatch" }]
       responses:
+        "304":
+          description: Unchanged since the `ETag` sent.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
         "200":
           description: The session.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/BuildDetail" }
@@ -1067,6 +1140,8 @@ paths:
     post:
       tags: [builds]
       operationId: retryBuild
+      x-twinlab-idempotent: native
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Retry a failed or cancelled session as a new session
       x-twinlab-role: builder
       requestBody:
@@ -1093,6 +1168,8 @@ paths:
     post:
       tags: [builds]
       operationId: answerBuild
+      x-twinlab-idempotent: native
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Send an answer to the provider (chat)
       description: |
         Builder. A clarification is sent to the provider (audited as `build.answer`). With
@@ -1126,6 +1203,8 @@ paths:
     post:
       tags: [builds]
       operationId: decideTool
+      x-twinlab-idempotent: native
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Approve or deny a tool the provider asks to run
       description: Builder. Audited as `build.tool_decision`.
       x-twinlab-role: builder
@@ -1135,7 +1214,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/ToolDecision" }
             examples:
-              approve: { value: { decision: approve, request_key: "tool:32" } }
+              approve: { value: { decision: approve, request_key: "tool:32:approve" } }
       responses:
         "200": { $ref: "#/components/responses/BuildDetail" }
         "400": { $ref: "#/components/responses/BadRequest" }
@@ -1167,6 +1246,8 @@ paths:
               schema: { $ref: "#/components/schemas/RecordingList" }
               examples:
                 recordings: { $ref: "#/components/examples/RecordingList" }
+          headers:
+            Deprecation: { $ref: "#/components/headers/Deprecation" }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [recordings]
@@ -1383,6 +1464,8 @@ paths:
     post:
       tags: [capture]
       operationId: requestRecording
+      x-twinlab-idempotent: stored
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Request a recording on a paired machine
       description: Signed in, owner of every target application. Each target needs an identity.
       x-twinlab-role: owner of every target
@@ -1447,6 +1530,8 @@ paths:
     post:
       tags: [machines]
       operationId: makePairingCode
+      x-twinlab-idempotent: stored
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Make a pairing code
       description: Signed in. The code works once, within `minutes`, and is never shown again.
       x-twinlab-role: signed-in
@@ -1499,6 +1584,8 @@ paths:
     post:
       tags: [automations]
       operationId: saveAutomation
+      x-twinlab-idempotent: stored
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Add (or update by name) an automation
       description: Signed in; linking an application needs its owner role.
       x-twinlab-role: owner of every linked application
@@ -2097,6 +2184,14 @@ components:
     Limit: { name: limit, in: query, description: "Page size (see Pagination).", schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
     Offset: { name: offset, in: query, description: "Items to skip (see Pagination).", schema: { type: integer, minimum: 0, default: 0 } }
     ExpectedRevision: { name: expected_revision, in: query, description: "The revision the change was made from (see Conditional updates).", schema: { type: integer, minimum: 0 } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, description: "One key per intended action (see Idempotency).", schema: { type: string, minLength: 1, maxLength: 255, pattern: "^[\\x21-\\x7e]+$" } }
+    IfNoneMatch: { name: If-None-Match, in: header, description: "The `ETag` of the last answer (see Conditional GETs).", schema: { type: string } }
+
+  headers:
+    RequestId: { description: "The request's id (see Request ids).", schema: { type: string } }
+    IdempotentReplayed: { description: "`true` when the answer is a replay of an earlier request with the same `Idempotency-Key`.", schema: { type: string, enum: ["true"] } }
+    ETag: { description: "The answer's entity tag (see Conditional GETs).", schema: { type: string } }
+    Deprecation: { description: "`true` when the answer carries a deprecated member (see Deprecations).", schema: { type: string } }
 
   responses:
     BadRequest:
@@ -2106,7 +2201,7 @@ components:
           schema: { $ref: "#/components/schemas/Problem" }
           examples:
             scenario:
-              value: { type: about:blank, title: Bad Request, status: 400, detail: Add a business scenario before freezing a builder package. }
+              value: { type: /errors/invalid_request, title: Bad Request, status: 400, detail: Add a business scenario before freezing a builder package., code: invalid_request }
     Unauthorized:
       description: Not signed in.
       content:
@@ -2114,7 +2209,7 @@ components:
           schema: { $ref: "#/components/schemas/Problem" }
           examples:
             signin:
-              value: { type: about:blank, title: Unauthorized, status: 401, detail: Sign in first., code: signed_out }
+              value: { type: /errors/signed_out, title: Unauthorized, status: 401, detail: Sign in first., code: signed_out, request_id: 3f9a1c0d5e7b2a64 }
     Forbidden:
       description: "The caller lacks the role (or the CSRF token is missing, `code: csrf`)."
       content:
@@ -2122,7 +2217,7 @@ components:
           schema: { $ref: "#/components/schemas/Problem" }
           examples:
             role:
-              value: { type: about:blank, title: Forbidden, status: 403, detail: This needs the owner role on this application., code: role }
+              value: { type: /errors/role, title: Forbidden, status: 403, detail: "This needs the owner role on this application. Ask an owner (alice) for it.", code: role, owners: [alice] }
     NotFound:
       description: No such object.
       content:
@@ -2130,7 +2225,7 @@ components:
           schema: { $ref: "#/components/schemas/Problem" }
           examples:
             missing:
-              value: { type: about:blank, title: Not Found, status: 404, detail: Not found. }
+              value: { type: /errors/not_found, title: Not Found, status: 404, detail: Not found., code: not_found }
     Conflict:
       description: The request conflicts with the current state; `detail` says how.
       content:
@@ -2138,11 +2233,11 @@ components:
           schema: { $ref: "#/components/schemas/Problem" }
           examples:
             conflict:
-              value: { type: about:blank, title: Conflict, status: 409, detail: "Another application already has this identity: merge them instead." }
+              value: { type: /errors/state_conflict, title: Conflict, status: 409, detail: "Another application already has this identity: merge them instead.", code: state_conflict }
             stale:
               summary: A stale update (code conflict) with the current version
               value:
-                type: about:blank
+                type: /errors/conflict
                 title: Conflict
                 status: 409
                 code: conflict
@@ -2192,17 +2287,17 @@ components:
       description: RFC 9457 problem details; every error of /api/v1 has this shape.
       required: [type, title, status, detail]
       properties:
-        type: { type: string, description: "A URI reference; `about:blank` unless a code needs its own., default: about:blank" }
+        type: { type: string, format: uri-reference, description: "`/errors/<code>`: a URI reference relative to the portal, stable per code (see Errors)." }
         title: { type: string, description: "The HTTP status phrase." }
         status: { type: integer, minimum: 400, maximum: 599 }
         detail: { type: string, description: "The sentence to show the user." }
         instance: { type: string, description: "The request path." }
-        code:
-          type: string
-          description: |
-            A stable machine-readable reason where the web app acts on it: `signed_out`,
-            `wrong_credentials`, `csrf`, `role`, `restricted`, `draft_changed`, `unchanged`,
-            `incomplete_package`, `plan_changed`, `publish_locked`, `conflict` (a stale conditional update).
+        code: { $ref: "#/components/schemas/ErrorCode" }
+        request_id: { type: string, description: "The response's `Request-Id` (see Request ids)." }
+        owners:
+          type: array
+          items: { type: string }
+          description: "With `code: role` on an application: its owners, who can grant the role (only to a caller who may see them)."
         errors:
           type: array
           description: Per-field problems of a request body.
@@ -2216,6 +2311,63 @@ components:
           type: object
           additionalProperties: true
           description: "With `code: conflict`: the resource as the server has it now (the shape its GET answers)."
+    ErrorCode:
+      type: string
+      description: |
+        The stable machine-readable reason of an error (see Errors); `x-twinlab-codes` says what each
+        means. New codes may be added within v1: treat an unknown code by its HTTP status.
+      enum:
+        - invalid_request
+        - idempotency_key_mismatch
+        - signed_out
+        - wrong_credentials
+        - forbidden
+        - csrf
+        - role
+        - restricted
+        - not_found
+        - method_not_allowed
+        - conflict
+        - state_conflict
+        - draft_changed
+        - unchanged
+        - incomplete_package
+        - plan_changed
+        - publish_locked
+        - idempotency_in_progress
+        - too_large
+        - unsupported_media_type
+        - idempotency_key_reused
+        - internal
+        - bad_gateway
+        - unavailable
+        - error
+      x-twinlab-codes:
+        invalid_request: "The request (its body, query or headers) is not valid; `errors` names the fields."
+        idempotency_key_mismatch: "`Idempotency-Key` and the body's `request_key` differ: send one key."
+        signed_out: "Nobody is signed in, or the session ended: sign in again."
+        wrong_credentials: "The name or password is wrong."
+        forbidden: "The caller may not do this."
+        csrf: "The form token (X-CSRF-Token) is missing or out of date: read the session again."
+        role: "The caller lacks the role this needs; `owners` names who can grant it, where the caller may see them."
+        restricted: "Restricted evidence: only who added it, its application's owners or an admin may see it."
+        not_found: "There is no such resource, page or API operation."
+        method_not_allowed: "The resource does not take this method."
+        conflict: "A stale conditional update: someone else changed the resource; `current` is how it is now."
+        state_conflict: "The action does not fit the resource's current state."
+        draft_changed: "The package draft changed since it was previewed."
+        unchanged: "Nothing changed since the last package revision."
+        incomplete_package: "The package is missing what a build needs."
+        plan_changed: "The applications changed since the merge preview."
+        publish_locked: "The release cannot be published in its current state."
+        idempotency_in_progress: "A request with this `Idempotency-Key` is still being processed: retry later."
+        too_large: "The request body is over the portal's limit."
+        unsupported_media_type: "The request body's content type is not one this operation takes."
+        idempotency_key_reused: "This `Idempotency-Key` was used for a different request."
+        internal: "The portal failed; the error is in its log under the response's Request-Id."
+        bad_gateway: "A service the portal depends on failed."
+        unavailable: "The portal is not ready (starting, migrating, or a dependency is down): retry later."
+        error: "Any other HTTP error status."
     Page:
       type: object
       description: Where a page of a paginated list is (see Pagination).
@@ -2985,7 +3137,7 @@ components:
         starting_points: { type: array, items: { $ref: "#/components/schemas/Build" }, description: "Sessions with a commit to start from." }
     NewBuild:
       type: object
-      required: [provider, revision, repo, budget, request_key]
+      required: [provider, revision, repo, budget]
       properties:
         provider: { type: string }
         model: { type: string }
@@ -2995,7 +3147,7 @@ components:
         start_from_build: { type: integer, description: "Start from that session's commit (the session becomes the parent)." }
         change_summary: { type: string, description: "Required for a later build of a changed pack." }
         budget: { type: number, exclusiveMinimum: 0, description: "In the provider's unit (Devin ACU, Claude USD, Copilot premium requests)." }
-        request_key: { type: string, description: "Idempotency key, one per form." }
+        request_key: { type: string, description: "Alias of the `Idempotency-Key` header (see Idempotency); one of the two is expected." }
     BuildStarted:
       type: object
       required: [build, created]
@@ -3005,9 +3157,8 @@ components:
         notice: { type: [string, "null"] }
     RequestKey:
       type: object
-      required: [request_key]
       properties:
-        request_key: { type: string }
+        request_key: { type: string, description: "Alias of the `Idempotency-Key` header (see Idempotency)." }
     BuildMessage:
       type: object
       required: [id, direction, kind, author, body, created_at, state, state_label, error, reply_to, scenario_id, data, decision]
@@ -3047,12 +3198,12 @@ components:
         notice: { type: [string, "null"] }
     AnswerInput:
       type: object
-      required: [answer, request_key]
+      required: [answer]
       properties:
         answer: { type: string, minLength: 1 }
         scope_change: { type: boolean, default: false }
         reply_to: { type: [integer, "null"] }
-        request_key: { type: string }
+        request_key: { type: string, description: "Alias of the `Idempotency-Key` header (see Idempotency)." }
     AnswerResult:
       type: object
       required: [message, created]
@@ -3062,10 +3213,10 @@ components:
         notice: { type: [string, "null"] }
     ToolDecision:
       type: object
-      required: [decision, request_key]
+      required: [decision]
       properties:
         decision: { type: string, enum: [approve, deny] }
-        request_key: { type: string }
+        request_key: { type: string, description: "Alias of the `Idempotency-Key` header (see Idempotency)." }
     CompareInput:
       type: object
       required: [sessions]
@@ -3169,14 +3320,27 @@ components:
         preflight: { oneOf: [{ $ref: "#/components/schemas/Preflight" }, { type: "null" }] }
     RecordingSummary:
       type: object
-      required: [id, name, machine, received_at, automation, apps, status]
+      required: [id, name, machine, received_at, automation, apps, apps_list, status]
       properties:
         id: { type: string }
         name: { type: string }
         machine: { type: [string, "null"], description: "Null for an imported recording." }
         received_at: { type: [string, "null"] }
         automation: { type: [string, "null"] }
-        apps: { type: [string, "null"], description: "The applications recorded, e.g. `Billing Desk (full), CaseDesk (steps)`." }
+        apps:
+          type: [string, "null"]
+          deprecated: true
+          description: "Deprecated: use `apps_list`. The applications recorded as one text, e.g. `Billing Desk (full), CaseDesk (steps)`."
+        apps_list:
+          type: array
+          description: The applications recorded, by name.
+          items:
+            type: object
+            required: [app_id, name, mode]
+            properties:
+              app_id: { type: integer }
+              name: { type: string }
+              mode: { type: string, description: "What was recorded of it: `full` or `steps`." }
         status: { $ref: "#/components/schemas/RecordingStatus" }
     RecordingList:
       type: object
@@ -4350,6 +4514,7 @@ components:
             received_at: "2026-11-15T10:42:00+00:00"
             automation: UiPath order to invoice
             apps: Billing Desk (full), CaseDesk (steps)
+            apps_list: [{ app_id: 1, name: Billing Desk, mode: full }, { app_id: 2, name: CaseDesk, mode: steps }]
             status: *statusComplete
     RecordingDetail:
       value:

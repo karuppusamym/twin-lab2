@@ -47,6 +47,8 @@ USER 1001
 EXPOSE 8080
 # Bound to the pod's loopback: only the OAuth proxy in the same pod reaches it, so the user it
 # names (X-Forwarded-User) can be trusted. The agent API has its own machine token.
-# The build worker runs as a second container from this image: ["python", "-m", "twinlab2.worker"],
-# with the same DATABASE_URL.
+# Probes: /livez (the process), /readyz (database at the current migration, artifact store), both
+# answered whatever the Host; inside the container `python -m twinlab2.probe http <url>`.
+# The build worker is its own Deployment from this image: ["python", "-m", "twinlab2.worker"], with
+# the same DATABASE_URL and TWINLAB2_SECRET_KEY (probe: `python -m twinlab2.probe worker`).
 CMD ["gunicorn", "--bind", "127.0.0.1:8080", "twinlab2.app:asgi()"]

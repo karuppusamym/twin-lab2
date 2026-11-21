@@ -120,12 +120,14 @@ def mainframe_pack():
     e2 = event(2, "aid", inquiry, None, None, key="Enter")
     e3 = event(3, "aid", detail, None, None, key="PF3")
     field = {"kind": "field", "row": 4, "col": 20, "len": 10, "numeric": True, "label": "ACCOUNT", "enabled": True}
+    title = {"kind": "field", "row": 1, "col": 30, "len": 15, "protected": True, "text": inquiry, "intensified": True}
+    label = {"kind": "field", "row": 4, "col": 2, "len": 16, "protected": True, "text": "ACCOUNT NUMBER"}
     screens = [
-        {"screen": inquiry, "surface": "mainframe", "states": [state("s1", [e1, e2], [field])],
+        {"screen": inquiry, "surface": "mainframe", "states": [state("s1", [e1, e2], [title, label, field])],
          "transitions": [{"from_state": "s1", "to": detail, "to_state": "s2", "action": "aid", "key": "Enter",
                           "count": 1}]},
         {"screen": detail, "surface": "mainframe", "states": [state("s2", [e3], [
-            dict(field, row=2, col=10, len=8, numeric=False, label="NAME")])],
+            dict(title, len=14, text=detail), dict(field, row=2, col=10, len=8, numeric=False, label="NAME")])],
          "transitions": [{"from_state": "s2", "to": inquiry, "to_state": "s1", "action": "aid", "key": "PF3",
                           "count": 1}]},
     ]
@@ -182,6 +184,14 @@ def unfield_layout(data, files):
     data["screens"][1]["states"][0]["controls"][0].pop("len")
 
 
+def untitle_screen(data, files):
+    for e in first_events(data):
+        if e.get("screen") == "ACCOUNT DETAIL":
+            e["screen"] = "scr:0a1b2c3d4e5f"
+    data["screens"][1]["screen"] = "scr:0a1b2c3d4e5f"
+    data["screens"][0]["transitions"][0]["to"] = "scr:0a1b2c3d4e5f"
+
+
 def drop_aid_key(data, files):
     first_events(data)[-1].pop("key")
 
@@ -219,6 +229,7 @@ REMOVALS = {
     "data.backend": set_target("data_backend", {}),
     "web.routes": not_a_route,
     "mainframe.layout": unfield_layout,
+    "mainframe.title": untitle_screen,
     "mainframe.aid": drop_aid_key,
     "deploy.target": drop_deploy_files,
     "deploy.version": lambda d, f: d["target"].pop("version_endpoint"),
@@ -279,7 +290,7 @@ class ValidatorTest(unittest.TestCase):
                          {"web.api", "visuals.screens", "visuals.per_screen", "visuals.style", "data.model",
                           "deploy.repository", "scenario.failures", "scenario.starting", "scenario.messages",
                           "behaviour.invalid_input", "behaviour.empty_results", "behaviour.retries",
-                          "behaviour.duplicates", "behaviour.persistence"})
+                          "behaviour.duplicates", "behaviour.persistence", "behaviour.unrecorded"})
         self.assertEqual(result["counts"]["critical"], 0)
         self.assertTrue(all(g["severity"] != "critical" for g in result["gaps"]))
         api = next(g for g in result["gaps"] if g["item"] == "web.api")

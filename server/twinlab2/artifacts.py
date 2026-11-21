@@ -138,6 +138,12 @@ class LocalStore:
         return {"backend": "local", "location": str(self.root), "versioning": "every put is a new version file",
                 "direct_upload": False}
 
+    def ping(self) -> None:
+        """Raises unless the store's folder is there and writable (the portal's /readyz)."""
+        objects = self.root / "objects"
+        if not objects.is_dir() or not os.access(objects, os.W_OK):
+            raise ArtifactError(f"{objects} is missing or not writable")
+
     def temp_dir(self) -> Path:
         return self.root / "tmp"
 
@@ -195,6 +201,10 @@ class S3Store:
         return {"backend": "s3", "bucket": self.bucket, "prefix": self.prefix or "(none)",
                 "region": self.region or "(default)", "endpoint": self.endpoint_url or "AWS S3",
                 "versioning": status, "direct_upload": self.direct_upload}
+
+    def ping(self) -> None:
+        """Raises unless the bucket answers (the portal's /readyz)."""
+        self.client.head_bucket(Bucket=self.bucket)
 
     def temp_dir(self) -> Path:
         path = self._temp or Path(tempfile.gettempdir()) / "twinlab2-artifacts"
