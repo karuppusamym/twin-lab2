@@ -1,6 +1,6 @@
 # Requesting access to an application
 
-Roles are per application (viewer < builder < owner; see the README's *Access* section). When
+Roles are per application (viewer < builder < owner; see the *Access* section of [design.md](design.md)). When
 someone opens an application page they have no role for, or one that needs a higher role, the
 portal answers 403 with `code: role`. The web app then shows, under the refusal:
 

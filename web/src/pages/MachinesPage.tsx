@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
-import { ActionButton, Badge, Crumbs, ErrorText, QueryView, useAction, useTitle } from "../components/ui";
+import { ActionButton, Badge, Crumbs, Empty, ErrorText, QueryView, useAction, useTitle } from "../components/ui";
 import { when } from "../lib/format";
 
 const SCOPE_WORDS: Record<Schemas["AgentScope"], string> = { record: "record (sessions and references)", upload: "upload evidence" };
@@ -48,7 +48,7 @@ export function MachinesPage() {
                 )}
               </div>
             ))}</>
-          ) : <p>No machine is paired yet.</p>}
+          ) : <Empty><p>No machine is paired yet.</p></Empty>}
         </QueryView>
       </section>
     </>

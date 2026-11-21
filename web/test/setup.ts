@@ -13,3 +13,6 @@ afterEach(() => {
   if (typeof window !== "undefined") window.history.pushState({}, "", "/");
 });
 afterAll(() => server.close());
+
+// jsdom has no scrolling: the layout scrolls to the top of each new page
+if (typeof window !== "undefined") window.scrollTo = () => undefined;

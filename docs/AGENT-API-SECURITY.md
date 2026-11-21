@@ -67,5 +67,5 @@ portal; put the route's or the proxy's connection and request limits in front of
 
 - `TWINLAB2_AGENT_RATE`: requests per machine per minute (default 600, 0 = off).
 - Pairing code lifetime and wrong-code limit: `registry.CODE_MINUTES`, `registry.FAILURES_PER_10_MIN`.
-- The listening address and auth mode check at start (`auth.bind_check`): see the README's
-  *Sign-in* section and [deploying-on-openshift.md](deploying-on-openshift.md).
+- The listening address and auth mode check at start (`auth.bind_check`): see the sign-in section of [design.md](design.md)
+  and [deploying-on-openshift.md](deploying-on-openshift.md).

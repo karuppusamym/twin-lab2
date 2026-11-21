@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useDeferredValue, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
-import { Badge, Pager, QueryView, useTitle } from "../components/ui";
+import { Badge, Empty, Pager, QueryView, useTitle } from "../components/ui";
 import { when } from "../lib/format";
 
 export function statusKind(status: Schemas["RecordingStatus"]) {
@@ -38,7 +38,7 @@ export function RecordingsPage() {
                 <span title={r.status.summary}><Badge kind={statusKind(r.status)}>{r.status.label}</Badge></span>
               </div>
             ))}<Pager page={l.page} onOffset={setOffset} label="Recording pages" /></>
-          ) : <p>{search ? "No recording matches." : "No recordings yet."}</p>}
+          ) : <Empty><p>{search ? "No recording matches." : "No recordings yet."}</p></Empty>}
         </QueryView>
       </section>
     </>

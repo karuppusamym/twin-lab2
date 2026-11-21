@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
 import { AccessRequestsCard } from "../components/AccessRequests";
-import { Badge, QueryView, useTitle } from "../components/ui";
+import { Badge, Empty, QueryView, useTitle } from "../components/ui";
 import { plural, when } from "../lib/format";
 
 export function HomePage() {
@@ -70,7 +70,7 @@ function OwnerWork({ home }: { home: Schemas["Home"] }) {
             ))}</tbody>
           </table>
         </div>
-      ) : <p>No recordings yet. <Link to="/sessions">Request a recording</Link>, or import one from <Link to="/recordings">Recordings</Link>.</p>}
+      ) : <Empty><p>No recordings yet. <Link to="/sessions">Request a recording</Link>, or import one from <Link to="/recordings">Recordings</Link>.</p></Empty>}
     </section>
   );
 }
@@ -100,7 +100,7 @@ function BuilderWork({ home }: { home: Schemas["Home"] }) {
             ))}</tbody>
           </table>
         </div>
-      ) : <p className="muted">No package is approved for you to build yet.</p>}
+      ) : <Empty><p>No package is approved for you to build yet.</p></Empty>}
     </section>
   );
 }
@@ -122,7 +122,7 @@ function Published({ home }: { home: Schemas["Home"] }) {
             </p>
           </article>
         ))}</div>
-      ) : <p className="muted">No demo is published yet.</p>}
+      ) : <Empty><p>No demo is published yet.</p></Empty>}
     </section>
   );
 }
