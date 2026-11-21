@@ -31,18 +31,10 @@ updates:
       npm-minor:
         update-types: [minor, patch]
     ignore:
-      # Revisit each when the toolchain around it supports it (see the closed PRs for the reason).
-      - dependency-name: eslint            # eslint-plugin-jsx-a11y has no eslint 10 peer yet
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "@eslint/js"      # moves together with eslint
-        update-types: ["version-update:semver-major"]
-      - dependency-name: msw               # msw 3 needs a newer TypeScript than 5.6
-        update-types: ["version-update:semver-major"]
-      - dependency-name: react-dom         # React 19 migration: react, react-dom and the types together
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "@types/react-dom"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "@types/node"     # keep the types on the Node major the image and CI run (22)
+      # Majors are a reviewed batch, not a stream of PRs: toolchain pieces move together (eslint with
+      # its plugins, react with react-dom and the types, typescript with typescript-eslint, msw and
+      # vite, @types/node with the Node in CI). Do them by hand, then lift this rule.
+      - dependency-name: "*"
         update-types: ["version-update:semver-major"]
 
   - package-ecosystem: docker
