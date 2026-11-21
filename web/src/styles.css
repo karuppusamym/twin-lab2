@@ -205,7 +205,24 @@ table.compare td { min-width: 10rem; }
 .journey span + span::before { content: "→ "; color: var(--color-input-border); }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr)); gap: var(--space-4); margin-bottom: var(--space-4); }
 .card { background: var(--color-surface); border: var(--border-width) solid var(--color-border); border-radius: var(--radius-lg); padding: var(--space-4) var(--space-5); }
-.card h2 { font-size: var(--text-lg); display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.card h2, .card h3 { font-size: var(--text-lg); display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-top: 0; }
+
+/* -- the catalog's status groups: a heading that opens and closes each, with its count --------- */
+.catalog-groups { display: grid; gap: var(--space-3); margin-bottom: var(--space-4); }
+.catalog-group .cards { margin-bottom: 0; }
+h2.group-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); margin: 0 0 var(--space-2); font-size: var(--text-lg); }
+button.group-toggle {
+  display: inline-flex; align-items: center; gap: var(--space-2); background: none; color: var(--color-text);
+  padding: var(--space-1) var(--space-2) var(--space-1) 0; font: inherit; font-weight: 700;
+}
+button.group-toggle:hover .group-label { text-decoration: underline; }
+button.group-toggle .chevron { width: .5rem; height: .5rem; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); margin: 0 .2rem .2rem; transition: transform .15s; }
+button.group-toggle[aria-expanded="false"] .chevron { transform: rotate(-45deg); margin-bottom: 0; }
+button.group-toggle .count { background: var(--color-secondary-bg); color: var(--color-secondary-text); border-radius: var(--radius-pill); padding: 0 .55rem; font-size: var(--text-muted-size); min-width: 1.4rem; text-align: center; }
+.catalog-group[data-family="decide"] .count { background: var(--review-bg); color: var(--review-text); }
+.group-note { margin: 0 0 var(--space-2); }
+button.link { background: none; border: 0; padding: 0; color: var(--color-link); font-weight: 600; text-decoration: underline; }
+@media (prefers-reduced-motion: reduce) { button.group-toggle .chevron { transition: none; } }
 .card p:last-child { margin-bottom: 0; }
 dl.about { display: grid; grid-template-columns: max-content 1fr; gap: .15rem var(--space-3); margin: var(--space-2) 0; }
 dl.about dt { color: var(--color-muted); font-weight: 600; }
@@ -270,6 +287,13 @@ form.toolbar label:first-child { flex: 2 1 14rem; }
 .event-picker { display: grid; gap: var(--space-2); }
 .pager { display: flex; align-items: center; gap: var(--space-3); margin: var(--space-3) 0; }
 table.apps-table th[scope="row"] { min-width: 12rem; }
+/* one table per catalog group: the same columns line up from group to group */
+table.apps-table { table-layout: fixed; width: 100%; min-width: 46rem; }
+table.apps-table th:nth-child(1) { width: 26%; } table.apps-table th:nth-child(2) { width: 15%; }
+table.apps-table th:nth-child(3) { width: 11%; } table.apps-table th:nth-child(4) { width: 15%; }
+table.apps-table th:nth-child(5) { width: 18%; } table.apps-table th:nth-child(6) { width: 15%; }
+table.apps-table th, table.apps-table td { overflow-wrap: anywhere; }
+table.apps-table .badge { white-space: nowrap; }
 
 /* -- surfaces: one colour per surface, always with its word ------------------------------------- */
 :root { --surface-web: #2b6cb0; --surface-desktop: #7b4fb8; --surface-mainframe: #8a5a12; --surface-unknown: #5f6c7d; }

@@ -77,6 +77,38 @@ def read_jsonl(path: Path) -> list[dict]:
     return rows
 
 
+TOOLKIT_CONFIDENCE = ("certain", "likely")
+
+
+def desktop_toolkits(folder: Path, apps: dict[str, dict]) -> None:
+    """Give each desktop application the toolkit the desktop recorder detected for its
+    executable (`desktop/desktop.json`: processes[].technology, twinlab2_recorder.desktop.detect),
+    when the detection is certain or likely and one toolkit answers for that executable. A
+    toolkit already in the application's facts is kept. The portal names it in the package
+    (`app.toolkit`), so the builder uses the same toolkit."""
+    path = folder / "desktop" / "desktop.json"
+    if not path.is_file():
+        return
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    found: dict[str, set[str]] = {}
+    for p in doc.get("processes") or []:
+        tech = p.get("technology") if isinstance(p, dict) else None
+        if not isinstance(tech, dict) or tech.get("confidence") not in TOOLKIT_CONFIDENCE:
+            continue
+        name, exe = tech.get("toolkit"), str(p.get("process") or "").lower()
+        if isinstance(name, str) and name and exe:
+            found.setdefault(exe, set()).add(name[:40])
+    for facts in apps.values():
+        if facts.get("surface") != "desktop" or facts.get("toolkit"):
+            continue
+        names = found.get(str(facts.get("exe") or "").lower()) or set()
+        if len(names) == 1:
+            facts["toolkit"] = next(iter(names))
+
+
 def _streams(folder: Path) -> tuple[list[dict], dict]:
     meta = json.loads((folder / "session.json").read_text(encoding="utf-8"))
     journal = read_jsonl(folder / "journal.jsonl")
@@ -98,6 +130,7 @@ def _streams(folder: Path) -> tuple[list[dict], dict]:
                                                     "surface": None, "level": PRESENCE,
                                                     "recording": None, "seq": None,
                                                     "action": "presence", **_event(j)}))  # fmt: skip
+    desktop_toolkits(folder, apps)
     last_desk = None
     # an executable name stands for an application only when one application has it: two
     # applications a host runs (java.exe, ...) share it, and their steps go by process id

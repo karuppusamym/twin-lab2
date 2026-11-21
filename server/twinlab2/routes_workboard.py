@@ -21,6 +21,7 @@ from twinlab2 import buildpack
 from twinlab2 import builds
 from twinlab2 import journey
 from twinlab2 import packages
+from twinlab2 import readiness_cache
 from twinlab2 import registry
 from twinlab2 import scenarios
 from twinlab2 import shapes
@@ -79,10 +80,22 @@ def identity_of(app_id, keys=()):
 # -- the recording workboard -----------------------------------------------------------------------
 
 
-def readiness(app_id, owner):
+def draft_summary(app_id):
+    """What the workboard needs of the current draft: {sha256, critical, important} or {error}."""
+    try:
+        draft = buildpack.draft(db(), app_id, VERSION_PATH)
+    except Exception as error:  # noqa: BLE001 - one application's broken draft must not hide the board
+        return {"error": str(error)}
+    counts = draft.validation["counts"]
+    return {"sha256": draft.sha256, "critical": counts.get("critical", 0), "important": counts.get("important", 0)}
+
+
+def readiness(app_id, owner, stamp=None):
     """The package state of an application: {state: none|draft|frozen, rev, blockers, warnings,
     up_to_date, reason}. An owner's readiness is that of the current draft (pack_validator, as
-    the preview shows it); a builder sees the latest frozen revision's stored result."""
+    the preview shows it; kept between requests by readiness_cache, `stamp` is the
+    application's from `readiness_cache.stamps`); a builder sees the latest frozen revision's
+    stored result."""
     latest = packages.latest(db(), app_id)
     out = {"state": "frozen" if latest else "none", "rev": latest["rev"] if latest else None,
            "blockers": None, "warnings": None, "up_to_date": None, "reason": ""}
@@ -98,14 +111,15 @@ def readiness(app_id, owner):
         if latest is None:
             out["blockers"] = None
         return out
-    try:
-        draft = buildpack.draft(db(), app_id, VERSION_PATH)
-    except Exception as error:  # noqa: BLE001 - one application's broken draft must not hide the board
-        out.update(reason=f"The draft could not be built: {error}")
+    if stamp is None:
+        stamp = readiness_cache.stamps(db(), [app_id])[app_id]
+    # a draft that could not be built is tried again next time (storage may be back)
+    draft = readiness_cache.get(db(), app_id, stamp, lambda: draft_summary(app_id), keep=lambda d: "error" not in d)
+    if "error" in draft:
+        out.update(reason=f"The draft could not be built: {draft['error']}")
         return out
-    counts = draft.validation["counts"]
-    up_to_date = latest is not None and latest["sha256"] == draft.sha256
-    out.update(up_to_date=up_to_date, blockers=counts.get("critical", 0), warnings=counts.get("important", 0))
+    up_to_date = latest is not None and latest["sha256"] == draft["sha256"]
+    out.update(up_to_date=up_to_date, blockers=draft["critical"], warnings=draft["important"])
     if not up_to_date:
         out["state"] = "draft"
         out["reason"] = ("Changes since revision {} are not frozen yet.".format(latest["rev"]) if latest
@@ -151,7 +165,7 @@ def row_action(app, recording_id, link, j, role):
     return None
 
 
-def workboard_row(app, recording_id, keys, steps):
+def workboard_row(app, recording_id, keys, steps, stamps=None):
     app_id = app["id"]
     role = auth.role_of(db(), app_id, g.user)
     owner = role == "owner"
@@ -168,7 +182,7 @@ def workboard_row(app, recording_id, keys, steps):
         "selected": len(json.loads(link["selection"])) if link else None,
         "reviewed": bool(link["reviewed"]) if link else None,
         "scenarios": scenario_count if owner else None,
-        "package": readiness(app_id, owner) if builder and app["status"] == "known" else None,
+        "package": readiness(app_id, owner, (stamps or {}).get(app_id)) if builder and app["status"] == "known" else None,
         "build": build_of(app_id) if builder else None,
         "release": release_of(app_id) if role else None,
         "stage": j.stage,
@@ -263,8 +277,11 @@ def workboard(recording_id: str):
     apps = [db().execute("SELECT * FROM apps WHERE id = ?", (app_id,)).fetchone() for app_id in ids]
     apps = sorted((a for a in apps if a is not None),
                   key=lambda a: (a["status"] != "discovered", a["status"] == "not_replicated", a["name"].casefold()))
+    # one stamp query per table for the applications whose draft readiness the board shows
+    stamps = readiness_cache.stamps(db(), [a["id"] for a in apps if a["status"] == "known"
+                                           and auth.role_of(db(), a["id"], g.user) == "owner"])
     rows = [workboard_row(a, recording_id, [k for k, _ in flows.get(a["id"], [])],
-                          sum(len(s) for _k, s in flows.get(a["id"], []))) for a in apps]
+                          sum(len(s) for _k, s in flows.get(a["id"], [])), stamps) for a in apps]
     status = registry.recording_status(db(), recording_id)
     downloadable = [r for r in rows if r["package"] and r["package"]["rev"] is not None
                     and r["my_role"] in ("owner", "builder")]
@@ -438,6 +455,7 @@ def decide(body: m.TriageDecisions):
                 sql, args = sql + " AND revision = ?", args + [item.expected_revision]
             if db().execute(sql, tuple(args)).rowcount != 1:
                 fail(409, f"{app['name']} changed since you loaded it: reload and decide again.", "conflict")
+            readiness_cache.forget(db(), item.app_id)
             record("app.status", "app", item.app_id, app_id=item.app_id, status=status, previous=app["status"],
                    via="triage")
             changed.append({"id": item.app_id, "name": app["name"], "status": status,

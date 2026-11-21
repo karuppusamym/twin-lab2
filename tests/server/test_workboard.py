@@ -268,5 +268,171 @@ class ReleaseTest(DemoCase):
         self.assertEqual(other.status_code, 400)
 
 
+class ReadinessCacheTest(unittest.TestCase):
+    """The workboard keeps each application's draft readiness (readiness_cache): on the scale demo
+    (tools/demo_portal.py --scale: 50 applications, a 2,000-event recording assigned to them), a
+    second load builds no draft; each write that changes an application's draft rebuilds that
+    one only, and what the board shows is what a fresh computation shows."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.work = tempfile.TemporaryDirectory()
+        cls.env = mock.patch.dict(os.environ, {"TWINLAB2_APP_CREATORS": "owners"})
+        cls.env.start()
+        cls.app, _world, _ctx, cls.database = load_demo().build(cls.work.name, scale=True)
+        cls.alice = DemoCase.sign_in.__func__(cls, "alice")
+        catalog = cls.alice.get("/api/v1/apps?limit=100").json()
+        cls.recording = next(r["id"] for r in catalog["recordings"] if "2000 events" in r["name"])
+        ids = cls.alice.get(f"/api/v1/recordings/{cls.recording}/events?ids=true&limit=1").json()["ids"]
+        assert len(ids) == 2000
+        scale = [a for a in catalog["apps"] if a["name"].startswith("Scale app")]
+        cls.events = {}
+        for n, item in enumerate(scale):
+            chunk = ids[n * 40:(n + 1) * 40]
+            cls.events[item["id"]] = chunk
+            saved = cls.alice.put(f"/api/v1/recordings/{cls.recording}/assignments/{item['id']}",
+                                  json={"events": chunk, "expected_revision": 0})
+            assert saved.status_code == 200, saved.text
+            if item["status"] == "known":
+                made = cls.alice.post(f"/api/v1/apps/{item['id']}/scenarios", json={
+                    "name": "A record is saved", "expected": "The record is listed.",
+                    "events": [f"{cls.recording}#{e}" for e in chunk[:5]]})
+                assert made.status_code in (200, 201), made.text
+        cls.known = [a["id"] for a in scale if a["status"] == "known"]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.env.stop()
+        cls.work.cleanup()
+
+    def setUp(self):
+        from twinlab2 import readiness_cache
+
+        self.cache = readiness_cache
+        self.cache.clear()
+        self.board()  # warm
+
+    def ok(self, response, status=200):
+        self.assertEqual(response.status_code, status, response.text[:800])
+        return response.json()
+
+    def board(self):
+        """(the workboard, the applications whose draft it built)."""
+        from twinlab2 import buildpack
+
+        built = []
+        real = buildpack.draft
+
+        def counted(db, app_id, *args, **kwargs):
+            built.append(app_id)
+            return real(db, app_id, *args, **kwargs)
+
+        with mock.patch.object(buildpack, "draft", counted):
+            board = self.ok(self.alice.get(f"/api/v1/recordings/{self.recording}/workboard"))
+        return board, built
+
+    def packages(self, board):
+        return {r["app_id"]: r["package"] for r in board["apps"] if r["package"] is not None}
+
+    def assert_fresh(self, board):
+        """The board's readiness is what an empty cache computes."""
+        self.cache.clear()
+        fresh, _ = self.board()
+        self.assertEqual(self.packages(board), self.packages(fresh))
+
+    def test_a_second_load_builds_no_draft(self):
+        import time
+
+        self.cache.clear()
+        started = time.perf_counter()
+        first, built = self.board()
+        cold = time.perf_counter() - started
+        self.assertGreaterEqual(len(self.known), 20)
+        self.assertLessEqual(set(self.known), set(built))  # every replicated application, once
+        self.assertEqual(len(built), len(set(built)))
+        started = time.perf_counter()
+        second, again = self.board()
+        warm = time.perf_counter() - started
+        self.assertEqual(again, [])
+        self.assertEqual(first, second)
+        rows = {r["app_id"]: r for r in second["apps"]}
+        self.assertEqual(rows[self.known[0]]["package"]["state"], "draft")
+        self.assertIsNotNone(rows[self.known[0]]["package"]["blockers"])
+        print(f"\nworkboard of {len(second['apps'])} applications: {cold:.2f}s cold, {warm:.2f}s cached")
+
+    def test_each_write_rebuilds_only_the_application_it_changes(self):
+        alice = self.alice
+        a, b, c, d, e = self.known[:5]
+        # a scenario changed
+        scenario = self.ok(alice.get(f"/api/v1/apps/{a}/scenarios"))["scenarios"][0]
+        self.ok(alice.put(f"/api/v1/apps/{a}/scenarios/{scenario['id']}",
+                          json={"name": scenario["name"], "expected": "", "events": scenario["events"]}))
+        board, built = self.board()
+        self.assertEqual(built, [a])
+        self.assert_fresh(board)
+        # an assignment saved with fewer events
+        current = self.ok(alice.get(f"/api/v1/recordings/{self.recording}/assignments/{b}"))
+        self.ok(alice.put(f"/api/v1/recordings/{self.recording}/assignments/{b}",
+                          json={"events": self.events[b][:10], "expected_revision": current["revision"]}))
+        self.assertEqual(self.board()[1], [b])
+        # the application's own row (its demo repository)
+        self.ok(alice.patch(f"/api/v1/apps/{c}", json={"git_url": "https://github.com/example/scale-c"}))
+        self.assertEqual(self.board()[1], [c])
+        # out of scope and back: no draft while not replicated, a new one after
+        self.ok(alice.post("/api/v1/triage/decisions",
+                           json={"decisions": [{"app_id": d, "decision": "not_replicated"}]}))
+        board, built = self.board()
+        self.assertEqual(built, [])
+        self.assertIsNone({r["app_id"]: r for r in board["apps"]}[d]["package"])
+        self.ok(alice.post("/api/v1/triage/decisions", json={"decisions": [{"app_id": d, "decision": "replicate"}]}))
+        self.assertEqual(self.board()[1], [d])
+        # frozen: the frozen revision is read on every load; the draft is the same one
+        draft = self.ok(alice.get(f"/api/v1/apps/{e}/package-draft",
+                                  params={"override_reason": "Synthetic scale data: gaps are expected."}))
+        self.ok(alice.post(f"/api/v1/apps/{e}/packages", json={
+            "sha256": draft["sha256"], "approve": True, "summary": "scale",
+            "override_reason": "Synthetic scale data: gaps are expected."}), 201)
+        board, built = self.board()
+        package = {r["app_id"]: r for r in board["apps"]}[e]["package"]
+        self.assertEqual(package["rev"], 1)
+        self.assert_fresh(board)
+
+    def test_a_draft_that_could_not_be_built_is_tried_again(self):
+        from twinlab2 import buildpack
+
+        app_id = self.known[1]
+        self.cache.clear()
+        real = buildpack.draft
+
+        def broken(db, wanted, *args, **kwargs):
+            if wanted == app_id:
+                raise OSError("storage unavailable")
+            return real(db, wanted, *args, **kwargs)
+
+        with mock.patch.object(buildpack, "draft", broken):
+            board = self.ok(self.alice.get(f"/api/v1/recordings/{self.recording}/workboard"))
+        row = {r["app_id"]: r for r in board["apps"]}[app_id]
+        self.assertIn("storage unavailable", row["package"]["reason"])
+        board, built = self.board()  # not kept: built again, and it works now
+        self.assertEqual(built, [app_id])
+        self.assertNotIn("could not be built", {r["app_id"]: r for r in board["apps"]}[app_id]["package"]["reason"])
+
+    def test_a_write_from_another_process_is_noticed(self):
+        """The stamp of the rows a draft reads catches what this process did not write (the
+        worker, a second portal process, a script)."""
+        from contextlib import closing
+
+        from twinlab2.db import connect
+
+        app_id = self.known[-1]
+        with closing(connect(self.database)) as other:
+            with other:
+                other.execute("UPDATE scenarios SET expected = 'Changed elsewhere.', revision = revision + 1 "
+                              "WHERE app_id = ?", (app_id,))
+        board, built = self.board()
+        self.assertEqual(built, [app_id])
+        self.assert_fresh(board)
+        self.assertEqual(self.board()[1], [])
+
 if __name__ == "__main__":
     unittest.main()

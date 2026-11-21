@@ -246,6 +246,13 @@ paths:
         order (out-of-scope applications last, then by name). `filters` lists the owners and stages
         to choose from (of every visible application, not only this page). `recordings` is the
         first 50 recordings the caller may open; the recordings list has them all.
+
+        The page is grouped by status family (`AppSummary.family`: needs a scope decision, in
+        build, tested, published, not replicated, in that order; the sort applies within each
+        family). `groups` counts every matching application per family, also those of other pages.
+        `collapsed` names families whose applications are counted but left out of the pages, so
+        a collapsed group takes no room on any page; each other group's `offset` is where its
+        first application is, to page straight to it.
       x-twinlab-role: signed-in
       parameters:
         - { $ref: "#/components/parameters/Limit" }
@@ -255,6 +262,10 @@ paths:
         - { name: status, in: query, schema: { $ref: "#/components/schemas/AppStatus" } }
         - { name: stage, in: query, schema: { type: string, maxLength: 120 } }
         - { name: sort, in: query, schema: { type: string, enum: [name, -name, owner, -owner, status, -status, stage, -stage] } }
+        - name: collapsed
+          in: query
+          description: Families to count but leave out of the pages (repeat the parameter for more than one).
+          schema: { type: array, items: { $ref: "#/components/schemas/AppFamily" }, maxItems: 5 }
       responses:
         "200":
           description: The catalog.
@@ -2851,24 +2862,48 @@ components:
             fail: { type: integer }
             not-run: { type: integer }
         deployment: { oneOf: [{ $ref: "#/components/schemas/Deployment" }, { type: "null" }] }
+    AppFamily:
+      type: string
+      enum: [decide, build, tested, published, not_replicated]
+      description: |
+        Where an application stands, as the catalog groups it: `decide` needs a scope decision
+        (status `discovered`); `build` is replicated and has no Tested or Published release yet;
+        `tested` has a Tested release and none published; `published` has a Published release;
+        `not_replicated` is out of scope (status `not_replicated`).
     AppSummary:
       type: object
-      required: [id, name, status, status_label, owner, purpose, my_role, journey, tested_release]
+      required: [id, name, status, status_label, family, owner, purpose, my_role, journey, tested_release]
       properties:
         id: { type: integer }
         name: { type: string }
         status: { $ref: "#/components/schemas/AppStatus" }
         status_label: { type: string }
+        family: { $ref: "#/components/schemas/AppFamily" }
         owner: { type: string, description: "The owners' names for display (roles are authoritative)." }
         purpose: { type: string }
         my_role: { oneOf: [{ $ref: "#/components/schemas/Role" }, { type: "null" }] }
         journey: { $ref: "#/components/schemas/Journey" }
         tested_release: { oneOf: [{ $ref: "#/components/schemas/TestedRelease" }, { type: "null" }] }
+    CatalogGroup:
+      type: object
+      required: [family, label, count, offset, collapsed]
+      properties:
+        family: { $ref: "#/components/schemas/AppFamily" }
+        label: { type: string }
+        count: { type: integer, minimum: 0, description: "Matching applications of this family, on every page." }
+        collapsed: { type: boolean, description: "Named in `collapsed`: counted, not paged." }
+        offset:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+          description: The offset of the page that starts with this family's first application; null when collapsed or empty.
     Catalog:
       type: object
-      required: [apps, page, filters, recordings, journey_titles]
+      required: [apps, page, groups, filters, recordings, journey_titles]
       properties:
-        apps: { type: array, items: { $ref: "#/components/schemas/AppSummary" }, description: "One page of the matching applications." }
+        apps: { type: array, items: { $ref: "#/components/schemas/AppSummary" }, description: "One page of the matching applications, family by family." }
+        groups:
+          type: array
+          description: Every status family in order, with its count of matching applications (zero included).
+          items: { $ref: "#/components/schemas/CatalogGroup" }
         page: { $ref: "#/components/schemas/Page" }
         filters:
           type: object
@@ -4974,6 +5009,12 @@ components:
     Catalog:
       value:
         page: { total: 3, limit: 50, offset: 0, next_offset: null }
+        groups:
+          - { family: decide, label: Needs a scope decision, count: 1, offset: 0, collapsed: false }
+          - { family: build, label: In build, count: 1, offset: 0, collapsed: false }
+          - { family: tested, label: Tested, count: 1, offset: 0, collapsed: false }
+          - { family: published, label: Published, count: 0, offset: null, collapsed: false }
+          - { family: not_replicated, label: Not replicated (used only), count: 0, offset: null, collapsed: true }
         filters: { owners: [ana, ben], stages: [Choose application, Verify] }
         journey_titles: [Choose application, Add examples, Review required behaviour, Connect repository, Build, Verification settings, Verify, Open or download]
         recordings:
@@ -4983,6 +5024,7 @@ components:
             name: Billing Desk
             status: known
             status_label: Replicate
+            family: tested
             owner: ana
             purpose: Invoice from saved orders
             my_role: owner
@@ -5020,6 +5062,7 @@ components:
             name: CaseDesk
             status: known
             status_label: Replicate
+            family: build
             owner: ana
             purpose: Case handling desktop client
             my_role: owner
@@ -5040,6 +5083,7 @@ components:
             name: Outlook
             status: discovered
             status_label: Needs a scope decision
+            family: decide
             owner: ana
             purpose: ""
             my_role: owner
@@ -5064,6 +5108,7 @@ components:
         name: Billing Desk
         status: known
         status_label: Replicate
+        family: tested
         owner: ana
         purpose: Invoice from saved orders
         my_role: owner
@@ -5098,6 +5143,7 @@ components:
         name: Billing Desk
         status: known
         status_label: Replicate
+        family: tested
         owner: ana
         purpose: Invoice from saved orders
         my_role: viewer
