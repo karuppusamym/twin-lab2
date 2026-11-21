@@ -531,7 +531,24 @@ DATA_LIFECYCLE = [
 ]
 
 
-# -- 17: package bundle: fixture bindings, visual baselines, confirmations, interface contracts -------
+# -- 17: runner leases and acceptance checks --------------------------------------------------------
+
+RUNNER_LEASES = [
+    # the generation of the runner that holds a build session now: every update a runner writes
+    # carries it, and the worker ignores (and counts) those of older generations
+    add_columns([("builds", "runner_generation", "INTEGER NOT NULL DEFAULT 1"),
+                 ("builds", "runner_rejected", "INTEGER NOT NULL DEFAULT 0"),
+                 # Verify's acceptance checks, each with its own result (JSON list)
+                 ("verifications", "checks", "TEXT")]),
+    # one row per generation granted: when and why (a start, or a runner that stopped answering)
+    """CREATE TABLE IF NOT EXISTS runner_leases (
+        build_id INTEGER NOT NULL, generation INTEGER NOT NULL, granted_at TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '', PRIMARY KEY (build_id, generation)
+    )""",
+]
+
+
+# -- 18: package bundle: fixture bindings, visual baselines, confirmations, interface contracts -------
 
 PACKAGE_BUNDLE = [
     # per scenario, each typing or selecting step bound to a synthetic fixture field or a shared
@@ -560,7 +577,6 @@ PACKAGE_BUNDLE = [
 ]
 
 
-
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
@@ -586,7 +602,8 @@ MIGRATIONS = [
     (14, "async verification", VERIFICATIONS),
     (15, "access requests and agent scopes", ACCESS_AND_AGENT),
     (16, "data lifecycle", DATA_LIFECYCLE),
-    (17, "package bundle", PACKAGE_BUNDLE),
+    (17, "runner leases and acceptance checks", RUNNER_LEASES),
+    (18, "package bundle", PACKAGE_BUNDLE),
 ]
 
 

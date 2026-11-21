@@ -71,6 +71,15 @@ export function VerificationProgress({ initial, showRelease = false }: { initial
           })}</tbody>
         </table>
       )}
+      {v.checks.length > 0 && (
+        <table className="flow" aria-label="Acceptance checks" data-testid="acceptance-checks">
+          <thead><tr><th scope="col">Acceptance check</th><th scope="col">Result</th><th scope="col">Detail</th></tr></thead>
+          <tbody>{v.checks.map((c) => (
+            <tr key={c.id}><td>{c.label}{!c.required && <span className="muted"> (does not decide)</span>}</td>
+              <td><Badge kind={c.status}>{c.status}</Badge></td><td>{c.detail}</td></tr>
+          ))}</tbody>
+        </table>
+      )}
       {v.report?.url && <p><a href={v.report.url}>Report of this verification</a> <code className="muted">{v.report.sha256.slice(0, 12)}</code>{!showRelease && <span className="muted"> · every report is listed below</span>}</p>}
     </div>
   );
