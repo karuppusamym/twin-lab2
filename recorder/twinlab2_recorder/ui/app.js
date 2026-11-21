@@ -267,6 +267,8 @@ function pageSettings(s) {
         <button class="btn ghost small" data-act="profile">Open the kept profile…</button></div>
       <div><label class="f" for="set-cdp">Or record a browser already running on this PC, at its DevTools address</label><input type="text" id="set-cdp" data-act="setting" data-arg="cdp" value="${esc(val("set-cdp", st.cdp))}" placeholder="http://127.0.0.1:9222">
         <div class="hint">For example a robot's browser. Leave it empty and the recorder opens a browser of its own.</div></div></div>
+    <div class="card"><h2>Network and updates</h2><p class="small muted" id="network-note">${esc(s.updates.network)}</p><p class="small" id="update-note">${esc(s.updates.note)}</p>
+      <div class="row"><button class="btn secondary" data-act="check-updates"${dis(s.can.check_updates)}>Check for updates</button>${s.updates.offer ? `<button class="btn primary" data-act="install-update"${dis(s.can.install_update)}>Install TwinLab Recorder ${esc(s.updates.offer)}…</button>` : ""}</div></div>
     <div class="card"><h2>Desktop applications</h2><label class="check"><input type="checkbox" id="set-pictures" data-act="setting" data-arg="pictures"${st.pictures ? " checked" : ""}><span>Take pictures of desktop windows (typed values are painted over; uses more memory in long sessions)</span></label></div>
     <p class="xs muted">TwinLab Recorder ${esc(s.app.version)}</p></div></div>`;
 }
@@ -417,6 +419,8 @@ const ACTIONS = {
   retry: (a) => call("retry", a),
   "retry-all": () => call("retry_all"),
   profile: () => call("open_profile"),
+  "check-updates": () => call("check_updates"),
+  "install-update": () => call("install_update"),
   "ex-add": () => addExclude(),
   "ex-remove": (a) => call("exclude_remove", [Number(a)]),
   "ex-pick": () => call("exclude_pick"),

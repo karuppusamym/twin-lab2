@@ -43,6 +43,7 @@ from twinlab2_recorder.uithread import (
 from twinlab2_recorder.upload_queue import UploadQueue
 
 STOP_WAIT_S = 120  # how long closing the window waits for a recording to finish
+UPDATE_EVERY_S = 6 * 3600  # how often the window asks the portal for a newer version
 POLL_S = (15, 20)  # the portal is asked for sessions every 15 to 20 seconds
 PAGES = ("record", "recordings", "uploads", "privacy", "settings", "pair")
 EXCLUDE_KINDS = ["Program", "Window title", "Web site"]
@@ -177,6 +178,8 @@ class RecorderApp:
         )
         self.upload_error: str | None = None
         self.own_fill = {"seq": 0, "extra": ""}
+        self.network_note = ""
+        self.update_note = f"This is TwinLab Recorder {st.VERSION}."
         self.ex_kind = EXCLUDE_KINDS[0]
         self.ex_note = ""
         self.settings = {"browser": cfg.values.get("browser") or "edge",
@@ -191,6 +194,12 @@ class RecorderApp:
 
     def start(self) -> RecorderApp:
         """Fill the window and start its background work (polling, uploads)."""
+        try:
+            self.refresh_network()
+        except Exception as exc:  # noqa: BLE001 - shown, the window opens anyway
+            self.network_note = (
+                f"Network: could not be read ({type(exc).__name__}: {exc})"
+            )
         self.refresh_exclude()
         self.refresh_status()
         self.refresh_done()
@@ -287,6 +296,11 @@ class RecorderApp:
             },
             "exclude": self._exclude_view(),
             "settings": dict(self.settings),
+            "updates": {
+                "network": self.network_note,
+                "note": self.update_note,
+                "offer": getattr(s.get("update_offer"), "version", None),
+            },  # fmt: skip
             "can": {
                 "start_offered": self.idle() and self.offered_selected is not None,
                 "start_own": self.idle(),
@@ -302,6 +316,12 @@ class RecorderApp:
                 "upload": selected is not None and self.paired() and not s["closing"],
                 "pair": not s.get("pairing") and not s["closing"],
                 "settings": self.idle(),
+                "check_updates": not s.get("updates_off")
+                and not s.get("updating")
+                and self.paired(),
+                "install_update": s.get("update_offer") is not None
+                and not s.get("updating")
+                and rec is None,
             },  # fmt: skip
             "dialog": self.dialog,
             "notices": self.notices,
@@ -504,6 +524,8 @@ class RecorderApp:
         ):
             return
         self.state["polling"] = True
+        if time.monotonic() - self.state.get("update_checked", -1e9) > UPDATE_EVERY_S:
+            self.check_updates()
 
         def work(_report):
             p = self.make_portal()
@@ -713,6 +735,10 @@ class RecorderApp:
         self.page = "recordings"
         if any(r["id"] == s["session"] for r in s["done"]):
             self.select_recording(s["session"])
+        if s.get("update_ready"):
+            self.loop.after(
+                2000, self.install_when_idle
+            )  # an update waited for this recording to end
 
     def on_stop(self) -> None:
         s = self.state
@@ -841,8 +867,11 @@ class RecorderApp:
                 "warn",
             )
             return False
+        from twinlab2_recorder import policy
+
         try:
             url = check_portal(url)
+            policy.check_portal_allowed(policy.load(), url)
         except PortalError as exc:
             self.tell("Not paired", str(exc), "bad")
             return False
@@ -864,13 +893,161 @@ class RecorderApp:
             self.state["pairing"] = False
             self.tell("Not paired", f"Not paired: {reason}", "bad")
 
-        self.jobs.run("pair", lambda _r: Portal(url, ca_bundle=self.ca_bundle).pair(code, name), state="connecting",
+        proxy = self.cfg.values.get("proxy")
+        self.jobs.run("pair", lambda _r: Portal(url, ca_bundle=self.ca_bundle, proxy=proxy).pair(code, name), state="connecting",
                       label=f"pairing with {url}", retries=2, on_done=paired, on_failed=failed)  # fmt: skip
         return True
 
     def pair_defaults(self) -> dict:
-        return {"portal": self.cfg.values.get("portal") or "https://",
+        from twinlab2_recorder import policy
+
+        try:
+            office = policy.load().portal_url
+        except Exception:  # noqa: BLE001 - only a default
+            office = None
+        return {"portal": office or self.cfg.values.get("portal") or "https://",
                 "name": self.cfg.values.get("machine") or os.environ.get("COMPUTERNAME", "")}  # fmt: skip
+
+    # -- updates (twinlab2_recorder.updater) and the network ------------------------------------------
+
+    def refresh_network(self):
+        from twinlab2_recorder import net, policy
+
+        office = policy.load()
+        text = (
+            "Network: "
+            + net.Network.resolve(
+                self.ca_bundle, self.cfg.values.get("proxy"), office
+            ).describe()
+        )
+        if office.managed:
+            text += f". Managed by this PC's policy (updates {office.updates})."
+        self.network_note = text
+        self._changed()
+        return office
+
+    def check_updates(self) -> None:
+        from twinlab2_recorder import updater
+
+        s = self.state
+        s["update_checked"] = time.monotonic()
+        office = self.refresh_network()
+        s["updates_off"] = office.updates == "off"
+        if s["updates_off"]:
+            self.update_note = f"This is TwinLab Recorder {st.VERSION}. Updates are managed by your office."
+            self._changed()
+            return
+        if s.get("updating") or not self.paired():
+            return
+        s["updating"] = True
+        auto = office.updates == "auto" and updater.can_install_silently()
+        self._changed()
+
+        def work(_report):
+            p = self.make_portal()
+            return (
+                updater.prepare(p, self.cfg.folder, office)
+                if auto
+                else updater.check(p, office)
+            )
+
+        def done(got):
+            s["updating"] = False
+            if got is None:
+                self.update_note = (
+                    f"TwinLab Recorder {st.VERSION} is the latest version."
+                )
+            elif auto:
+                offer, msi, note = got
+                s["update_ready"] = (offer, msi, True)
+                self.update_note = f"{updater.describe(offer, office)}; {note}."
+                self.install_when_idle()
+            else:
+                s["update_offer"] = got
+                self.update_note = updater.describe(got, office) + "."
+            self._changed()
+
+        def failed(reason):
+            s["updating"] = False
+            self.update_note = f"This is TwinLab Recorder {st.VERSION}. The update check failed: {reason}"
+            self._changed()
+
+        self.jobs.run(
+            "update", work, label="checking for updates", on_done=done, on_failed=failed
+        )
+
+    def install_when_idle(self) -> None:
+        """Install a prepared update now if nothing records; else after the recording (recorded())."""
+        from twinlab2_recorder import updater
+
+        s = self.state
+        ready = s.get("update_ready")
+        if not ready or s["proc"] is not None or s["closing"] or s.get("destroyed"):
+            return
+        _offer, msi, quiet = ready
+        try:
+            updater.install(
+                msi, self.cfg.folder, quiet, busy=lambda: s["proc"] is not None
+            )
+        except updater.UpdateRefused as exc:
+            self.update_note = str(exc)
+            self._changed()
+            return
+        except OSError as exc:
+            self.update_note = f"The installer could not start: {exc}"
+            self._changed()
+            return
+        s["update_ready"] = None
+        self.destroy()  # the installer replaces this program's files
+
+    def on_install_update(self) -> None:
+        from twinlab2_recorder import updater
+
+        s = self.state
+        offer = s.get("update_offer")
+        if offer is None or s.get("updating"):
+            return
+        if s["proc"] is not None:
+            self.tell(
+                "Stop the recording first",
+                "An update is never installed while a session records.",
+            )
+            return
+
+        def go():
+            office = self.refresh_network()
+            s["updating"] = True
+            self._changed()
+
+            def work(_report):
+                p = self.make_portal()
+                msi = updater.download(p, offer, self.cfg.folder)
+                try:
+                    return msi, updater.verify_signature(msi, office)
+                except updater.UpdateRefused:
+                    msi.unlink(missing_ok=True)
+                    raise
+
+            def done(got):
+                s["updating"] = False
+                s["update_ready"] = (offer, got[0], False)
+                self.update_note = f"TwinLab Recorder {offer.version}: {got[1]}. Starting the installer…"
+                self._changed()
+                self.install_when_idle()
+
+            def failed(reason):
+                s["updating"] = False
+                self.tell(
+                    "The update was not installed",
+                    f"The update was not installed: {reason}",
+                    "bad",
+                )
+
+            self.jobs.run("update", work, label=f"downloading TwinLab Recorder {offer.version}", on_done=done,
+                          on_failed=failed)  # fmt: skip
+
+        self.ask("Install the update?", f"Download and install TwinLab Recorder {offer.version}? The recorder closes "
+                 "while it installs.", go, yes="Install")  # fmt: skip
 
     # -- uploads ---------------------------------------------------------------------------------------
 

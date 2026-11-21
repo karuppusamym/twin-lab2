@@ -278,8 +278,29 @@ def managed_path() -> Path:
 def read_managed(path: Path | None = None) -> dict | None:
     """`{"rules": [Rule], "allow_user_changes": bool}` from the managed policy file, or None
     when there is none. A file that cannot be read locks the list and excludes nothing more,
-    rather than letting the person think the office policy applies."""
-    path = Path(path) if path is not None else managed_path()
+    rather than letting the person think the office policy applies. Without `path`, the
+    machine policy in the registry (twinlab2_recorder.policy: `Exclude`,
+    `AllowUserExcludeChanges`) adds to the file and wins over its `allow_user_changes`."""
+    got = _read_managed_file(Path(path) if path is not None else managed_path())
+    if path is not None:
+        return got
+    from twinlab2_recorder import policy
+
+    reg = policy.convert(policy.read_registry())
+    if not reg.get("exclude") and "allow_user_changes" not in reg:
+        return got
+    got = got or {"rules": [], "allow_user_changes": True}
+    keys = {r.key() for r in got["rules"]}
+    for rule in (clean_rule(d, "managed") for d in reg.get("exclude") or []):
+        if rule and rule.key() not in keys:
+            keys.add(rule.key())
+            got["rules"].append(rule)
+    if "allow_user_changes" in reg:
+        got["allow_user_changes"] = reg["allow_user_changes"] and not got.get("error")
+    return got
+
+
+def _read_managed_file(path: Path) -> dict | None:
     if not path.is_file():
         return None
     try:

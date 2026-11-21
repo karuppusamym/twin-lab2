@@ -15,9 +15,14 @@
     TwinLabRecorder upload <session-id>  queue the recorded session for upload and send the queue
     TwinLabRecorder uploads              send what is queued (resuming), and show the queue
     TwinLabRecorder recover              finalise sessions an earlier run left unfinished
+    TwinLabRecorder update [--install]   a newer version from the portal (twinlab2_recorder.updater)
+    TwinLabRecorder policy [--url URL]   the machine policy and network settings in effect
+    TwinLabRecorder selfcheck            every module of this build imports (IT, after installing)
+    TwinLabRecorder cleanup [--all-users] delete the recorder's data (the MSI's uninstall runs this)
 
 Options for every command: `--portable-data` (keep everything in `data\\` beside the program),
-`--ca-bundle FILE` (a private certificate authority for the portal).
+`--ca-bundle FILE` (a private certificate authority for the portal), `--proxy URL|direct|system`.
+The office's machine policy (twinlab2_recorder.policy) wins over both.
 
 The recordings stay in the data folder. The references go to the portal only when the person
 agrees; a recording itself only when the person uploads it (`upload`), through the offline queue
@@ -44,6 +49,7 @@ if __package__ in (None, ""):  # run as a script: python recorder/twinlab2_recor
 from twinlab2_recorder import settings as st  # noqa: E402
 from twinlab2_recorder.client import Portal, PortalError, check_portal  # noqa: E402
 from twinlab2_recorder.upload_queue import UploadQueue, describe as describe_upload  # noqa: E402
+from twinlab2_recorder import updater  # noqa: E402
 from twinlab2_contract import recorder_contract as contract  # noqa: E402
 from twinlab2_contract.upstream import UPSTREAM_COMMIT  # noqa: E402
 
@@ -59,9 +65,15 @@ def _build_info() -> dict:
 
 
 def _portal(cfg: st.Settings, ca_bundle: str | None) -> Portal:
+    from twinlab2_recorder import policy
+
     if not cfg.values.get("portal") or not cfg.token():
         raise PortalError("this machine is not paired: run `TwinLabRecorder pair` first")
-    return Portal(cfg.values["portal"], cfg.token(), ca_bundle)
+    try:
+        policy.check_portal_allowed(policy.load(), cfg.values["portal"])
+    except PortalError as exc:
+        raise PortalError(f"{exc}: pair this PC again with that portal") from exc
+    return Portal(cfg.values["portal"], cfg.token(), ca_bundle, proxy=cfg.values.get("proxy"))
 
 
 # --- sessions ---------------------------------------------------------------------------------------
@@ -185,7 +197,13 @@ def run_session(cfg: st.Settings, conf: dict, script=None, parent_pid: int | Non
                 cdp=conf.get("cdp") or None, browser=conf.get("browser") or None,
                 pictures=bool(conf.get("pictures")), robot=conf.get("robot", True) is not False,
                 parent_pid=parent_pid, preflight=pre)  # fmt: skip
-    return s.run(script=script)
+    from twinlab2_recorder import updater
+
+    updater.take_lock(cfg.folder)  # no update is installed while this records
+    try:
+        return s.run(script=script)
+    finally:
+        updater.release_lock(cfg.folder)
 
 
 def outbox(cfg: st.Settings, session_id: str) -> dict:
@@ -428,9 +446,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="TwinLabRecorder", description=__doc__.split("\n\n")[0])
     parser.add_argument("--portable-data", action="store_true")
     parser.add_argument("--ca-bundle")
+    parser.add_argument("--proxy", help="a proxy URL, direct, or system (the default); the policy wins")
     sub = parser.add_subparsers(dest="command")
     p = sub.add_parser("pair")
-    p.add_argument("--portal", required=True)
+    p.add_argument("--portal", help="the portal's address (the machine policy's PortalUrl when left out)")
     p.add_argument("--code", required=True)
     p.add_argument("--name", required=True)
     sub.add_parser("sessions")
@@ -471,9 +490,32 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("project")
     sub.add_parser("gui")
     sub.add_parser("version")
+    upd = sub.add_parser("update", help="ask the portal for a newer version; --install it")
+    upd.add_argument("--install", action="store_true")
+    upd.add_argument("--yes", action="store_true", help="install without asking")
+    pol = sub.add_parser("policy", help="the machine policy and network settings in effect")
+    pol.add_argument("--url", help="also show the proxy used for this address")
+    sub.add_parser("selfcheck", help="check that every module of this build imports")
+    cl = sub.add_parser("cleanup", help="delete the recorder's data on this PC")
+    cl.add_argument("--all-users", action="store_true", help="every profile and ProgramData (as SYSTEM)")
     args = parser.parse_args(argv)
+    if args.command in ("selfcheck", "cleanup", "policy"):
+        from twinlab2_recorder import admin
+
+        if args.command == "selfcheck":
+            got = admin.selfcheck()
+            admin.print_json(got)
+            return 1 if got["failed"] else 0
+        if args.command == "cleanup":
+            got = admin.cleanup(all_users=args.all_users)
+            admin.print_json(got)
+            return 1 if got["failed"] else 0
+        admin.print_json(admin.policy_report(args.ca_bundle, args.proxy, args.url))
+        return 0
     cfg = st.Settings(st.data_dir(args.portable_data))
     cfg.portable = args.portable_data
+    if args.proxy:
+        cfg.values["proxy"] = args.proxy  # this run only (not saved)
 
     try:
         if args.command in (None, "gui"):
@@ -482,8 +524,14 @@ def main(argv: list[str] | None = None) -> int:
             print(st.APP, st.VERSION, "contract", contract.CONTRACT_VERSION, json.dumps(_build_info()))
             print("window:", window_parts())
         elif args.command == "pair":
-            portal = check_portal(args.portal)
-            doc = Portal(portal, ca_bundle=args.ca_bundle).pair(args.code, args.name)
+            from twinlab2_recorder import policy
+
+            office = policy.load()
+            if not (args.portal or office.portal_url):
+                raise SystemExit("give the portal's address (--portal); this PC's policy names none")
+            portal = check_portal(args.portal or office.portal_url)
+            policy.check_portal_allowed(office, portal)
+            doc = Portal(portal, ca_bundle=args.ca_bundle, proxy=args.proxy).pair(args.code, args.name)
             cfg.paired(portal, doc["machine_id"], doc["name"], doc["token"])
             print(f"paired as {doc['name']} (machine {doc['machine_id']}) with {portal}")
         elif args.command == "sessions":
@@ -597,12 +645,34 @@ def main(argv: list[str] | None = None) -> int:
             args_line = " ".join(("--exe " + t["exe"]) if t.get("exe") else ("--origin " + t["origin"])
                                  if t.get("origin") else ("--tn3270 " + t["tn3270"]) for t in got["targets"])  # fmt: skip
             print(f"record with: record {args_line}" + (f" --browser {got['browser']}" if got["browser"] else ""))
+        elif args.command == "update":
+            from twinlab2_recorder import policy
+
+            office = policy.load()
+            portal = _portal(cfg, args.ca_bundle)
+            if office.updates == "off":
+                print("updates are off on this PC (policy): the office installs new versions")
+                return 0
+            offer = updater.check(portal, office)
+            if offer is None:
+                print(f"{st.APP} {st.VERSION} is the latest version")
+                return 0
+            print(updater.describe(offer, office))
+            if not args.install:
+                return 0
+            if not args.yes and input(f"Install {offer.version}? [y/N] ").strip().lower() != "y":
+                print("not installed")
+                return 1
+            msi = updater.download(portal, offer, cfg.folder)
+            print(updater.verify_signature(msi, office))
+            updater.install(msi, cfg.folder, quiet=updater.can_install_silently())
+            print(f"the installer is running (log in {cfg.folder / 'logs'})")
         elif args.command == "recover":
             from twinlab2_recorder.workstation.session import recover_all
 
             done = recover_all(cfg.recordings)
             print("recovered: " + (", ".join(done) if done else "nothing"))
-    except PortalError as exc:
+    except (PortalError, updater.UpdateRefused) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 0

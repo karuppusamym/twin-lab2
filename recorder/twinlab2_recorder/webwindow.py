@@ -108,6 +108,12 @@ class Bridge:
     def settings(self, values: dict):
         self._do(self._app.set_settings, dict(values or {}))
 
+    def check_updates(self):
+        self._do(self._app.check_updates)
+
+    def install_update(self):
+        self._do(self._app.on_install_update)
+
     def open_profile(self):
         self._do(self._app.on_profile)
 

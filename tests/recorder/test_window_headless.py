@@ -568,6 +568,74 @@ class WindowLogicTest(unittest.TestCase):
         self.assertEqual(self.snap()["page"], "privacy")
         json.dumps(self.snap())  # everything the page gets is JSON
 
+    def test_updates_follow_the_policy_and_never_install_during_a_recording(self):
+        from twinlab2_recorder import policy, updater
+
+        work = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, work, True)
+        (work / "policy.json").write_text(
+            json.dumps({"updates": "off"}), encoding="utf-8"
+        )
+        for patcher in (mock.patch.dict(os.environ, {"TWINLAB_RECORDER_POLICY": str(work / "policy.json")}),
+                        mock.patch.object(policy, "read_registry", return_value={})):  # fmt: skip
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.cfg.paired("http://127.0.0.1:9", 3, "Workstation 7", "tok")
+        w = self.window()
+        self.do(w.check_updates)
+        updates = self.snap()["updates"]
+        self.assertIn("managed by your office", updates["note"])
+        self.assertFalse(self.snap()["can"]["check_updates"])
+        self.assertIn("Managed by this PC's policy (updates off)", updates["network"])
+
+        (work / "policy.json").write_text(
+            json.dumps({"updates": "notify"}), encoding="utf-8"
+        )
+        offer = updater.Offer(
+            "9.0.0", "TwinLabRecorder-9.0.0-x64.msi", "/api/agent/update/x", 3, "a" * 64
+        )
+        with mock.patch.object(updater, "check", return_value=offer):
+            self.do(w.check_updates)
+            self.assertTrue(self.pump(lambda: w.snapshot()["can"]["install_update"]))
+        self.assertIn("9.0.0 is available", self.snap()["updates"]["note"])
+        self.assertEqual(self.snap()["updates"]["offer"], "9.0.0")
+        # a prepared update waits while a session records, then installs (and the window closes)
+        msi = self.tmp / "TwinLabRecorder-9.0.0-x64.msi"
+        msi.write_bytes(b"x")
+        w.state["update_ready"] = (offer, msi, True)
+        w.state["proc"] = object()  # recording
+        with mock.patch.object(updater, "install") as install:
+            self.do(w.install_when_idle)
+            install.assert_not_called()
+            w.state["proc"] = None
+            self.do(w.install_when_idle)
+            install.assert_called_once()
+        self.assertTrue(w.state.get("destroyed"))
+        self.assertTrue(self.host.closed)
+
+    def test_pairing_follows_the_office_policy(self):
+        from twinlab2_recorder import policy
+
+        work = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, work, True)
+        (work / "policy.json").write_text(json.dumps({"portal_url": "https://portal.example.test",
+                                                     "lock_portal": True}),
+                                          encoding="utf-8")  # fmt: skip
+        for patcher in (mock.patch.dict(os.environ, {"TWINLAB_RECORDER_POLICY": str(work / "policy.json")}),
+                        mock.patch.object(policy, "read_registry", return_value={})):  # fmt: skip
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        w = self.window()
+        self.assertEqual(
+            self.do(w.pair_defaults)["portal"], "https://portal.example.test"
+        )
+        self.assertFalse(
+            self.do(w.on_pair, "https://other.example.test", "123-456", "PC")
+        )
+        self.assertIn(
+            "allows only the portal https://portal.example.test", w.notices[-1]["text"]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
