@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, data } from "../api/client";
-import { ActionButton, Badge, Crumbs, ErrorText, QueryView, useAction, useTitle } from "../components/ui";
+import { ActionButton, Badge, Crumbs, Empty, ErrorText, QueryView, useAction, useTitle } from "../components/ui";
 import { when } from "../lib/format";
 
 export function MachinesPage() {
@@ -38,7 +38,7 @@ export function MachinesPage() {
                 )}
               </div>
             ))}</>
-          ) : <p>No machine is paired yet.</p>}
+          ) : <Empty><p>No machine is paired yet.</p></Empty>}
         </QueryView>
       </section>
     </>

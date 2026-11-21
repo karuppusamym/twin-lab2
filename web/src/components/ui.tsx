@@ -7,8 +7,21 @@ import { ApiError, errorText } from "../api/client";
 import { capitalize, words } from "../lib/format";
 import { sessionKey } from "../session";
 
-export function Loading({ what = "Loading" }: { what?: string }) {
-  return <p className="muted" role="status">{what}…</p>;
+/** A query on its way: its words for screen readers and a placeholder of the content's shape. */
+export function Loading({ what = "Loading", lines = 3 }: { what?: string; lines?: number }) {
+  return (
+    <div className="loading" role="status" aria-busy="true">
+      <p className="muted">{what}…</p>
+      <div className="skeleton" aria-hidden="true">
+        {Array.from({ length: lines }, (_, i) => <span key={i} className="skeleton-line" />)}
+      </div>
+    </div>
+  );
+}
+
+/** Nothing to show yet: what is missing and, as children, what to do about it. */
+export function Empty({ children }: { children: ReactNode }) {
+  return <div className="empty">{children}</div>;
 }
 
 export function ErrorText({ error }: { error: unknown }) {
