@@ -1,4 +1,4 @@
-# Recorder contract 1.1.0
+# Recorder contract 1.2.0
 
 What a workstation recorder sends to the TwinLab2 portal, and how the two sides agree on a version. The
 machine-checkable form is [`contract/twinlab2_contract/recorder-contract.schema.json`](contract/twinlab2_contract/recorder-contract.schema.json)
@@ -30,8 +30,8 @@ MINOR is accepted because the portal ignores fields it does not know.
 A refusal answers with this JSON:
 
 ```json
-{"error": "this recorder speaks contract 2.0.0, newer than this portal's 1.1.0 (supported >=1.0.0 <2.0.0). Update the portal, or use a recorder for contract 1.x.",
- "update": "portal", "contract": {"portal": "1.1.0", "supported": ">=1.0.0 <2.0.0"}}
+{"error": "this recorder speaks contract 2.0.0, newer than this portal's 1.2.0 (supported >=1.0.0 <2.0.0). Update the portal, or use a recorder for contract 1.x.",
+ "update": "portal", "contract": {"portal": "1.2.0", "supported": ">=1.0.0 <2.0.0"}}
 ```
 
 The portal checks the version before anything else. An outdated recorder hears what to update,
@@ -153,6 +153,28 @@ recorder's `preflight`:
 | `preflight.ready` | with `preflight` | whether the recorder was ready to record |
 
 Both objects go at the **top level** of the references message, next to `session`, not inside it.
+
+#### Contract 1.2: application path prefixes
+
+1.2.0 is a minor version with no new requirement: a 1.2 message is checked against the same
+`#/$defs/references_1_1`, and the portal still accepts 1.0.x and 1.1.x.
+
+Several applications can share one host and be told apart by path: `https://erp.example.test/finance`,
+`/finance/billing` and `/finance/payroll` are three catalog applications. Up to 1.1 a web step's
+`screen` kept only the first path segment (`https://erp.example.test/finance/{id}/{id}/{id}`), so
+the portal could never put a step on `/finance/billing`. From 1.2:
+
+| Field | Rule |
+|---|---|
+| `session.targets[].path` | optional: a web target's path prefix as the portal's catalog names it (`/finance/billing`, whole segments, no query or fragment, up to 120 characters) |
+| `screen` (web) | when the step's URL is under one of the session's target prefixes on its origin, that prefix is kept whole, the longest one winning, by whole segments (`/finance/billing-archive` is not under `/finance/billing`); after it, only route words are kept and every other segment is `{id}`. A step under no prefix keeps the 1.1 rule: the first segment when it is an identifier. |
+
+The prefix is the target's own text, given by the portal, never read from the URL: a segment in
+that place that no target names is still `{id}`, and no query, fragment or typed value is kept.
+
+The portal assigns a web step to the identity with the longest path prefix its screen is under
+(`url_match: path`), whatever the version: a 1.1 screen such as `/finance/{id}/{id}` is under
+`/finance` and under no deeper prefix, so a 1.1 recording is assigned exactly as before.
 
 #### Event ids in the portal
 

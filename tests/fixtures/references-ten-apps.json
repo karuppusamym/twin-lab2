@@ -1,11 +1,11 @@
 {
- "contract_version": "1.1.0",
+ "contract_version": "1.2.0",
  "format": "twinlab-references/1",
  "session": {
   "id": "20261120T140000Z-10a9b8c7",
   "name": "Month-end close",
   "started": "2026-11-20T14:00:00.000Z",
-  "ended": "2026-11-20T14:02:10.000Z",
+  "ended": "2026-11-20T14:02:45.000Z",
   "state": "stopped",
   "recorder": "TwinLabRecorder 0.2.0",
   "twinlab_commit": "430dfe538965b46ccbe824f8f2b4f415c5576483",
@@ -17,11 +17,13 @@
   "targets": [
    {
     "origin": "https://erp.example.test",
+    "path": "/billing",
     "level": "full",
     "app_id": 1
    },
    {
     "origin": "https://erp.example.test",
+    "path": "/billing-admin",
     "level": "full",
     "app_id": 2
    },
@@ -34,6 +36,24 @@
     "origin": "https://seikyu.example.test:8443",
     "level": "full",
     "app_id": 4
+   },
+   {
+    "origin": "https://fin.example.test",
+    "path": "/finance",
+    "level": "full",
+    "app_id": 5
+   },
+   {
+    "origin": "https://fin.example.test",
+    "path": "/finance/billing",
+    "level": "full",
+    "app_id": 6
+   },
+   {
+    "origin": "https://fin.example.test",
+    "path": "/finance/payroll",
+    "level": "full",
+    "app_id": 7
    },
    {
     "origin": "https://orders.example.test",
@@ -107,6 +127,14 @@
    "app_id": 2
   },
   {
+   "key": "web:https://fin.example.test",
+   "surface": "web",
+   "level": "full",
+   "display": "Payroll",
+   "origin": "https://fin.example.test",
+   "app_id": 7
+  },
+  {
    "key": "web:https://meter.example.test",
    "surface": "web",
    "level": "full",
@@ -159,240 +187,311 @@
     "captured_at": "2026-11-20T14:00:10.000Z"
    },
    {
-    "n": 8,
+    "n": 11,
     "action": "click",
     "control": "button",
     "label": "adminRateTable",
     "screen": "https://erp.example.test/billing-admin/{id}",
-    "event_id": "019aa1b0-0004-7000-8000-000000000004",
+    "event_id": "019aa1b0-0006-7000-8000-000000000006",
     "channel": "web",
-    "captured_at": "2026-11-20T14:00:20.000Z"
+    "captured_at": "2026-11-20T14:00:30.000Z"
    },
    {
-    "n": 9,
+    "n": 12,
     "action": "click",
     "control": "button",
     "label": "billingApprove",
     "screen": "https://erp.example.test/billing/{id}/{id}",
-    "event_id": "019aa1b0-0005-7000-8000-000000000005",
+    "event_id": "019aa1b0-0007-7000-8000-000000000007",
     "channel": "web",
-    "captured_at": "2026-11-20T14:00:25.000Z"
+    "captured_at": "2026-11-20T14:00:35.000Z"
    },
    {
-    "n": 15,
+    "n": 20,
     "action": "type",
     "control": "input",
     "label": "adminRateValue",
     "screen": "https://erp.example.test/billing-admin/{id}/edit",
-    "event_id": "019aa1b0-0008-7000-8000-000000000008",
-    "channel": "web",
-    "captured_at": "2026-11-20T14:00:40.000Z"
-   },
-   {
-    "n": 45,
-    "action": "click",
-    "control": "button",
-    "label": "adminRatePublish",
-    "screen": "https://erp.example.test/billing-admin/{id}",
-    "event_id": "019aa1b0-0017-7000-8000-000000000017",
-    "channel": "web",
-    "captured_at": "2026-11-20T14:01:55.000Z"
-   },
-   {
-    "n": 46,
-    "action": "click",
-    "control": "button",
-    "label": "billingExport",
-    "screen": "https://erp.example.test/billing/{id}",
-    "event_id": "019aa1b0-0018-7000-8000-000000000018",
-    "channel": "web",
-    "captured_at": "2026-11-20T14:02:00.000Z"
-   }
-  ],
-  "desktop:Contoso Ltd/Billing": [
-   {
-    "n": 6,
-    "action": "click",
-    "control": "Button",
-    "label": "contosoPostLedger",
-    "screen": "ContosoMain",
-    "event_id": "019aa1b0-0003-7000-8000-000000000003",
-    "channel": "desktop",
-    "captured_at": "2026-11-20T14:00:15.000Z"
-   },
-   {
-    "n": 23,
-    "action": "type",
-    "control": "Edit",
-    "label": "contosoAmount",
-    "screen": "ContosoMain",
-    "event_id": "019aa1b0-000c-7000-8000-00000000000c",
-    "channel": "desktop",
-    "captured_at": "2026-11-20T14:01:00.000Z"
-   }
-  ],
-  "mainframe:cics.example.test:3270": [
-   {
-    "n": 11,
-    "action": "screen",
-    "screen": "ACCOUNT INQUIRY",
-    "control": "screen",
-    "event_id": "019aa1b0-0006-7000-8000-000000000006",
-    "channel": "mainframe",
-    "captured_at": "2026-11-20T14:00:30.000Z"
-   },
-   {
-    "n": 19,
-    "action": "type",
-    "screen": "ACCOUNT INQUIRY",
-    "control": "field",
-    "label": "MAINFRAMEACCT",
-    "event_id": "019aa1b0-000a-7000-8000-00000000000a",
-    "channel": "mainframe",
-    "captured_at": "2026-11-20T14:00:50.000Z"
-   },
-   {
-    "n": 35,
-    "action": "aid",
-    "screen": "ACCOUNT INQUIRY",
-    "control": "key",
-    "label": "Enter",
-    "key": "Enter",
-    "event_id": "019aa1b0-0012-7000-8000-000000000012",
-    "channel": "mainframe",
-    "captured_at": "2026-11-20T14:01:30.000Z"
-   }
-  ],
-  "desktop:exe/billing.exe": [
-   {
-    "n": 13,
-    "action": "type",
-    "control": "Edit",
-    "label": "plainCustomerRef",
-    "screen": "BillingMainForm",
-    "event_id": "019aa1b0-0007-7000-8000-000000000007",
-    "channel": "desktop",
-    "captured_at": "2026-11-20T14:00:35.000Z"
-   },
-   {
-    "n": 31,
-    "action": "click",
-    "control": "Button",
-    "label": "plainPrintStatement",
-    "screen": "BillingMainForm",
-    "event_id": "019aa1b0-0010-7000-8000-000000000010",
-    "channel": "desktop",
-    "captured_at": "2026-11-20T14:01:20.000Z"
-   }
-  ],
-  "web:https://meter.example.test": [
-   {
-    "n": 17,
-    "action": "type",
-    "control": "input",
-    "label": "meterReading",
-    "screen": "https://meter.example.test/readings",
-    "event_id": "019aa1b0-0009-7000-8000-000000000009",
-    "channel": "web",
-    "captured_at": "2026-11-20T14:00:45.000Z"
-   },
-   {
-    "n": 33,
-    "action": "click",
-    "control": "button",
-    "label": "meterConfirm",
-    "screen": "https://meter.example.test/readings/confirm",
-    "event_id": "019aa1b0-0011-7000-8000-000000000011",
-    "channel": "web",
-    "captured_at": "2026-11-20T14:01:25.000Z"
-   }
-  ],
-  "web:https://orders.example.test": [
-   {
-    "n": 21,
-    "action": "click",
-    "control": "button",
-    "label": "ordersCreate",
-    "screen": "https://orders.example.test/orders/new",
     "event_id": "019aa1b0-000b-7000-8000-00000000000b",
     "channel": "web",
     "captured_at": "2026-11-20T14:00:55.000Z"
    },
    {
-    "n": 37,
-    "action": "type",
-    "control": "input",
-    "label": "ordersSearch",
-    "screen": "https://orders.example.test/orders/search",
-    "event_id": "019aa1b0-0013-7000-8000-000000000013",
-    "channel": "web",
-    "captured_at": "2026-11-20T14:01:35.000Z"
-   }
-  ],
-  "web:https://seikyu.example.test:8443": [
-   {
-    "n": 25,
-    "action": "click",
-    "control": "a",
-    "label": "invoiceListOpen",
-    "screen": "https://seikyu.example.test:8443/seikyu/list",
-    "event_id": "019aa1b0-000d-7000-8000-00000000000d",
-    "channel": "web",
-    "captured_at": "2026-11-20T14:01:05.000Z"
-   },
-   {
-    "n": 39,
-    "action": "type",
-    "control": "input",
-    "label": "invoiceAmount",
-    "screen": "https://seikyu.example.test:8443/seikyu/new",
-    "event_id": "019aa1b0-0014-7000-8000-000000000014",
-    "channel": "web",
-    "captured_at": "2026-11-20T14:01:40.000Z"
-   }
-  ],
-  "web:http://127.0.0.1:8081": [
-   {
-    "n": 27,
+    "n": 58,
     "action": "click",
     "control": "button",
-    "label": "hrLeaveSubmit",
-    "screen": "http://127.0.0.1:8081/leave",
+    "label": "adminRatePublish",
+    "screen": "https://erp.example.test/billing-admin/{id}",
+    "event_id": "019aa1b0-001e-7000-8000-00000000001e",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:30.000Z"
+   },
+   {
+    "n": 59,
+    "action": "click",
+    "control": "button",
+    "label": "billingExport",
+    "screen": "https://erp.example.test/billing/{id}",
+    "event_id": "019aa1b0-001f-7000-8000-00000000001f",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:35.000Z"
+   }
+  ],
+  "web:https://fin.example.test": [
+   {
+    "n": 6,
+    "action": "goto",
+    "control": "body",
+    "screen": "https://fin.example.test/finance",
+    "event_id": "019aa1b0-0003-7000-8000-000000000003",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:00:15.000Z"
+   },
+   {
+    "n": 7,
+    "action": "click",
+    "control": "button",
+    "label": "receivableInvoiceOpen",
+    "screen": "https://fin.example.test/finance/billing/{id}/{id}",
+    "event_id": "019aa1b0-0004-7000-8000-000000000004",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:00:20.000Z"
+   },
+   {
+    "n": 14,
+    "action": "type",
+    "control": "input",
+    "label": "payrollRunHours",
+    "screen": "https://fin.example.test/finance/payroll/{id}/{id}",
+    "event_id": "019aa1b0-0008-7000-8000-000000000008",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:00:40.000Z"
+   },
+   {
+    "n": 26,
+    "action": "click",
+    "control": "button",
+    "label": "ledgerArchiveOpen",
+    "screen": "https://fin.example.test/finance/{id}/{id}",
     "event_id": "019aa1b0-000e-7000-8000-00000000000e",
     "channel": "web",
     "captured_at": "2026-11-20T14:01:10.000Z"
    },
    {
-    "n": 43,
+    "n": 36,
+    "action": "click",
+    "control": "button",
+    "label": "receivableExport",
+    "screen": "https://fin.example.test/finance/billing",
+    "event_id": "019aa1b0-0013-7000-8000-000000000013",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:01:35.000Z"
+   },
+   {
+    "n": 46,
+    "action": "click",
+    "control": "button",
+    "label": "payrollRunCreate",
+    "screen": "https://fin.example.test/finance/payroll/{id}/new",
+    "event_id": "019aa1b0-0018-7000-8000-000000000018",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:00.000Z"
+   },
+   {
+    "n": 56,
     "action": "type",
     "control": "input",
-    "label": "hrLeaveDays",
-    "screen": "http://127.0.0.1:8081/leave/new",
+    "label": "ledgerJournalAmount",
+    "screen": "https://fin.example.test/finance/{id}/edit",
+    "event_id": "019aa1b0-001d-7000-8000-00000000001d",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:25.000Z"
+   }
+  ],
+  "desktop:Contoso Ltd/Billing": [
+   {
+    "n": 9,
+    "action": "click",
+    "control": "Button",
+    "label": "contosoPostLedger",
+    "screen": "ContosoMain",
+    "event_id": "019aa1b0-0005-7000-8000-000000000005",
+    "channel": "desktop",
+    "captured_at": "2026-11-20T14:00:25.000Z"
+   },
+   {
+    "n": 30,
+    "action": "type",
+    "control": "Edit",
+    "label": "contosoAmount",
+    "screen": "ContosoMain",
+    "event_id": "019aa1b0-0010-7000-8000-000000000010",
+    "channel": "desktop",
+    "captured_at": "2026-11-20T14:01:20.000Z"
+   }
+  ],
+  "mainframe:cics.example.test:3270": [
+   {
+    "n": 16,
+    "action": "screen",
+    "screen": "ACCOUNT INQUIRY",
+    "control": "screen",
+    "event_id": "019aa1b0-0009-7000-8000-000000000009",
+    "channel": "mainframe",
+    "captured_at": "2026-11-20T14:00:45.000Z"
+   },
+   {
+    "n": 24,
+    "action": "type",
+    "screen": "ACCOUNT INQUIRY",
+    "control": "field",
+    "label": "MAINFRAMEACCT",
+    "event_id": "019aa1b0-000d-7000-8000-00000000000d",
+    "channel": "mainframe",
+    "captured_at": "2026-11-20T14:01:05.000Z"
+   },
+   {
+    "n": 44,
+    "action": "aid",
+    "screen": "ACCOUNT INQUIRY",
+    "control": "key",
+    "label": "Enter",
+    "key": "Enter",
+    "event_id": "019aa1b0-0017-7000-8000-000000000017",
+    "channel": "mainframe",
+    "captured_at": "2026-11-20T14:01:55.000Z"
+   }
+  ],
+  "desktop:exe/billing.exe": [
+   {
+    "n": 18,
+    "action": "type",
+    "control": "Edit",
+    "label": "plainCustomerRef",
+    "screen": "BillingMainForm",
+    "event_id": "019aa1b0-000a-7000-8000-00000000000a",
+    "channel": "desktop",
+    "captured_at": "2026-11-20T14:00:50.000Z"
+   },
+   {
+    "n": 40,
+    "action": "click",
+    "control": "Button",
+    "label": "plainPrintStatement",
+    "screen": "BillingMainForm",
+    "event_id": "019aa1b0-0015-7000-8000-000000000015",
+    "channel": "desktop",
+    "captured_at": "2026-11-20T14:01:45.000Z"
+   }
+  ],
+  "web:https://meter.example.test": [
+   {
+    "n": 22,
+    "action": "type",
+    "control": "input",
+    "label": "meterReading",
+    "screen": "https://meter.example.test/readings",
+    "event_id": "019aa1b0-000c-7000-8000-00000000000c",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:01:00.000Z"
+   },
+   {
+    "n": 42,
+    "action": "click",
+    "control": "button",
+    "label": "meterConfirm",
+    "screen": "https://meter.example.test/readings/confirm",
     "event_id": "019aa1b0-0016-7000-8000-000000000016",
     "channel": "web",
     "captured_at": "2026-11-20T14:01:50.000Z"
    }
   ],
+  "web:https://orders.example.test": [
+   {
+    "n": 28,
+    "action": "click",
+    "control": "button",
+    "label": "ordersCreate",
+    "screen": "https://orders.example.test/orders/new",
+    "event_id": "019aa1b0-000f-7000-8000-00000000000f",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:01:15.000Z"
+   },
+   {
+    "n": 48,
+    "action": "type",
+    "control": "input",
+    "label": "ordersSearch",
+    "screen": "https://orders.example.test/orders/search",
+    "event_id": "019aa1b0-0019-7000-8000-000000000019",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:05.000Z"
+   }
+  ],
+  "web:https://seikyu.example.test:8443": [
+   {
+    "n": 32,
+    "action": "click",
+    "control": "a",
+    "label": "invoiceListOpen",
+    "screen": "https://seikyu.example.test:8443/seikyu/list",
+    "event_id": "019aa1b0-0011-7000-8000-000000000011",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:01:25.000Z"
+   },
+   {
+    "n": 50,
+    "action": "type",
+    "control": "input",
+    "label": "invoiceAmount",
+    "screen": "https://seikyu.example.test:8443/seikyu/new",
+    "event_id": "019aa1b0-001a-7000-8000-00000000001a",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:10.000Z"
+   }
+  ],
+  "web:http://127.0.0.1:8081": [
+   {
+    "n": 34,
+    "action": "click",
+    "control": "button",
+    "label": "hrLeaveSubmit",
+    "screen": "http://127.0.0.1:8081/leave",
+    "event_id": "019aa1b0-0012-7000-8000-000000000012",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:01:30.000Z"
+   },
+   {
+    "n": 54,
+    "action": "type",
+    "control": "input",
+    "label": "hrLeaveDays",
+    "screen": "http://127.0.0.1:8081/leave/new",
+    "event_id": "019aa1b0-001c-7000-8000-00000000001c",
+    "channel": "web",
+    "captured_at": "2026-11-20T14:02:20.000Z"
+   }
+  ],
   "desktop:Müller & Söhne GmbH/Kasse – Filiale Nord": [
    {
-    "n": 29,
+    "n": 38,
     "action": "click",
     "control": "Button",
     "label": "kasseCloseDay",
     "screen": "KasseMain",
-    "event_id": "019aa1b0-000f-7000-8000-00000000000f",
+    "event_id": "019aa1b0-0014-7000-8000-000000000014",
     "channel": "desktop",
-    "captured_at": "2026-11-20T14:01:15.000Z"
+    "captured_at": "2026-11-20T14:01:40.000Z"
    },
    {
-    "n": 41,
+    "n": 52,
     "action": "type",
     "control": "Edit",
     "label": "kasseCount",
     "screen": "KasseMain",
-    "event_id": "019aa1b0-0015-7000-8000-000000000015",
+    "event_id": "019aa1b0-001b-7000-8000-00000000001b",
     "channel": "desktop",
-    "captured_at": "2026-11-20T14:01:45.000Z"
+    "captured_at": "2026-11-20T14:02:15.000Z"
    }
   ]
  },
@@ -406,6 +505,10 @@
    "steps": 2
   },
   {
+   "app": "web:https://fin.example.test",
+   "steps": 2
+  },
+  {
    "app": "desktop:Contoso Ltd/Billing",
    "steps": 1
   },
@@ -414,6 +517,10 @@
    "steps": 2
   },
   {
+   "app": "web:https://fin.example.test",
+   "steps": 1
+  },
+  {
    "app": "mainframe:cics.example.test:3270",
    "steps": 1
   },
@@ -434,6 +541,10 @@
    "steps": 1
   },
   {
+   "app": "web:https://fin.example.test",
+   "steps": 1
+  },
+  {
    "app": "web:https://orders.example.test",
    "steps": 1
   },
@@ -447,6 +558,10 @@
   },
   {
    "app": "web:http://127.0.0.1:8081",
+   "steps": 1
+  },
+  {
+   "app": "web:https://fin.example.test",
    "steps": 1
   },
   {
@@ -466,6 +581,10 @@
    "steps": 1
   },
   {
+   "app": "web:https://fin.example.test",
+   "steps": 1
+  },
+  {
    "app": "web:https://orders.example.test",
    "steps": 1
   },
@@ -479,6 +598,10 @@
   },
   {
    "app": "web:http://127.0.0.1:8081",
+   "steps": 1
+  },
+  {
+   "app": "web:https://fin.example.test",
    "steps": 1
   },
   {
@@ -508,7 +631,7 @@
     "status": "complete",
     "gaps": [],
     "notes": [
-     "15 request(s) in the network journal"
+     "22 request(s) in the network journal"
     ]
    }
   },
