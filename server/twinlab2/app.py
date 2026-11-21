@@ -34,6 +34,7 @@ from twinlab2 import auth
 from twinlab2 import db as database
 from twinlab2 import event_ids
 from twinlab2 import migrations
+from twinlab2 import observability
 from twinlab2 import paths
 from twinlab2 import rest
 from twinlab2 import scenarios
@@ -41,7 +42,7 @@ from twinlab2.rest import Routes, fail
 
 log = logging.getLogger("twinlab2")
 MAX_BODY = 16 * 1024 * 1024  # a request body (a recorder upload chunk is 8 MiB)
-NOT_THE_APP = ("api/", "artifacts/", "healthz", "livez", "readyz", "errors/", "assets/")
+NOT_THE_APP = ("api/", "artifacts/", "healthz", "livez", "readyz", "errors/", "assets/", "metrics")
 # the probes: answered whatever the Host header (a kubelet sends the pod's IP), never logged
 PROBES = {"/livez", "/readyz", "/healthz"}
 RETRY_AFTER = "5"  # seconds, on a 503 of /readyz
@@ -236,7 +237,7 @@ def create_app(target, store=None):
     """The portal on the database at `target`: a DATABASE_URL (sqlite:///…, postgresql://…) or a
     SQLite file path. Pending migrations are applied first. `store` is the artifact store
     (default: from the environment)."""
-    from twinlab2 import routes_access, routes_builds, routes_portal, routes_registry, routes_workboard, uploads
+    from twinlab2 import routes_access, routes_admin, routes_builds, routes_portal, routes_registry, routes_workboard, uploads
 
     target = str(target)
     if database.engine_of(target) == "sqlite":
@@ -255,7 +256,16 @@ def create_app(target, store=None):
     app.state.artifacts = store
     app.state.target = target
     rest.install_errors(app)
-    for module in (routes_portal, routes_registry, routes_builds, routes_workboard, routes_access, uploads):
+
+    @app.exception_handler(artifacts.ArtifactDeleted)
+    async def gone(request, error: artifacts.ArtifactDeleted):
+        """A download or read of a file that retention, an owner's request or a purge deleted."""
+        return rest.error_response(request.url.path, 410,
+                                   f"This file was deleted on {error.deleted_at} ({error.reason}).", "gone",
+                                   extra={"tombstone_id": error.tombstone_id})
+
+    for module in (routes_portal, routes_registry, routes_builds, routes_workboard, routes_access, uploads,
+                   routes_admin):
         app.include_router(module.routes.router)
     app.include_router(web_routes(secret, store).router)  # last: its fallbacks match every other path
 
@@ -280,14 +290,14 @@ def create_app(target, store=None):
     app.add_middleware(rest.BodyLimit, limit=MAX_BODY)
     app.add_middleware(Hosts, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "::1", *hosts])
     app.add_middleware(rest.RequestLog)
+    # outermost: GET /metrics on the internal metrics port (any Host: Prometheus scrapes the pod's
+    # IP) or with the metrics token; nothing else on that port (observability.py)
+    app.add_middleware(observability.MetricsEndpoint, target=target, store=store)
     return app
 
 
 def asgi():
     """The portal for an ASGI server: its database at DATABASE_URL (else the SQLite file
     TWINLAB2_DATABASE, else .state/catalog.db)."""
-    logging.basicConfig(level=os.environ.get("TWINLAB2_LOG_LEVEL", "INFO"),
-                        format="%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s")
-    for handler in logging.getLogger().handlers:
-        handler.addFilter(rest.RequestIdFilter())
+    observability.configure_logging()  # TWINLAB2_LOG_FORMAT=json|text, TWINLAB2_LOG_LEVEL
     return create_app(database.from_env())
