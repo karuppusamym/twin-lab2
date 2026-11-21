@@ -542,6 +542,14 @@ class Verification_Report(Model):
     url: str | None
 
 
+class AcceptanceCheck(Model):
+    id: str
+    label: str
+    status: Literal['pass', 'fail', 'not-checked']
+    detail: str
+    required: bool
+
+
 class Verification(Model):
     id: int
     app_id: int
@@ -561,6 +569,7 @@ class Verification(Model):
     report: Verification_Report | Any
     scope: dict[str, Any] | None
     dimensions: dict[str, dict[str, Any]] | Any
+    checks: list[AcceptanceCheck]
     error: str | None
 
 
@@ -1874,6 +1883,7 @@ class ReleaseRegistered(Model):
     next: str
 
 
+AcceptanceCheck.model_rebuild()
 AccessDecision.model_rebuild()
 AccessRequest.model_rebuild()
 AccessRequestInput.model_rebuild()

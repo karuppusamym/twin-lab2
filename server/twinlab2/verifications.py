@@ -110,7 +110,7 @@ def request(connection, kind, app_id, params, user, request_key=None, release_id
 
 def _update(connection, verification_id, guard="", **fields):
     fields["updated_at"] = registry.now()
-    for name in ("progress", "reasons", "scope", "dimensions"):
+    for name in ("progress", "reasons", "scope", "dimensions", "checks"):
         if name in fields and not isinstance(fields[name], str):
             fields[name] = json.dumps(fields[name], sort_keys=True)
     cursor = connection.execute(
@@ -177,6 +177,7 @@ def view(row, report_url=None):
         "report": report,
         "scope": json.loads(row["scope"]) if row["scope"] else None,
         "dimensions": json.loads(row["dimensions"]) if row["dimensions"] else None,
+        "checks": json.loads(row["checks"]) if row.get("checks") else [],
         "error": row["error"],
     }
 
@@ -233,7 +234,7 @@ def handle(connection, job, ctx):
     state = "passed" if outcome["tested"] else "failed"
     _finish(connection, row["id"], state, tested=outcome["tested"], reasons=outcome["reasons"],
             report_id=outcome.get("report_id"), report_sha=outcome.get("report_sha"),
-            scope=report.get("scope"), dimensions=report.get("dimensions"))
+            scope=report.get("scope"), dimensions=report.get("dimensions"), checks=report.get("checks") or [])
     from twinlab2 import audit
 
     audit.record(connection, row["requested_by"], "release.verified", "release", release_id, app_id=row["app_id"],

@@ -3562,7 +3562,7 @@ components:
     Verification:
       type: object
       required: [id, app_id, release_id, kind, state, commit_sha, requested_by, request_key, attempts, created_at,
-                 started_at, finished_at, progress, tested, reasons, report, scope, dimensions, error]
+                 started_at, finished_at, progress, tested, reasons, report, scope, dimensions, checks, error]
       properties:
         id: { type: integer }
         app_id: { type: integer }
@@ -3606,7 +3606,22 @@ components:
                 type: object
                 additionalProperties: true
             - { type: "null" }
+        checks:
+          type: array
+          description: >-
+            Verify's acceptance checks, each judged on its own: ci, commit_identity, scenarios, fixture_reset,
+            persistence, failure_scenarios, visual_coverage. A failed one keeps the release from Tested.
+          items: { $ref: "#/components/schemas/AcceptanceCheck" }
         error: { type: [string, "null"] }
+    AcceptanceCheck:
+      type: object
+      required: [id, label, status, detail, required]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        status: { type: string, enum: [pass, fail, not-checked] }
+        detail: { type: string }
+        required: { type: boolean, description: "Whether its failure blocks Tested (a not-checked check never does)." }
     MergeSide:
       type: object
       required: [id, name, url_match]

@@ -109,6 +109,12 @@ class LocalRunnerProvider(base.Provider):
     def runner_env(self, folder):
         parent = self.env if self.env is not None else os.environ
         extra = [p for p in parent.get("PYTHONPATH", "").split(os.pathsep) if p]
+        import site
+
+        # HOME / APPDATA move into the session, so Python would lose this user's site-packages
+        user_site = site.getusersitepackages() if site.ENABLE_USER_SITE else None
+        if user_site and Path(user_site).is_dir():
+            extra.append(user_site)
         env = sandbox.child_env(parent, home=Path(folder) / "home", temp=Path(folder) / "tmp")
         env.pop("PYTHONPATH", None)
         env = paths.child_env(env)
