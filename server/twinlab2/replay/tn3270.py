@@ -610,6 +610,14 @@ def _compare(step: dict, folder: Path, live: Screen, typed: set[str]) -> list[di
     if want_title != got_title:
         diffs.append({"step": seq, "element": "(title line)", "check": "title", "expected": want_title,
                       "actual": got_title})
+    from twinlab2.replay.fidelity import twin_label_required
+    from twinlab2_contract import package
+
+    # the twin's label is protected text on a row the recorded screen leaves empty: it is neither
+    # the title line nor an input field, so the comparison never sees it; it must be shown
+    if twin_label_required() and package.TWIN_LABEL not in screen_text(live):
+        diffs.append({"step": seq, "element": "(AI generated Twin App label)", "check": "twin_label",
+                      "expected": package.TWIN_LABEL, "actual": None})
     tree = {}
     if step.get("tree") and (folder / step["tree"]).is_file():
         tree = json.loads((folder / step["tree"]).read_text(encoding="utf-8"))

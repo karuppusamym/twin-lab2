@@ -80,6 +80,7 @@ const TONES: Record<string, "active" | "done" | "review" | "failed" | "neutral">
   partial: "review", incomplete: "review", interrupted: "review", suggested: "review", draft: "review",
   fail: "failed", failed: "failed", failure: "failed", blocked: "failed", error: "failed", mismatch: "failed",
   missing: "failed", rejected: "failed",
+  documented: "review", observed: "active", "owner-confirmed": "done", "replay-tested": "done",
   cancelled: "neutral", canceled: "neutral", not_replicated: "neutral", withdrawn: "neutral", packaged: "neutral",
   "not-run": "neutral", not_run: "neutral", excluded: "neutral", skipped: "neutral", removed: "neutral",
 };

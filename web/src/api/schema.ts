@@ -489,6 +489,148 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/apps/{app_id}/baselines": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Visual baselines (per screen state)
+         * @description Owner. Every recorded state the scenarios reach, the approved baseline of each (one per
+         *     viewport, theme and scale), and the pictures that may be approved: the recorder's masked
+         *     pictures of the state's events (where the recording folder is on this portal) and the
+         *     Screen attachments marked reviewed or synthetic.
+         */
+        get: operations["listBaselines"];
+        put?: never;
+        /**
+         * Approve a baseline for one screen state
+         * @description Owner. Replaces the baseline of the same screen, state, viewport, theme and scale.
+         */
+        post: operations["approveBaseline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{app_id}/baselines/picture": {
+        parameters: {
+            query?: {
+                attachment_id?: number;
+                recording_id?: string;
+                event_id?: string;
+            };
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        /** A candidate picture (metadata stripped) */
+        get: operations["baselinePicture"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{app_id}/baselines/{baseline_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+                baseline_id: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove an approved baseline */
+        delete: operations["removeBaseline"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{app_id}/interfaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Interface contracts with the applications recorded together
+         * @description Owner. One contract per recording in which this application and at least one other have
+         *     selected events: the stored one when an owner edited it, else the one inferred from the
+         *     recording (shared synthetic identifiers, producer and consumer relationships with API and
+         *     file schemas, launch and reset order, what a consumer does when its producer is down).
+         */
+        get: operations["listInterfaces"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{app_id}/interfaces/{recording_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Save the owner's edit of an interface contract
+         * @description Owner of this application (one of the contract's). With `expected_revision` a stale save is refused with 409 `conflict`.
+         */
+        put: operations["saveInterface"];
+        post?: never;
+        /** Back to the contract inferred from the recording */
+        delete: operations["resetInterface"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{app_id}/confirmations/{item}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+                item: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /** Confirm a completeness item (evidence level owner-confirmed) */
+        put: operations["confirmItem"];
+        post?: never;
+        /** Withdraw a confirmation */
+        delete: operations["unconfirmItem"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/apps/{app_id}/packages": {
         parameters: {
             query?: never;
@@ -2882,6 +3024,8 @@ export interface components {
             notes?: string;
             /** @description Linked events as `recording#event_id`, from the selected events of the application. */
             events?: string[];
+            /** @description Each typing or selecting linked event bound to a fixture field or shared identifier. Left out, the bindings stay as they are. */
+            bindings?: components["schemas"]["Binding"][];
             expected_revision?: components["schemas"]["Revision"];
         };
         Scenario: components["schemas"]["ScenarioInput"] & {
@@ -2906,6 +3050,145 @@ export interface components {
             scenarios: components["schemas"]["Scenario"][];
             fields: components["schemas"]["ScenarioField"][];
             event_choices: components["schemas"]["EventChoice"][];
+            /** @description The shared identifiers of the interface contracts this application is in (bindable). */
+            identifiers?: components["schemas"]["SharedIdentifier"][];
+        };
+        /** @description A typing or selecting step bound to a fixture field (an example line's field) or a shared identifier. */
+        Binding: {
+            /** @description recording#event_id, one of the scenario's linked events */
+            event: string;
+            field?: string;
+            identifier?: string;
+        };
+        SharedIdentifier: {
+            name: string;
+            field: string;
+            type: string;
+            value: string;
+            producer: number | null;
+            consumers: number[];
+        };
+        InterfaceRelationship: {
+            /** @enum {string} */
+            kind: "identifier" | "api" | "file";
+            producer: number;
+            consumer: number;
+            identifier?: string;
+            /** @description What the consumer does when the producer is down. */
+            when_down: string;
+            /** @description The schema: api: method, path, request, response; file: format, columns. */
+            detail?: {
+                [key: string]: unknown;
+            };
+        };
+        InterfaceApp: {
+            id: number;
+            name: string;
+        };
+        InterfaceDoc: {
+            version: number;
+            recording_id?: string;
+            apps: components["schemas"]["InterfaceApp"][];
+            identifiers: components["schemas"]["SharedIdentifier"][];
+            relationships: components["schemas"]["InterfaceRelationship"][];
+            launch_order: number[];
+            reset_order: number[];
+        };
+        InterfaceContract: {
+            recording_id: string;
+            /** @description An owner edited it (else it is the one inferred from the recording). */
+            edited: boolean;
+            revision: number;
+            edited_by?: string | null;
+            edited_at?: string | null;
+            doc: components["schemas"]["InterfaceDoc"];
+            generated?: components["schemas"]["InterfaceDoc"] | null;
+        };
+        InterfaceList: {
+            contracts: components["schemas"]["InterfaceContract"][];
+        };
+        InterfaceInput: {
+            doc: components["schemas"]["InterfaceDoc"];
+            expected_revision?: number;
+        };
+        NeededState: {
+            screen: string;
+            state: string;
+            /** @description The state's number on its screen (1-based). */
+            number: number;
+            events: string[];
+        };
+        BaselineCandidate: {
+            /** @enum {string} */
+            source: "recording" | "attachment";
+            label: string;
+            attachment_id?: number;
+            recording_id?: string;
+            event_id?: string;
+            screen?: string | null;
+            state?: string | null;
+        };
+        Baseline: {
+            id: number;
+            screen: string;
+            state: string;
+            viewport: string;
+            /** @enum {string} */
+            theme: "light" | "dark";
+            scale: string;
+            source: string;
+            attachment_id?: number | null;
+            recording_id?: string | null;
+            event_id?: string | null;
+            sha256: string;
+            approved_by: string;
+            approved_at: string;
+        };
+        BaselineList: {
+            needed: components["schemas"]["NeededState"][];
+            approved: components["schemas"]["Baseline"][];
+            candidates: components["schemas"]["BaselineCandidate"][];
+        };
+        BaselineSource: {
+            attachment_id?: number;
+            recording_id?: string;
+            event_id?: string;
+        };
+        BaselineInput: {
+            screen: string;
+            state: string;
+            viewport: string;
+            /** @enum {string} */
+            theme: "light" | "dark";
+            scale: string;
+            source: components["schemas"]["BaselineSource"];
+        };
+        ConfirmationInput: {
+            note?: string;
+        };
+        Confirmation: {
+            item: string;
+            note: string;
+        };
+        CompletenessItem: {
+            item: string;
+            title: string;
+            section: string;
+            dimension: string;
+            /** @enum {string} */
+            severity: "critical" | "important" | "nice";
+            /** @enum {string} */
+            status: "present" | "missing" | "not_applicable";
+            /** @description The evidence of a present item: documented (written only), observed (in the recording), owner-confirmed, replay-tested (after Verify); null when missing or not applicable. */
+            level: ("documented" | "observed" | "owner-confirmed" | "replay-tested") | null;
+            confirmed: boolean;
+        };
+        EvidenceLevels: {
+            missing: number;
+            documented: number;
+            observed: number;
+            "owner-confirmed": number;
+            "replay-tested": number;
         };
         PackageFile: {
             path: string;
@@ -2991,7 +3274,7 @@ export interface components {
             surface: "web" | "desktop" | "mainframe";
             /** @description No critical item is missing. */
             passed: boolean;
-            /** @description Present items weighted by severity (critical 3, important 2, nice 1). */
+            /** @description Present items weighted by severity (critical 3, important 2, nice 1): documented counts as present here; see `coverage`. */
             score: number;
             sections: components["schemas"]["CompletenessSection"][];
             /** @description The same items scored per verification dimension: behavioural, structural, visual, deployment. */
@@ -2999,6 +3282,11 @@ export interface components {
             /** @description Most severe first. */
             gaps: components["schemas"]["CompletenessGap"][];
             counts: components["schemas"]["CompletenessCounts"];
+            /** @description Applicable items at evidence level observed or above, weighted by severity: documented-only items do not count. Kept apart from `score` (presence). */
+            coverage?: number;
+            levels?: components["schemas"]["EvidenceLevels"];
+            /** @description Every item of the spec for this surface, with its evidence level. */
+            items?: components["schemas"]["CompletenessItem"][];
         };
         KnownGap: {
             item: string;
@@ -5071,6 +5359,239 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    listBaselines: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The baselines. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BaselineList"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    approveBaseline: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BaselineInput"];
+            };
+        };
+        responses: {
+            /** @description Approved. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Baseline"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    baselinePicture: {
+        parameters: {
+            query?: {
+                attachment_id?: number;
+                recording_id?: string;
+                event_id?: string;
+            };
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The PNG or JPEG. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": string;
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    removeBaseline: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+                baseline_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listInterfaces: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The contracts. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterfaceList"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    saveInterface: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InterfaceInput"];
+            };
+        };
+        responses: {
+            /** @description Saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InterfaceContract"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    resetInterface: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+                recording_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reset. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    confirmItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+                item: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfirmationInput"];
+            };
+        };
+        responses: {
+            /** @description Confirmed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Confirmation"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    unconfirmItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+                item: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Withdrawn. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: components["responses"]["Forbidden"];
         };
     };
     listPackages: {

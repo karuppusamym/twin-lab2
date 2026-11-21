@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { api, data } from "../api/client";
+import { EvidenceLevels } from "../components/Bundle";
 import { CompletenessChecklist, PackageFiles } from "../components/shared";
 import { Crumbs, QueryView, useTitle } from "../components/ui";
 import { useAppId } from "./AppPage";
@@ -44,6 +45,7 @@ export function PackagePage() {
             <section aria-labelledby="completeness-h">
               <h2 id="completeness-h">Completeness</h2>
               <CompletenessChecklist completeness={p.completeness} />
+              <EvidenceLevels completeness={p.completeness} />
             </section>
           )}
           <section aria-labelledby="files-h">

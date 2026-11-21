@@ -37,6 +37,19 @@ class DemoPortalTest(unittest.TestCase):
             self.assertIn("Billing (billing.exe)", apps)
             self.assertEqual(sum(a["status"] == "discovered" for a in apps.values()), 6)
             recording = catalog["recordings"][0]["id"]
+            # package format 3: Billing types the order number Orders produces (interface contract),
+            # its typing step is bound, and the twin label is required
+            billing_id = apps["Billing"]["id"]
+            contract = alice.get(f"/api/v1/apps/{billing_id}/interfaces").json()["contracts"][0]
+            self.assertTrue(contract["edited"])
+            ident = next(i for i in contract["doc"]["identifiers"] if i["name"] == "order-number")
+            self.assertEqual(ident["producer"], apps["orders.example.test"]["id"])
+            draft = alice.get(f"/api/v1/apps/{billing_id}/package-draft").json()
+            levels = {i["item"]: i["level"] for i in draft["completeness"]["items"]}
+            self.assertEqual(levels["interfaces.identifiers"], "owner-confirmed")
+            self.assertEqual(levels["data.bindings"], "owner-confirmed")
+            self.assertIn(levels["deploy.twin_label"], ("owner-confirmed", "replay-tested"))
+            self.assertLess(draft["completeness"]["coverage"], 100)
 
             billing = alice.get(f"/api/v1/apps/{apps['Billing']['id']}").json()
             self.assertEqual([r["state"] for r in billing["releases"]], ["published"])

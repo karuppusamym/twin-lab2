@@ -79,7 +79,7 @@ class BuildPackTest(unittest.TestCase):
         self.scenario(desk)
         _, files = self.download(desk)
         manifest = json.loads(files["evidence.json"])
-        self.assertEqual(manifest["format"], 2)
+        self.assertEqual(manifest["format"], 3)
         events = manifest["evidence"][0]["events"]
         self.assertEqual(events[0], {"event_id": eid(RECORDING, 1), "seq": 1, "action": "type", "control": "Edit",
                                      "label": "txtSearch", "screen": "MainForm"})

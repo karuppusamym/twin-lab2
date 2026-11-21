@@ -26,7 +26,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-SPEC_VERSION = 1
+SPEC_VERSION = 2  # 2: bindings, per-state baselines, interfaces, Twin App label, evidence levels
+LEVELS = ("documented", "observed", "owner-confirmed", "replay-tested")
+COVERED = ("observed", "owner-confirmed", "replay-tested")
 SURFACES = ("web", "desktop", "mainframe")
 SEVERITIES = ("critical", "important", "nice")
 WEIGHT = {"critical": 3, "important": 2, "nice": 1}
@@ -39,6 +41,7 @@ SECTIONS = {
     "data": "Data",
     "access": "Roles and sign-in",
     "surface": "Surface specifics",
+    "interfaces": "Interfaces with other applications",
     "visuals": "Visuals and deployment",
 }
 
@@ -58,6 +61,9 @@ PAGES = {
     "recordings": ("Recordings", "/recordings"),
     "setup": ("Data and deployment", "/apps/{app}/setup#demo-target"),
     "git": ("Git repository", "/apps/{app}/setup#git"),
+    "interfaces": ("Interfaces", "/apps/{app}/build-pack/preview#interfaces"),
+    "baselines": ("Visual baselines", "/apps/{app}/build-pack/preview#baselines"),
+    "package": ("Package preview", "/apps/{app}/build-pack/preview"),
 }
 
 
@@ -185,6 +191,14 @@ SPEC: tuple[Item, ...] = (
     Item("data.shapes", "data", "The shape of each example field", "important", ALL,
          "\"Field: value\" lines tell the builder which field takes which format; the replay compares value "
          "formats.", "scenarios", "Write each example as Field: value."),
+    Item("data.bindings", "data", "Each typing or selecting step bound to a fixture field", "important", ALL,
+         "One example line does not say which step types it: the replay types the value bound to each step, and a "
+         "step without a binding is guessed or blocks the replay.", "scenarios",
+         "Bind each typing or selecting step to one of the scenario's example fields (or a shared identifier)."),
+    Item("data.binding_types", "data", "Bound values fit their controls", "critical", ALL,
+         "The replay types the bound value into the recorded control: a number in an email field, or an option "
+         "that is not in the list, fails the step on the original as well as on the copy.", "scenarios",
+         "Change the example value (or bind another field) so that it fits the control."),
     Item("data.backend", "data", "Data backend", "critical", ALL,
          "The demo creates its tables and seed data on this backend and resets to that seed.", "setup",
          "Choose the data backend."),
@@ -241,20 +255,38 @@ SPEC: tuple[Item, ...] = (
     Item("mainframe.flow", "surface", "Transaction flow between host screens", "important", ("mainframe",),
          "Which AID key on which screen leads to which next screen is the transaction.", "recordings",
          "Record the transaction again at level full."),
+    # -- interfaces with other applications -----------------------------------------------------
+    Item("interfaces.identifiers", "interfaces", "Shared identifiers come from a producer", "critical", ALL,
+         "A value one application types that another produced (an order number typed in Billing) must be one the "
+         "producer makes, with the same synthetic value in both packages, or the two copies never meet.",
+         "interfaces", "Name the producer of the identifier, add it to the producer's scenario, or unbind it."),
+    Item("interfaces.order", "interfaces", "Launch and reset order", "important", ALL,
+         "Applications recorded together are started producers first and reset consumers first; the replay of a "
+         "cross-application recording needs every peer up.", "interfaces",
+         "Check the launch and reset order of the interface contract."),
+    Item("interfaces.peer_down", "interfaces", "What happens when a peer is down", "important", ALL,
+         "A consumer whose producer does not answer must fail in a known way (message, retry, queued work), not "
+         "however the builder guessed.", "interfaces",
+         "Write, for each relationship, what the consumer does when the producer is down."),
+    Item("interfaces.schemas", "interfaces", "API and file schemas between the applications", "important", ALL,
+         "An API call or a file between two applications needs its method and path, or its columns, on both sides.",
+         "interfaces", "Give the method, path and fields of each API relationship and the columns of each file."),
     # -- visuals and deployment ---------------------------------------------------------------------
+    Item("deploy.twin_label", "visuals", "The \"AI generated Twin App\" label", "critical", ALL,
+         "Every rebuilt application shows that it is an AI generated twin, on every screen, so nobody takes it for "
+         "the original; Verify refuses a release without it.", "package",
+         "Freeze the package again: the package builder adds the label requirement (contract 0.3)."),
     Item("visuals.screens", "visuals", "Screenshots or layout notes", "important", ALL,
          "Structure says what is on a screen, not where; visual checks compare the copy's picture.", "evidence",
          "Attach screenshots (kind Screen) and mark them reviewed or synthetic."),
-    Item("visuals.per_screen", "visuals", "An approved screenshot of every screen (visual baseline)", "important", ALL,
-         "The visual comparison (replay/visual.py) needs a baseline per compared state; a screen without one "
-         "cannot be judged on appearance.", "evidence",
-         "Attach an owner-approved screenshot of each screen the scenarios touch (kind Screen).",
-         capture_gap="The recorder's own screenshots (the replay's default baselines) stay on the recording "
-                     "machine and never reach the pack; the owner attaches approved ones."),
-    Item("visuals.states", "visuals", "Screenshots of special states (disabled, selected, error)", "important", ALL,
-         "A disabled button, a selected row or an error message looks different; one picture per screen shows "
-         "only one state.", "evidence",
-         "Attach screenshots of the disabled, selected and error states (kind Screen)."),
+    Item("visuals.per_screen", "visuals", "An approved baseline of every screen state the scenarios reach", "important",
+         ALL, "The visual comparison (replay/visual.py) needs a baseline per compared state, at a known viewport, theme "
+         "and scale; pictures of one screen say nothing about the others.", "baselines",
+         "Approve a baseline for each screen state (from the recorder's pictures or a Screen attachment)."),
+    Item("visuals.states", "visuals", "Baselines of special states (disabled, selected, error)", "important", ALL,
+         "A disabled button, a selected row or an error message looks different; a baseline of another state of the "
+         "same screen does not show it.", "baselines",
+         "Approve a baseline for each recorded state that shows disabled, selected or error controls."),
     Item("visuals.style", "visuals", "Fonts, colours and spacing", "nice", ALL,
          "Without them the copy looks generic even when its structure matches.", "evidence",
          "Attach style notes (kind Utility, title with \"style\"), or name fonts and colours in a scenario's notes."),
@@ -269,6 +301,36 @@ SPEC: tuple[Item, ...] = (
          "Connect the demo's Git repository."),
 )
 BY_ID = {item.id: item for item in SPEC}
+
+# What shows an item when it is present, before the owner confirms it or Verify tests it:
+# "recording" items are observed in the recording, "prose" items are only documented (a keyword
+# or a written line), "setting" and "approval" items are the owner's own choice or approval.
+# Items not listed are "prose".
+BASIS = {
+    "scenario.events": "recording", "scenario.links_current": "recording", "screens.structure": "recording",
+    "screens.referenced": "recording", "screens.controls": "recording", "screens.states": "recording",
+    "screens.targets": "recording", "screens.grids": "recording", "screens.withheld": "recording",
+    "navigation.entry": "recording", "navigation.transitions": "recording", "web.routes": "recording",
+    "desktop.toolkit": "recording", "desktop.menus": "recording", "desktop.shortcuts": "recording",
+    "mainframe.layout": "recording", "mainframe.title": "recording", "mainframe.attributes": "recording",
+    "mainframe.protected": "recording", "mainframe.aid": "recording", "mainframe.flow": "recording",
+    "data.bindings": "approval", "data.binding_types": "approval", "data.model": "approval", "web.api": "approval",
+    "desktop.windows": "approval", "visuals.screens": "approval", "visuals.per_screen": "approval",
+    "visuals.states": "approval", "data.backend": "setting", "deploy.target": "setting",
+    "deploy.version": "setting", "deploy.repository": "setting", "deploy.twin_label": "setting",
+    "interfaces.identifiers": "recording", "interfaces.order": "recording", "interfaces.schemas": "recording",
+}
+START = {"recording": "observed", "prose": "documented", "setting": "owner-confirmed", "approval": "owner-confirmed"}
+# what a passed verification dimension tests of a present item (twinlab2.independent.dimensions)
+TESTED_BY = {
+    "behavioural": {"scenario.events", "scenario.expected", "data.examples", "data.bindings", "data.binding_types",
+                    "interfaces.identifiers"},
+    "structural": {"screens.structure", "screens.referenced", "screens.controls", "screens.states", "screens.targets",
+                   "navigation.entry", "navigation.transitions", "web.routes", "mainframe.layout", "mainframe.title",
+                   "mainframe.aid", "desktop.menus", "desktop.shortcuts", "deploy.twin_label"},
+    "visual": {"visuals.per_screen", "visuals.states"},
+    "deployment": {"deploy.target", "deploy.version", "data.backend"},
+}
 
 TYPING = {"type", "input", "fill", "select", "change"}
 TARGETED = TYPING | {"click", "dblclick", "double_click", "right_click", "check", "uncheck", "toggle", "submit"}
@@ -297,6 +359,7 @@ PRECONDITION = re.compile(r"only (be )?(reached|opened|shown|available)|direct(l
                           r"|unless|requires? (a |an |the )?\w+ first|(key|pf\d+|pa\d|clear)s? .{0,30}"
                           r"(nothing|ignored|no effect)|sends? you back|returns? to|redirect", re.I)
 TITLE_ID = re.compile(r"^scr:[0-9a-f]+$")
+VIEWPORT = re.compile(r"^\d{2,5}x\d{2,5}$")
 LINK_GONE = re.compile(r"^Linked event (\S+) is no longer selected")
 
 
@@ -336,6 +399,14 @@ class _Checker:
         self.touched = {e["screen"] for e in self.events if e.get("screen")}
         self.attachments = [a for a in data.get("attachments") or [] if isinstance(a, dict)]
         self.gaps, self.present, self.na = [], [], []
+        self.levels = {}  # item -> the evidence level a check decided itself (else from BASIS)
+        self.interfaces = [c for c in data.get("interfaces") or [] if isinstance(c, dict)]
+        self.baselines = [b for b in data.get("visual_baselines") or [] if isinstance(b, dict)]
+        self.controls_of = {}
+        for sc in self.screens.values():
+            for st in sc.get("states") or []:
+                for e in st.get("events") or []:
+                    self.controls_of[e] = st.get("controls") or []
 
     # each check returns None (present), a list of details (missing), or "n/a"
     def gap(self, item_id, details):
@@ -548,6 +619,123 @@ class _Checker:
         return sorted({f"Scenario \"{n}\": example \"{v[:40]}\" does not name its field (Field: value)."
                        for n, v in lines if not FIELD_VALUE.match(v)})
 
+    def typed_events(self, s):
+        return [e for e in s.get("events") or [] if e.get("action") in TYPING]
+
+    def check_data_bindings(self):
+        if not any(self.typed_events(s) for s in self.scenarios):
+            return "n/a"
+        out = []
+        for s in self.scenarios:
+            bound = {b.get("event_id") for b in s.get("bindings") or []}
+            fields = {f.get("field") for f in s.get("fixture_fields") or []}
+            for e in self.typed_events(s):
+                if e.get("event_id") not in bound:
+                    out.append(f"Scenario \"{s.get('name')}\": event {e.get('recording_id')} #{e.get('seq')} "
+                               f"({e.get('action')}{' ' + e['label'] if e.get('label') else ''}) is bound to no "
+                               "fixture field.")
+            for b in s.get("bindings") or []:
+                if b.get("field") and b["field"] not in fields:
+                    out.append(f"Scenario \"{s.get('name')}\": the binding of event {b.get('event_id')} names field "
+                               f"\"{b['field']}\", which no example line gives.")
+        return out
+
+    def check_data_binding_types(self):
+        from twinlab2_contract import package
+
+        bound = [(s, b) for s in self.scenarios for b in s.get("bindings") or [] if b.get("field") and "value" in b]
+        if not bound:
+            return "n/a"
+        out = []
+        for s, b in bound:
+            event = next((e for e in s.get("events") or [] if e.get("event_id") == b.get("event_id")), {})
+            target = event.get("label") or ""
+            control = next((c for c in self.controls_of.get(b.get("event_id")) or []
+                            if target and target in (c.get("id"), c.get("name"), c.get("label"))), None)
+            if control is None:
+                continue
+            why = package.incompatible({"value": b["value"]}, control)
+            if why:
+                out.append(f"Scenario \"{s.get('name')}\": field {b['field']} at event #{event.get('seq')}: {why}.")
+        return out
+
+    # -- interfaces ------------------------------------------------------------------------------
+    def contract_level(self):
+        return "owner-confirmed" if any(c.get("edited") for c in self.interfaces) else "observed"
+
+    def check_interfaces_identifiers(self):
+        from twinlab2_contract import package
+
+        idents = {i.get("name"): (c, i) for c in self.interfaces for i in c.get("identifiers") or []}
+        used = [(s, b) for s in self.scenarios for b in s.get("bindings") or []
+                if b.get("identifier") or package.slug(b.get("field")) in idents]
+        if not self.interfaces and not used:
+            return "n/a"
+        self.levels["interfaces.identifiers"] = self.contract_level()
+        out = []
+        for s, b in used:
+            name = b.get("identifier") or package.slug(b.get("field"))
+            if name not in idents:
+                out.append(f"Scenario \"{s.get('name')}\" binds shared identifier `{name}`, which no interface "
+                           "contract lists.")
+                continue
+            c, ident = idents[name]
+            producer = {a.get("id"): a.get("name") for a in c.get("apps") or []}.get(ident.get("producer"), "no application")
+            if ident.get("producer") is None:
+                out.append(f"Shared identifier `{name}` has no producer.")
+            elif ident["producer"] != self.app_id and not ident.get("produced"):
+                out.append(f"Scenario \"{s.get('name')}\" types `{name}`, but {producer} never produces it (no "
+                           f"scenario of {producer} names it).")
+            elif b.get("value") and ident.get("value") and b["value"] != ident["value"]:
+                out.append(f"Scenario \"{s.get('name')}\" types {b.get('field')} `{b['value']}`, but the shared "
+                           f"value produced by {producer} is `{ident['value']}`.")
+        return sorted(set(out))
+
+    def check_interfaces_order(self):
+        if not self.interfaces:
+            return "n/a"
+        self.levels["interfaces.order"] = self.contract_level()
+        out = []
+        for c in self.interfaces:
+            ids = {a.get("id") for a in c.get("apps") or []}
+            for key in ("launch_order", "reset_order"):
+                if set(c.get(key) or []) != ids:
+                    out.append(f"The {key.replace('_', ' ')} of recording {c.get('recording_id')} does not name every "
+                               "application recorded with this one.")
+        return out
+
+    def check_interfaces_peer_down(self):
+        rels = [r for c in self.interfaces for r in c.get("relationships") or [] if r.get("consumer") == self.app_id]
+        if not rels:
+            return "n/a"
+        if any(c.get("edited") for c in self.interfaces):
+            self.levels["interfaces.peer_down"] = "owner-confirmed"
+        names = {a.get("id"): a.get("name") for c in self.interfaces for a in c.get("apps") or []}
+        return [f"What this application does when {names.get(r.get('producer'), 'its producer')} is down is not "
+                f"written ({r.get('kind')} relationship)." for r in rels if not (r.get("when_down") or "").strip()]
+
+    def check_interfaces_schemas(self):
+        rels = [r for c in self.interfaces for r in c.get("relationships") or [] if r.get("kind") in ("api", "file")]
+        if not rels:
+            return "n/a"
+        self.levels["interfaces.schemas"] = self.contract_level()
+        out = []
+        for r in rels:
+            schema = r.get("detail") or {}
+            if r["kind"] == "api" and not (schema.get("method") and schema.get("path")):
+                out.append("An API relationship has no method and path.")
+            if r["kind"] == "file" and not schema.get("columns"):
+                out.append("A file relationship has no columns.")
+        return out
+
+    def check_deploy_twin_label(self):
+        from twinlab2_contract import package
+
+        label = (self.data.get("target") or {}).get("twin_label") or {}
+        if label.get("text") != package.TWIN_LABEL or self.surface not in (label.get("surfaces") or {}):
+            return [f"The package does not require the \"{package.TWIN_LABEL}\" label on every screen."]
+        return []
+
     def check_data_backend(self):
         b = (self.data.get("target") or {}).get("data_backend") or {}
         return [] if b.get("engine") else ["The package names no data backend."]
@@ -663,25 +851,49 @@ class _Checker:
     def screenshots(self):
         return [a for a in self.attachments if a.get("kind") == "Screen"]
 
+    def needed_states(self):
+        """[(screen, state id or None, label)] the scenarios reach: each recorded state a linked
+        event lands on; a touched screen without structure counts as one state."""
+        out = []
+        linked = {e.get("event_id") for e in self.events}
+        for name, sc in self.screens.items():
+            for i, st in enumerate(sc.get("states") or [], 1):
+                if linked & set(st.get("events") or []):
+                    out.append((name, st.get("id"), f"`{name}` state {i}"))
+        reached = {n for n, _s, _l in out}
+        out += [(n, None, f"`{n}`") for n in sorted(self.touched - reached)]
+        return out
+
+    def baseline_for(self, screen, state):
+        return any(b.get("screen") == screen and (state is None or b.get("state") == state)
+                   and VIEWPORT.match(str(b.get("viewport") or "")) and b.get("theme") in ("light", "dark")
+                   and b.get("scale") for b in self.baselines)
+
     def check_visuals_per_screen(self):
-        need, have = len(self.touched), len(self.screenshots())
+        need = self.needed_states()
         if not need:
             return "n/a"
-        return [] if have >= need else [f"{need} screen(s) are touched by the scenarios, {have} screenshot(s) are attached."]
+        missing = [label for screen, state, label in need if not self.baseline_for(screen, state)]
+        if not missing:
+            return []
+        return [f"{len(need) - len(missing)} of {len(need)} screen state(s) have an approved baseline."] + \
+            [f"{label} has no approved baseline (viewport, theme and scale)." for label in missing]
 
     def check_visuals_states(self):
-        special = sum(1 for n, sc in self.screens.items() if n in self.touched for st in sc.get("states") or []
-                      if any(c.get("enabled") is False or c.get("selected") or c.get("checked") for c in st.get("controls") or [])
-                      or any(re.search(r"error|alert|message|invalid", str(r.get("id") or r.get("name") or ""), re.I)
-                             for r in st.get("regions") or []))
-        errors = any(s.get("failure_cases") for s in self.scenarios)
-        if not special and not errors:
+        special = []
+        linked = {e.get("event_id") for e in self.events}
+        for name, sc in self.screens.items():
+            for i, st in enumerate(sc.get("states") or [], 1):
+                if not linked & set(st.get("events") or []):
+                    continue
+                if any(c.get("enabled") is False or c.get("selected") or c.get("checked") for c in st.get("controls") or []) \
+                        or any(re.search(r"error|alert|message|invalid", str(r.get("id") or r.get("name") or ""), re.I)
+                               and r.get("visible", True) for r in st.get("regions") or []):
+                    special.append((name, st.get("id"), f"`{name}` state {i}"))
+        if not special:
             return "n/a"
-        need = len(self.touched) + max(special, 1 if errors else 0)
-        have = len(self.screenshots())
-        return [] if have >= need else [f"{special} recorded state(s) show disabled, selected or error controls"
-                                        + (" and failure cases are written" if errors else "")
-                                        + f"; {have} screenshot(s) cover {len(self.touched)} screen(s)."]
+        return [f"{label} shows disabled, selected or error controls but has no approved baseline."
+                for screen, state, label in special if not self.baseline_for(screen, state)]
 
     def check_visuals_style(self):
         noted = any(STYLE.search(str(a.get("title") or "")) for a in self.attachments) or \
@@ -736,17 +948,57 @@ def validate(data: dict, files: dict | None = None) -> dict:
     order = {s: n for n, s in enumerate(SEVERITIES)}
     gaps = sorted(checker.gaps, key=lambda g: (order[g["severity"]], list(BY_ID).index(g["item"])))
     counts = {s: sum(1 for g in gaps if g["severity"] == s) for s in SEVERITIES}
-    return {"spec_version": SPEC_VERSION, "surface": checker.surface, "passed": counts["critical"] == 0,
-            "score": round(100 * total_have / total_all) if total_all else 100, "sections": sections,
-            "dimensions": dimensions,
-            "gaps": gaps, "counts": counts}
+    confirmed = {c.get("item") for c in (data or {}).get("confirmations") or [] if isinstance(c, dict)}
+    items = []
+    for i in SPEC:
+        if checker.surface not in i.surfaces:
+            continue
+        if i.id in checker.na:
+            status, level = "not_applicable", None
+        elif i.id in missing:
+            status, level = "missing", None
+        else:
+            status = "present"
+            level = checker.levels.get(i.id) or START[BASIS.get(i.id, "prose")]
+            if i.id in confirmed and LEVELS.index(level) < LEVELS.index("owner-confirmed"):
+                level = "owner-confirmed"
+        items.append({"item": i.id, "title": i.title, "section": i.section, "dimension": dimension_of(i),
+                      "severity": i.severity, "status": status, "level": level, "confirmed": i.id in confirmed})
+    result = {"spec_version": SPEC_VERSION, "surface": checker.surface, "passed": counts["critical"] == 0,
+              "score": round(100 * total_have / total_all) if total_all else 100, "sections": sections,
+              "dimensions": dimensions, "gaps": gaps, "counts": counts, "items": items}
+    return _levels(result)
+
+
+def _levels(result):
+    """`coverage` (applicable items at an evidence level of observed or above, weighted by
+    severity: documented-only items do not count) and `levels` (how many items at each level)."""
+    applicable = [i for i in result["items"] if i["status"] != "not_applicable"]
+    weight = sum(WEIGHT[i["severity"]] for i in applicable)
+    covered = sum(WEIGHT[i["severity"]] for i in applicable if i["level"] in COVERED)
+    result["coverage"] = round(100 * covered / weight) if weight else 100
+    result["levels"] = {"missing": sum(1 for i in applicable if i["status"] == "missing"),
+                        **{level: sum(1 for i in applicable if i["level"] == level) for level in LEVELS}}
+    return result
+
+
+def with_tested(result, dimensions):
+    """The result with the present items a passed verification dimension exercised raised to
+    replay-tested (`dimensions`: {behavioural: {status}, ...} of the latest verification of a
+    release built from this package). Pack bytes never carry this: it is shown, not frozen."""
+    passed = {d for d, v in (dimensions or {}).items() if isinstance(v, dict) and v.get("status") == "pass"}
+    tested = set().union(*(TESTED_BY.get(d, set()) for d in passed)) if passed else set()
+    out = dict(result, items=[dict(i, level="replay-tested") if i["status"] == "present" and i["item"] in tested
+                              else i for i in result.get("items") or []])
+    return _levels(out)
 
 
 def dimension_of(item) -> str:
     """The verification dimension an item serves: behavioural, structural, visual or deployment."""
     if item.section == "visuals":
         return "deployment" if item.id.startswith("deploy.") else "visual"
-    if item.section in ("scenarios", "behaviour", "access") or item.id in ("data.examples", "data.shapes"):
+    if item.section in ("scenarios", "behaviour", "access", "interfaces") or item.id in (
+            "data.examples", "data.shapes", "data.bindings", "data.binding_types"):
         return "behavioural"
     if item.id in ("data.backend", "data.model"):
         return "deployment"
@@ -770,13 +1022,18 @@ def markdown(result, known_gaps=None) -> list[str]:
            + ("(every critical item is present)." if result["passed"] else "(critical items are missing)."),
            "Where an item is missing, say in BUILD-NOTES.md what you assumed instead.", "",
            "By verification dimension: " + "; ".join(f"{d['id']} {d['score']}%" for d in result["dimensions"]) + ".",
+           "",
+           f"Evidence: {result.get('coverage', 0)}% observed in the recording, confirmed by the owner or tested by "
+           "replay; items only documented (a written line or keyword) do not count as covered. "
+           + "; ".join(f"{n} {k}" for k, n in (result.get("levels") or {}).items()) + ".",
            ""]
+    level = {i["item"]: i["level"] for i in result.get("items") or []}
     for section in result["sections"]:
         if not section["present"] and not section["missing"]:
             continue
         out.append(f"**{SECTIONS[section['id']]}** ({section['score']}%)")
         out.append("")
-        out += [f"- present: {title_of(i)}" for i in section["present"]]
+        out += [f"- present ({level.get(i) or 'documented'}): {title_of(i)}" for i in section["present"]]
         for g in (g for g in result["gaps"] if g["section"] == section["id"]):
             out.append(f"- missing ({g['severity']}): {g['title']}. {g['why']}")
             out += [f"  - {d}" for d in g["details"][:5]]
@@ -792,7 +1049,8 @@ def markdown(result, known_gaps=None) -> list[str]:
 def summary(result) -> dict:
     """What evidence.json carries of the result: compact, without the owner's fix actions."""
     return {"spec_version": result["spec_version"], "surface": result["surface"], "passed": result["passed"],
-            "score": result["score"],
+            "score": result["score"], "coverage": result.get("coverage"), "levels": result.get("levels"),
+            "evidence": {i["item"]: i["level"] for i in result.get("items") or [] if i["level"]},
             "sections": {s["id"]: s["score"] for s in result["sections"]},
             "dimensions": {d["id"]: d["score"] for d in result["dimensions"]},
             "missing": [{"item": g["item"], "severity": g["severity"], "details": g["details"]}
