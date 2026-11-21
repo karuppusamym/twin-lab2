@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -30,6 +31,54 @@ TESTS = Path(__file__).resolve().parent
 
 def git(*args, cwd):
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def suspend(pid):
+    if sys.platform == "win32":
+        import ctypes
+
+        handle = ctypes.windll.kernel32.OpenProcess(0x0800, False, pid)  # PROCESS_SUSPEND_RESUME
+        ctypes.windll.ntdll.NtSuspendProcess(handle)
+        ctypes.windll.kernel32.CloseHandle(handle)
+    else:
+        os.kill(pid, signal.SIGSTOP)
+
+
+def resume(pid):
+    if sys.platform == "win32":
+        import ctypes
+
+        handle = ctypes.windll.kernel32.OpenProcess(0x0800, False, pid)
+        if handle:
+            ctypes.windll.ntdll.NtResumeProcess(handle)
+            ctypes.windll.kernel32.CloseHandle(handle)
+    else:
+        try:
+            os.kill(pid, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+
+
+def alive(pid):
+    if sys.platform == "win32":
+        import ctypes
+
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:  # a zombie child of this test process counts as gone
+        done, _ = os.waitpid(pid, os.WNOHANG)
+        return done == 0
+    except ChildProcessError:
+        return True
 
 
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
@@ -270,6 +319,46 @@ class ClaudeSessionTest(unittest.TestCase):
         self.assertEqual(len(self.anthropic.bodies), 1)  # clarification is not repeated
         self.assertTrue(self.prompts()[-1]["restarted"])
         self.assertIn("Build the TwinLab2 application", self.prompts()[-1]["prompt"])  # no agent session yet: again
+
+    def test_a_paused_runner_that_resumes_after_a_restart_is_fenced(self):
+        """A stale heartbeat is no proof the runner is dead: pause it (SIGSTOP / NtSuspendProcess),
+        let the worker hand the session to generation 2, then let the old one run again."""
+        self.plan = {"hold": True}
+        self.start()
+        self.until(lambda: self.state().get("phase") == "implement", what="the agent")
+        old = self.state()["pid"]
+        suspend(old)
+        try:
+            with mock.patch.object(local_runner, "STALE_SECONDS", 1.0):
+                time.sleep(1.5)
+                self.until(lambda: self.build()["runner_generation"] == 2, what="generation 2")
+            self.until(lambda: self.build()["state"] == "ready_for_verification", what="generation 2 to finish")
+        finally:
+            resume(old)
+        workspace = Path(self.build()["workspace"])
+        events = workspace / "events.jsonl"
+        self.until(lambda: not alive(old), timeout=30, what="the old runner to stop")
+        lines = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(self.state()["generation"], 2)
+        self.assertEqual(self.state()["phase"], "done")
+        # whatever an obsolete runner still writes is rejected, never shown or acted on
+        with events.open("a", encoding="utf-8") as out:
+            out.write(json.dumps({"id": "e999", "gen": 1, "kind": "clarification", "text": "obsolete question"}) + "\n")
+        with closing(builds.connect(self.database)) as db:
+            build = builds.get(db, 1)
+            db.execute("UPDATE builds SET state = 'running' WHERE id = 1")  # read it once more
+            db.commit()
+            adapter = self.ctx.provider(db, self.provider)
+            snap = adapter.read(dict(builds.get(db, 1)))
+            db.execute("UPDATE builds SET state = ? WHERE id = 1", (build["state"],))
+            db.commit()
+            leases = builds.leases(db, 1)
+        self.assertEqual(snap.rejected, 1)
+        self.assertNotIn("obsolete question", [e.text for e in snap.events])
+        self.assertEqual([lease["generation"] for lease in leases], [1, 2])
+        self.assertTrue(all(line.get("gen", 1) in (1, 2) for line in lines))
+        self.assertNotIn("obsolete question", self.shown_text())
+        self.assertEqual(git("rev-parse", f"refs/heads/{self.build()['branch']}", cwd=self.remote), self.build()["head_sha"])
 
     def test_budget_and_model_are_the_sessions(self):
         response = self.request(provider="claude", budget=0.2, request_key="k0")  # below the minimum

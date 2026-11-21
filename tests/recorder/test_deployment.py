@@ -358,7 +358,7 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual(got["failed"], {})
         self.assertEqual(len(got["removed"]), 5)
         for p in profiles:
-            self.assertEqual([c.name for c in (p / "AppData" / "Local").iterdir()], ["Other", "Temp"])
+            self.assertEqual(sorted(c.name for c in (p / "AppData" / "Local").iterdir()), ["Other", "Temp"])
             self.assertEqual(list((p / "AppData" / "Local" / "Temp").iterdir()), [])
         self.assertFalse((program_data / "TwinLabRecorder").exists())
         self.assertEqual(admin.cleanup(all_users=True, profiles=profiles, program_data=program_data)["removed"], [])

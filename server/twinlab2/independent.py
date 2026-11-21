@@ -71,6 +71,35 @@ else:
     print(json.dumps({"result": "fail", "notes": "after reset these tables differ from the baseline: "
                       + ", ".join(changed[:20])}))
 """
+PERSISTENCE_SCRIPT = r"""
+import json, sys, time, urllib.request
+from twinlab2.labagent import Agent, LabError
+agent = Agent(sys.argv[1], token=sys.argv[2])
+try:
+    before = agent.data()
+    agent._call("POST", "/_lab/restart")
+except LabError as exc:
+    print(json.dumps({"result": None, "notes": f"not checked: the lab agent could not restart the app ({exc})"}))
+    sys.exit(0)
+deadline = time.time() + float(sys.argv[4])
+while time.time() < deadline:
+    try:
+        with urllib.request.urlopen(sys.argv[3].rstrip("/") + "/.twinlab/version", timeout=5):
+            break
+    except Exception:
+        time.sleep(1)
+else:
+    print(json.dumps({"result": "fail", "notes": "the app did not answer again after its restart"})); sys.exit(0)
+try:
+    after = agent.data()
+except LabError as exc:
+    print(json.dumps({"result": "fail", "notes": f"lab agent after the restart: {exc}"})); sys.exit(0)
+if after == before:
+    print(json.dumps({"result": "pass", "notes": f"the data of {len(before)} table(s) is the same after a restart"}))
+else:
+    lost = sorted(t for t in set(before) | set(after) if before.get(t) != after.get(t))
+    print(json.dumps({"result": "fail", "notes": "after a restart these tables differ: " + ", ".join(lost[:20])}))
+"""
 STRUCTURE = {"web": "the page's DOM after every step (texts and data not compared)",
              "mainframe": "each screen's title line and input fields (row, column, length, numeric, non-display)",
              "desktop": "each window's controls (type, locator, state) after every step"}
@@ -179,6 +208,16 @@ class TwinLabChecks:
             if visual_from:
                 report["visual_declaration"] = visual_from
             return report
+
+    def persistence(self, lab_url, base_url):
+        """The replays' data, read before and after the lab restarts the app (`POST /_lab/restart`)."""
+        done = subprocess.run([sys.executable, "-c", PERSISTENCE_SCRIPT, lab_url, self.lab_token, base_url or lab_url,
+                               "120"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              env=self._env(), timeout=self.timeout, check=False)
+        try:
+            return json.loads(done.stdout.strip().splitlines()[-1])
+        except (IndexError, ValueError):
+            return {"result": None, "notes": "the persistence check did not run: " + done.stderr.strip()[-500:]}
 
     def reset(self, lab_url):
         done = subprocess.run([sys.executable, "-c", RESET_SCRIPT, lab_url, self.lab_token],
@@ -311,6 +350,12 @@ def run(runner, scenarios, manifest, base_url, lab_url, progress=None, plan=None
         if progress is not None:
             progress.scenario(scenario["id"], entry["result"], result=entry["result"], why=entry.get("why"),
                               surface=", ".join(sorted({r.get("surface") or "web" for r in reports})) or None)
+    if progress is not None:
+        progress.stage("checking that the data persists across a restart")
+    keeper = getattr(runner, "persistence", None)
+    report["persistence"] = keeper(lab_url, base_url) if keeper is not None and lab_url else {
+        "result": None, "notes": ("No lab agent URL is configured for this application, so persistence was not checked."
+                                  if not lab_url else "This verifier cannot restart the application.")}
     if progress is not None:
         progress.stage("checking the reset")
     report["reset"] = runner.reset(lab_url) if lab_url else {
