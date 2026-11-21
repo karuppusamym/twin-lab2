@@ -399,6 +399,20 @@ SCREEN_STRUCTURE = [
 ]
 
 
+# -- 10: server-side sign-in sessions; what a Tested release's verification covered ------------------
+
+AUTH_SESSIONS = [
+    # one row per sign-in (auth.start_session): expiry and revocation (sign-out, password change)
+    """CREATE TABLE IF NOT EXISTS auth_sessions (
+        id TEXT PRIMARY KEY, user_name TEXT NOT NULL, via TEXT NOT NULL,
+        created_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS auth_sessions_user ON auth_sessions(user_name)",
+    # the scope of the evidence (portal.verified_scope): scenarios, platform, role, commit, deployment
+    add_columns([("release_tests", "scope", "TEXT NOT NULL DEFAULT '{}'")]),
+]
+
+
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
@@ -413,6 +427,7 @@ MIGRATIONS = [
     (8, "screen structure", SCREEN_STRUCTURE),
     # the demo's data backend chosen at onboarding: '' = predicted from its data model (demo_target)
     (9, "demo data backend", [add_columns([("apps", "data_backend", "TEXT NOT NULL DEFAULT ''")])]),
+    (10, "sessions and verified scope", AUTH_SESSIONS),
 ]
 
 

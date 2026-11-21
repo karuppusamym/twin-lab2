@@ -1250,6 +1250,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/releases/{release_id}/openshift.yaml": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                release_id: components["parameters"]["ReleaseId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Download the release's OpenShift manifest
+         * @description Pinned to what was verified: the BuildConfig builds exactly the release's commit (git ref =
+         *     the commit SHA) into the tag `<name>:<commit>`, nothing follows a branch or `:latest`, and
+         *     the Deployment runs the built image by digest (`<name>@sha256:...`). Without `image_digest`
+         *     the digest is a placeholder and the file's header says how to read it after the build. The
+         *     builder package's `deploy/ocp/<name>/openshift.yaml` is the development manifest (builds
+         *     `main`, follows `:latest`). 404 for a desktop demo.
+         */
+        get: operations["getReleaseManifest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/setup": {
         parameters: {
             query?: never;
@@ -1632,6 +1659,14 @@ export interface components {
              * @enum {string}
              */
             auth_mode: "local" | "proxy" | "open";
+            /**
+             * @description The portal's auth mode (`TWINLAB2_AUTH_MODE`, or derived): `local-dev` only this machine as
+             *     the admin `local`; `individual` everyone signs in with their own password (a shared demo
+             *     password signs in only as the one demo identity, never an admin); `trusted-proxy` identity
+             *     only from the SSO proxy's headers, only on requests that come through the proxy.
+             * @enum {string}
+             */
+            access_mode: "local-dev" | "individual" | "trusted-proxy";
             /** @description Whether the sign-in form applies. */
             login_available: boolean;
             /** @description Send as `X-CSRF-Token` on every non-GET request. */
@@ -2527,6 +2562,38 @@ export interface components {
                 name: string;
                 result: components["schemas"]["TestResult"];
             }[];
+            scope: components["schemas"]["VerifiedScope"];
+        };
+        /**
+         * @description What the release's evidence covers, so "Tested" never says more than was checked. Also in
+         *     the verification report (`scope`).
+         */
+        VerifiedScope: {
+            commit_sha: string;
+            /** @description The supported platform the scenarios ran on. */
+            platform: string;
+            tested_by: string;
+            /** @description The tester's role on the application (`owner`, `builder`, `viewer`, or `admin`); null when unknown. */
+            role: string | null;
+            /**
+             * @description `manual`: results recorded by hand; `twinlab`: Twin Lab's own replay.
+             * @enum {string}
+             */
+            method: "manual" | "twinlab";
+            scenarios_total: number;
+            /** @description Scenarios with a pass or fail result. */
+            scenarios_run: number;
+            scenarios_passed: number;
+            scenarios: {
+                id: string | null;
+                name: string;
+                result: components["schemas"]["TestResult"];
+            }[];
+            /** @description The deployment the scenarios ran against (verified to report the commit). */
+            deployment_url: string | null;
+            tested_at: components["schemas"]["Timestamp"];
+            /** @description The one-line summary the release page shows. */
+            label: string;
         };
         CheckSummary: {
             repository: string | null;
@@ -4508,6 +4575,34 @@ export interface operations {
         responses: {
             200: components["responses"]["Zip"];
             302: components["responses"]["Presigned"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getReleaseManifest: {
+        parameters: {
+            query?: {
+                /** @description The built image's digest (`oc get istag <name>:<commit>`). */
+                image_digest?: string;
+            };
+            header?: never;
+            path: {
+                release_id: components["parameters"]["ReleaseId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The release manifest (a Kubernetes List). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/yaml": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
