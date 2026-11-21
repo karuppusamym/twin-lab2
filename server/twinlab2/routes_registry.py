@@ -24,7 +24,7 @@ from twinlab2 import auth
 from twinlab2 import event_ids
 from twinlab2 import shapes
 from twinlab2.auth import require_role
-from twinlab2.registry import (CODE_ALPHABET, CODE_LENGTH, CODE_MINUTES, FAILURES_PER_10_MIN, LEVELS,
+from twinlab2.registry import (CODE_ALPHABET, CODE_LENGTH, CODE_MINUTES, FAILURES_PER_10_MIN, HOST_EXES, LEVELS,
                                clean_references, contract_refusal, discovered_name, merge_references,
                                normalise_key, now, path_matches,
                                recorder_of, recording_status, sha, target_of, web_parts)
@@ -340,7 +340,8 @@ def app_for(item):
             if any(other == app_id for _, other, prefix in web_identities(origin) if prefix):
                 app_id = None
                 shared_host = True
-    if app_id is None and item.get("exe"):
+    # an executable name finds a catalog application, unless it is a host's (java.exe runs many)
+    if app_id is None and item.get("exe") and item["exe"].lower() not in HOST_EXES:
         row = db().execute("SELECT app_id FROM app_identities WHERE key = ?",
                            ("exe:" + item["exe"].lower(),)).fetchone()  # fmt: skip
         app_id = row["app_id"] if row else None

@@ -30,6 +30,7 @@ from collections import Counter
 from html import unescape
 from pathlib import Path
 
+from twinlab2_recorder.workstation.hosts import RUNTIMES
 from twinlab2_recorder.workstation.levels import BROWSERS, HOSTS, denied_exe, origin_of
 
 WND_APP = re.compile(r"<wnd\b[^>]*?\bapp='([^']+)'", re.I)
@@ -108,7 +109,12 @@ def propose(project: Path) -> dict:
         if exe in BROWSERS:
             continue
         item = {"exe": exe, "level": "full"}
-        if exe in HOSTS or denied_exe(None, exe):
+        if exe in RUNTIMES and exe != "msedgewebview2.exe":
+            notes.append(
+                f"{exe} hosts other programs: each application it runs is recorded as its own "
+                f"(desktop:{RUNTIMES[exe]}/<file>); one whose file cannot be told only as used"
+            )
+        elif exe in HOSTS or denied_exe(None, exe):
             notes.append(
                 f"{exe} is recorded only as used unless the target says allow_denied: true"
             )

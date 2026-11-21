@@ -359,6 +359,124 @@ def exe_info(path: str | None) -> dict:
     return out
 
 
+ntdll = ctypes.WinDLL("ntdll")
+ntdll.NtQueryInformationProcess.argtypes = [wintypes.HANDLE, ctypes.c_ulong, ctypes.c_void_p,
+                                            ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]  # fmt: skip
+ntdll.NtQueryInformationProcess.restype = ctypes.c_long
+kernel32.ReadProcessMemory.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+                                       ctypes.POINTER(ctypes.c_size_t)]  # fmt: skip
+kernel32.IsWow64Process.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+kernel32.GetPackageFamilyName.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.UINT), wintypes.LPWSTR]
+kernel32.GetPackageFamilyName.restype = wintypes.LONG
+
+
+class _UNICODE_STRING(ctypes.Structure):
+    _fields_ = [("Length", wintypes.USHORT), ("MaximumLength", wintypes.USHORT), ("Buffer", ctypes.c_void_p)]
+
+
+class _PROCESS_BASIC_INFORMATION(ctypes.Structure):
+    _fields_ = [("ExitStatus", ctypes.c_long), ("PebBaseAddress", ctypes.c_void_p),
+                ("AffinityMask", ctypes.c_size_t), ("BasePriority", ctypes.c_long),
+                ("UniqueProcessId", ctypes.c_size_t), ("InheritedFromUniqueProcessId", ctypes.c_size_t)]  # fmt: skip
+
+
+def command_line(pid: int) -> str | None:
+    """The process's command line (ProcessCommandLineInformation: Windows 8.1 and later, no
+    administrator rights for a process of the same user). Read to identify a host's
+    application (workstation.hosts); never kept."""
+    h = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        size = ctypes.c_ulong(0)
+        ntdll.NtQueryInformationProcess(h, 60, None, 0, ctypes.byref(size))
+        if not size.value or size.value > 1 << 20:
+            return None
+        buf = ctypes.create_string_buffer(size.value)
+        if ntdll.NtQueryInformationProcess(h, 60, buf, size, ctypes.byref(size)) != 0:
+            return None
+        us = _UNICODE_STRING.from_buffer(buf)
+        return ctypes.wstring_at(us.Buffer, us.Length // 2) if us.Buffer else None
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def _wow64(handle) -> bool:
+    flag = wintypes.BOOL(False)
+    return bool(kernel32.IsWow64Process(handle, ctypes.byref(flag)) and flag.value)
+
+
+def current_directory(pid: int) -> str | None:
+    """The process's current folder, from its process parameters (a 64-bit process read by this
+    64-bit one; None otherwise). For a host given a relative file (`java -jar app.jar`)."""
+    if ctypes.sizeof(ctypes.c_void_p) != 8:
+        return None
+    h = kernel32.OpenProcess(0x0400 | 0x0010, False, pid)  # QUERY_INFORMATION | VM_READ
+    if not h:
+        return None
+    try:
+        if _wow64(h):
+            return None
+        pbi = _PROCESS_BASIC_INFORMATION()
+        if ntdll.NtQueryInformationProcess(h, 0, ctypes.byref(pbi), ctypes.sizeof(pbi), None) != 0:
+            return None
+
+        def read(address, size):
+            buf = ctypes.create_string_buffer(size)
+            got = ctypes.c_size_t()
+            ok = kernel32.ReadProcessMemory(h, ctypes.c_void_p(address), buf, size, ctypes.byref(got))
+            return buf.raw if ok and got.value == size else None
+
+        raw = read((pbi.PebBaseAddress or 0) + 0x20, 8)  # PEB.ProcessParameters
+        params = struct.unpack("<Q", raw)[0] if raw else 0
+        raw = read(params + 0x38, 16) if params else None  # CurrentDirectory.DosPath
+        if not raw:
+            return None
+        length, _max, _pad, buffer = struct.unpack("<HHIQ", raw)
+        text = read(buffer, length) if buffer and 0 < length < 4096 else None
+        return text.decode("utf-16-le").rstrip("\\") + "\\" if text else None
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def parent_pid(pid: int) -> int | None:
+    snap = kernel32.CreateToolhelp32Snapshot(2, 0)
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            if entry.th32ProcessID == pid:
+                return int(entry.th32ParentProcessID) or None
+            ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snap)
+    return None
+
+
+def package_family(pid: int) -> str | None:
+    """The package family name of a packaged (MSIX / UWP) process, else None."""
+    h = kernel32.OpenProcess(0x1000, False, pid)
+    if not h:
+        return None
+    try:
+        n = wintypes.UINT(256)
+        buf = ctypes.create_unicode_buffer(256)
+        return buf.value or None if kernel32.GetPackageFamilyName(h, ctypes.byref(n), buf) == 0 else None
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def host_facts(pid: int) -> dict:
+    """What workstation.hosts.resolve reads of a process: `{"argv", "cwd", "package"}`. Only
+    the application's file, module or package name is kept from it."""
+    from twinlab2_recorder.workstation.hosts import split_args
+
+    line = command_line(pid)
+    return {"argv": split_args(line) if line else [], "cwd": current_directory(pid),
+            "package": package_family(pid)}  # fmt: skip
+
+
 def marker_files(path: str | None) -> list[str]:
     """Marker files next to the executable (names only)."""
     if not path:

@@ -7,7 +7,9 @@ Identity (`desktop_identity`, `web_identity`): a desktop application is its comp
 from the version resource (`desktop:<company>/<product>`), or its executable name when it has
 none (`desktop:exe/<name>`); a web application is its origin (`web:<origin>`). The executable
 name, version and path are facts, not identity, so a new version or install folder is the same
-application.
+application. A host process (`HOSTS`, or an executable whose version resource is Electron's) is
+not an application by itself: twinlab2_recorder.workstation.hosts.resolve finds the application
+it runs (`desktop:java/billing-client.jar`, ...); one it cannot tell stays a host, presence only.
 
 Levels: `full` (everything the recorders keep), `steps` (desktop steps without tree files or
 pictures), `presence` (that it was used, nothing else). `Targets.level` gives an application's
@@ -65,17 +67,23 @@ def desktop_identity(path: str | None, exe: dict | None = None) -> dict:
     exe = exe or {}
     name = ntpath.basename(path or "") or _clean(exe.get("file")) or "unknown.exe"
     company, product = _clean(exe.get("company")), _clean(exe.get("product"))
-    if company and product:
+    from twinlab2_recorder.workstation.hosts import electron_default
+
+    electron = electron_default(exe) and name.lower() not in HOSTS  # a renamed electron.exe
+    if company and product and not electron:
         key = f"desktop:{company}/{product}"
     else:
         key = f"desktop:exe/{name.lower()}"
-    return {
+    out = {
         "key": key, "surface": "desktop", "exe": name, "company": company or None,
         "product": product or None, "version": _clean(exe.get("product_version"), 40) or None,
         "display": product or _clean(exe.get("description")) or ntpath.splitext(name)[0],
         "description": _clean(exe.get("description")) or None,
-        "host": name.lower() in HOSTS, "browser": name.lower() in BROWSERS,
+        "host": name.lower() in HOSTS or electron, "browser": name.lower() in BROWSERS,
     }  # fmt: skip
+    if electron:
+        out.update(electron=True, company=None, product=None)
+    return out
 
 
 def origin_of(url: str) -> str:
@@ -242,7 +250,10 @@ class Targets:
             return target.level if target else PRESENCE
         if ident.get("browser"):
             return PRESENCE  # a browser the person opened; the session's own Edge is web
-        if (ident.get("host") or denied_exe(path, ident.get("exe"))) and not (
+        # an application a host runs (hosts.resolve) is not denied for its host's folder:
+        # mshta.exe and wscript.exe live in Windows' own
+        denied = denied_exe(None if ident.get("app_file") else path, ident.get("exe"))
+        if (ident.get("host") or denied) and not (
             target is not None and target.allow_denied
         ):
             return PRESENCE

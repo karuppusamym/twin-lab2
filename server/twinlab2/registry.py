@@ -45,6 +45,15 @@ KEY = re.compile(r"^(desktop:[^\x00-\x1f]{1,200}|exe:[\w .()+-]{1,80}\.exe"
                  r"|web:https?://[\w.\-\[\]:]{1,200}(/[^\s\x00-\x1f?#]{1,300})?"
                  r"|mainframe:[\w.\-\[\]:]{1,200}:\d{1,5})$",
                  re.I)  # fmt: skip
+# Executables that run many applications (the recorder's levels.HOSTS): an application one of
+# them runs has a key of its own (`desktop:java/billing-client.jar`), and its executable name
+# says nothing about which application it is.
+HOST_EXES = {
+    "java.exe", "javaw.exe", "electron.exe", "python.exe", "pythonw.exe", "dotnet.exe", "node.exe",
+    "applicationframehost.exe", "msedgewebview2.exe", "rundll32.exe", "dllhost.exe", "cmd.exe",
+    "powershell.exe", "pwsh.exe", "conhost.exe", "windowsterminal.exe", "wscript.exe", "cscript.exe",
+    "mshta.exe",
+}  # fmt: skip
 SESSION_KEY = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$")
 FLOW_FIELDS = {"n": int, "action": str, "control": str, "label": str, "screen": str, "key": str,
                "channel": str, "captured_at": str, "seq": int}  # and event_id, checked on its own
@@ -267,7 +276,8 @@ def merge_references(old, new):
 
 def discovered_name(db, item, shared_host=False):
     """The name a newly discovered application is registered under: what the recorder calls it
-    (its display name, else its product, else its key), made unique by `unique_name`. With
+    (its display name, else its product, else its key; for an application a host process runs,
+    its product name, else its file name: `billing-client.jar`), made unique by `unique_name`. With
     `shared_host` (steps on a web origin outside every path application on it) the recorder's
     display name is that of a path target, so the application is named after its host instead."""
     if shared_host:
@@ -291,6 +301,8 @@ def unique_name(db, base, item):
         qualifier = web_parts(key)[0].split("://", 1)[-1]
     elif key.startswith("mainframe:"):
         qualifier = key[10:]
+    elif str(item.get("exe") or "").lower() in HOST_EXES:  # its runtime: `desktop:java/...` -> java
+        qualifier = item.get("company") or key.split(":", 1)[-1].split("/", 1)[0]
     else:
         qualifier = item.get("company") or item.get("exe") or key.split(":", 1)[-1]
     candidate = f"{base} ({qualifier})"[:120]
