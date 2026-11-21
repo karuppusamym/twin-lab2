@@ -559,8 +559,15 @@ paths:
     post:
       tags: [releases]
       operationId: verifyCommit
+      x-twinlab-idempotent: native
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Verify this build (a repository's commit, optionally a build session's)
-      description: Owner. Registers or finds the release of the commit and runs the release checks. Audited as `release.verify`.
+      description: >-
+        Owner. Checks the request (a full SHA, a scenario, a frozen package), then queues the verification:
+        202 with the `Verification` to follow. The worker packages the commit (its release is known then),
+        reads its checks and runs the release checks. Idempotent by `Idempotency-Key` (or its alias
+        `request_key`: one verification per key); without one, a request
+        while a verification of the same commit is queued or running gets that one. Audited as `release.verify`.
       x-twinlab-role: owner
       requestBody:
         required: true
@@ -568,15 +575,9 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/VerifyCommitInput" }
             examples:
-              commit: { value: { repo: example/billing-desk-demo, sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, pr_number: 12 } }
+              commit: { value: { repo: example/billing-desk-demo, sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, pr_number: 12, request_key: verify-7-3f9a1c2d } }
       responses:
-        "200":
-          description: The outcome; the release to open.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/VerifyOutcome" }
-              examples:
-                outcome: { $ref: "#/components/examples/VerifyOutcome" }
+        "202": { $ref: "#/components/responses/Verification" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -1908,12 +1909,40 @@ paths:
     post:
       tags: [releases]
       operationId: verifyRelease
+      x-twinlab-idempotent: native
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Verify this build
-      description: Owner. Reads the checks, runs the scenario replay, business-outcome and reset checks, stores the report. Audited as `release.verify`.
+      description: >-
+        Owner. Queues the verification and answers 202 with it (poll `GET /api/v1/verifications/{id}`):
+        the worker reads the checks, runs the scenario replay on each of the application's surfaces (web,
+        mainframe, desktop), the business-outcome and reset checks, and stores the report. Idempotent by
+        `Idempotency-Key` (or its alias `request_key`: one verification per key); without one, a request while a verification of the release is queued or running gets
+        that one. Audited as `release.verify` (and `release.verified` when it ends).
       x-twinlab-role: owner
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifyInput" }
+            examples:
+              mainframe: { value: { request_key: verify-5-1, targets: { mainframe: "tn3270://account-inquiry.apps.example.test:3270" } } }
       responses:
-        "200": { $ref: "#/components/responses/ReleaseDetail" }
+        "202": { $ref: "#/components/responses/Verification" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/verifications/{verification_id}:
+    parameters: [{ name: verification_id, in: path, required: true, schema: { type: integer } }]
+    get:
+      tags: [releases]
+      operationId: getVerification
+      summary: One verification (Verify as a job)
+      description: Viewer of its application. Poll while `state` is queued or running.
+      x-twinlab-role: viewer
+      responses:
+        "200": { $ref: "#/components/responses/Verification" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/releases/{release_id}/publish:
     parameters: [{ $ref: "#/components/parameters/ReleaseId" }]
@@ -2425,6 +2454,14 @@ components:
           schema: { $ref: "#/components/schemas/ReleaseDetail" }
           examples:
             tested: { $ref: "#/components/examples/ReleaseDetail" }
+    Verification:
+      description: The verification (queued, running, or ended with its report).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Verification" }
+          examples:
+            running: { $ref: "#/components/examples/VerificationRunning" }
+            passed: { $ref: "#/components/examples/VerificationPassed" }
     AgentJson:
       description: The agent API's JSON answer (RECORDER-CONTRACT.md).
       content:
@@ -2850,7 +2887,7 @@ components:
       required: [required_checks, target_platform]
       properties:
         required_checks: { type: string, maxLength: 4000, description: "One check name or glob per line; empty means every check reported." }
-        target_platform: { type: string, enum: ["", web, windows-desktop] }
+        target_platform: { type: string, enum: ["", web, windows-desktop, mainframe] }
         windows_check_pattern: { type: string, maxLength: 200 }
         lab_url: { type: string, maxLength: 500 }
         launch: { type: string, maxLength: 8000 }
@@ -2864,14 +2901,77 @@ components:
         pr_number: { type: integer, minimum: 1 }
         ref: { type: string, maxLength: 200 }
         build_id: { type: integer, description: "The build session the commit is from." }
-    VerifyOutcome:
+        request_key: { type: string, maxLength: 100, description: "Names one verification: a repeated request with it gets the same one." }
+        targets: { $ref: "#/components/schemas/VerifyTargets" }
+    VerifyInput:
       type: object
-      required: [release_id, tested, reasons]
       properties:
-        release_id: { type: integer }
-        tested: { type: boolean }
+        request_key: { type: string, maxLength: 100, description: "Names one verification: a repeated request with it gets the same one." }
+        targets: { $ref: "#/components/schemas/VerifyTargets" }
+    VerifyTargets:
+      type: object
+      description: Where to replay a surface that the deployment URL does not name.
+      properties:
+        mainframe: { type: string, maxLength: 300, description: "The rebuilt TN3270 host, host:port (default: the deployment URL's host and port)." }
+        desktop: { type: string, maxLength: 300, description: "The built executable, relative to the Windows verifier's builds folder (TWINLAB2_DESKTOP_BUILDS)." }
+    VerificationScenario:
+      type: object
+      required: [id, name, state]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        state: { type: string, description: "pending, running, then pass, fail or not-run." }
+        result: { type: [string, "null"], enum: [pass, fail, not-run, null] }
+        why: { type: [string, "null"] }
+        surface: { type: [string, "null"], description: "web, mainframe, desktop (several: comma-separated)." }
+    Verification:
+      type: object
+      required: [id, app_id, release_id, kind, state, commit_sha, requested_by, request_key, attempts, created_at,
+                 started_at, finished_at, progress, tested, reasons, report, scope, dimensions, error]
+      properties:
+        id: { type: integer }
+        app_id: { type: integer }
+        release_id: { type: [integer, "null"], description: "Known once the commit is packaged (verify-commit)." }
+        kind: { type: string, enum: [release, commit] }
+        state: { type: string, enum: [queued, running, passed, failed, error] }
+        commit_sha: { type: [string, "null"] }
+        requested_by: { type: string }
+        request_key: { type: string }
+        attempts: { type: integer, description: "How many times a worker started it (a worker that stopped mid-run is taken over)." }
+        created_at: { type: string }
+        started_at: { type: [string, "null"] }
+        finished_at: { type: [string, "null"] }
+        progress:
+          type: object
+          required: [stage, total, done, scenarios]
+          properties:
+            stage: { type: string }
+            total: { type: integer }
+            done: { type: integer }
+            scenarios: { type: array, items: { $ref: "#/components/schemas/VerificationScenario" } }
+        tested: { type: [boolean, "null"] }
         reasons: { type: array, items: { type: string } }
-        report_sha: { type: [string, "null"] }
+        report:
+          oneOf:
+            - type: object
+              required: [id, sha256, url]
+              properties:
+                id: { type: integer }
+                sha256: { type: string }
+                url: { type: [string, "null"] }
+            - { type: "null" }
+        scope: { type: [object, "null"], additionalProperties: true, description: "What Tested covers (scenarios, platform, role, commit, deployment)." }
+        dimensions:
+          oneOf:
+            - type: object
+              description: >-
+                behavioural, structural, visual and deployment, each with `status` (pass, fail, blocked,
+                reported: visual states that do not decide, or not-checked), `scope` (what it covered) and its counts.
+              additionalProperties:
+                type: object
+                additionalProperties: true
+            - { type: "null" }
+        error: { type: [string, "null"] }
     MergeSide:
       type: object
       required: [id, name, url_match]
@@ -3437,6 +3537,10 @@ components:
             properties:
               build_id: { type: integer }
               detail: { type: string }
+        verifications:
+          type: array
+          description: The verifications queued for the candidates (POST); their results fill in as they end.
+          items: { $ref: "#/components/schemas/Verification" }
 
     # -- recordings -------------------------------------------------------------------------------
     RecordingRef:
@@ -3963,6 +4067,7 @@ components:
         results: { type: array, items: { $ref: "#/components/schemas/TestResult" } }
         checks: { $ref: "#/components/schemas/CheckSummary" }
         version_path: { type: string, description: "The deployment's version path, `.twinlab/version`." }
+        verification: { oneOf: [{ $ref: "#/components/schemas/Verification" }, { type: "null" }], description: "The latest verification of the release." }
         notice: { type: [string, "null"] }
     DeploymentInput:
       type: object
@@ -4815,6 +4920,7 @@ components:
           - { value: "", label: Not set }
           - { value: web, label: Web }
           - { value: windows-desktop, label: Windows desktop }
+          - { value: mainframe, label: Mainframe (3270) }
         github_repo: example/billing-desk-demo
         github_token_configured: true
         default_windows_pattern: "*windows*"
@@ -4828,8 +4934,64 @@ components:
         data_backend: { engine: sqlserver, source: predicted, reason: "The data model is written for SQL Server (4 dialect markers).", tables: [dbo.Invoice, dbo.InvoiceLine] }
         deployment: { kind: openshift, files: [deploy/ocp/billing-desk-1/README.md, deploy/ocp/billing-desk-1/openshift.yaml] }
 
-    VerifyOutcome:
-      value: { release_id: 5, tested: false, reasons: ["Required check build is not green."], report_sha: 2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f }
+    VerificationRunning:
+      value:
+        id: 12
+        app_id: 1
+        release_id: 5
+        kind: release
+        state: running
+        commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b
+        requested_by: ana
+        request_key: verify-5-1
+        attempts: 1
+        created_at: "2026-11-21T09:00:00+00:00"
+        started_at: "2026-11-21T09:00:02+00:00"
+        finished_at: null
+        progress:
+          stage: replaying the scenarios
+          total: 2
+          done: 1
+          scenarios:
+            - { id: scenario-1, name: Sign on, state: pass, result: pass, why: null, surface: mainframe }
+            - { id: scenario-2, name: Account inquiry, state: running, result: null, why: null, surface: null }
+        tested: null
+        reasons: []
+        report: null
+        scope: null
+        dimensions: null
+        error: null
+    VerificationPassed:
+      value:
+        id: 12
+        app_id: 1
+        release_id: 5
+        kind: release
+        state: passed
+        commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b
+        requested_by: ana
+        request_key: verify-5-1
+        attempts: 1
+        created_at: "2026-11-21T09:00:00+00:00"
+        started_at: "2026-11-21T09:00:02+00:00"
+        finished_at: "2026-11-21T09:01:10+00:00"
+        progress:
+          stage: passed
+          total: 2
+          done: 2
+          scenarios:
+            - { id: scenario-1, name: Sign on, state: pass, result: pass, why: null, surface: mainframe }
+            - { id: scenario-2, name: Account inquiry, state: pass, result: pass, why: null, surface: mainframe }
+        tested: true
+        reasons: []
+        report: { id: 31, sha256: 2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f, url: /api/v1/releases/5/reports/31 }
+        scope: { commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, platform: Mainframe (3270), method: twinlab, scenarios_total: 2, scenarios_passed: 2 }
+        dimensions:
+          behavioural: { status: pass, required: 6, passed: 6, scope: "the required acceptance cases declared beside each recording (acceptance.yaml): 6 case(s)" }
+          structural: { status: pass, steps: 19, compared: 7, failed: 0, scope: "mainframe: each screen's title line and input fields (row, column, length, numeric, non-display)" }
+          visual: { status: not-checked, states: 0, scope: "not compared: the replayed recordings have no pictures (mainframe and desktop pictures are not compared)" }
+          deployment: { status: pass, url: "http://account-inquiry.apps.example.test:3270", reported_commit: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, scope: "the deployment reports commit 3f9a1c2d4e5b; the commit's GitHub checks; the lab's reset to its baseline" }
+        error: null
 
     MergePlan:
       value:

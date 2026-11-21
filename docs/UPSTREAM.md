@@ -38,6 +38,10 @@ About 21,100 lines in 50 files (with their headers), from 47 Twin Lab modules ou
 | `twinlab2.devinapi.client`, `.config` | `devin/client.py`, `devin/config.py` | Build with Devin (`twinlab2.devin`) |
 | `twinlab2.devinapi.jobs` | `_MONEY_WORDS`, `map_status` from `devin/jobs.py` | `twinlab2.devin` |
 | `tests/recorder/desktop_drive.py` (test only) | `desktop/drive.py` | the CaseDesk end to end |
+| `twinlab2.replay.tn3270` | `Telnet`, `Screen`, the address, EBCDIC, title and cleaning rules of `workstation/tn3270.py`; the scripted `Terminal` of `reference/mainframe/demo_host.py` | Verify's mainframe replay |
+| `twinlab2.replay.desktop` | `desktop/verify.py`; `DriveError`, `Ambiguous` from `desktop/drive.py`; `Recording` from `desktop/model.py` | Verify's desktop replay (UI Automation through the recorder's `twinlab2_recorder.desktop` copies) |
+| `tests/fixtures/tn3270_demo_host.py` (test only) | `reference/mainframe/demo_host.py` | the mainframe Verify tests (and a deliberately wrong rebuild) |
+| `tests/fixtures/desktop-casedesk-rec/` (test only) | `lab/labctl/tests/fixtures/desktop/casedesk-rec/` | the desktop Verify tests (recorded window trees) |
 
 ## What was cut, and why
 
@@ -50,7 +54,6 @@ that was **not run** (with the reason), never a pass.
 |---|---|---|
 | `fidelity.reports_dir`, `fidelity.save` (Twin Lab's `lab`, `conformance`) | `twinlab2.replay.fidelity` | Twin Lab's CLI keeps reports under its lab state (`--app`); TwinLab2 stores the report with the release |
 | `durable.add_app`, `durable.assess` (`conformance`) | `twinlab2.replay.durable` | only `save` and Twin Lab's readiness gate call them |
-| `visual.unsettled_pictures` (`recorder.next_action`) | `twinlab2.replay.visual` | only `visual.template`, which writes Twin Lab's `visual.yaml` template from the CLI; the server never imports the recorder package |
 | `Public.collect`, `active_for`, `draft` (`har`, `factory`, `lookfeel`) | `twinlab2_contract.evidence.publicdata` | the owner's public-data declaration is drafted and collected by Twin Lab's pack builder; recording and replay only read the active declaration (`current`, `refused`) |
 | the rest of `split.py` (1,260 lines), `jsfviews.py` (760), `behaviour/drafts.py` (650), `lab.py`, `devin/jobs.py`, `analyse/uipath.py`, `models.py` | (only the definitions above were taken) | they build packs, run labs, or analyse automation projects |
 
@@ -73,7 +76,23 @@ also passed the reset check ("reset restored the baseline (1 table(s))"), as Ver
 - `botlog.models` takes `Contract` from `botlog.base`; `KINDS` there is an empty dict (TwinLab2
   does not load Twin Lab's YAML contracts).
 - `twinlab2.replay.__main__` is new: the entry Verify runs, writing a `not-run` report when the
-  replay raises `NotAbsorbed`.
+  replay raises `NotAbsorbed`. It also runs the mainframe and desktop replays (`--surface`,
+  `--target`), and gives the web replay an origin map (`--map`) and a visual.yaml (`--visual`).
+- `visual.unsettled_pictures`, cut at first, is restored (Verify generates a visual.yaml); the
+  recorder's `next_action` it calls is copied into `twinlab2.replay.visual` (the server does not
+  import the recorder package). `visual.yaml` takes `viewport: WIDTHxHEIGHT` besides desktop and
+  mobile, and `visual.template` writes the recording's own size (`recording_viewport`:
+  `recording.json`, else the pictures' size) and takes `required=False` (report-only states).
+- `fidelity.OriginMap` maps a source origin **and path prefix** (`http://host/billing`) to its
+  own replica: two applications on one host each replay against their own deployment.
+- `twinlab2.replay.tn3270` is a client, not the proxy: it parses the host's screens with the
+  recorder's own 3270 code and compares the title line (cleaned as the recorder cleans it) and the
+  input fields (row, column, length, numeric, non-display) per screen, then the acceptance cases
+  on the screen text. Plain TN3270 (it declines TN3270E).
+- `twinlab2.replay.desktop` imports UI Automation from `twinlab2_recorder.desktop` only when a
+  replay runs, refuses a live replay unless on Windows with `TWINLAB2_DESKTOP_VERIFY=1`, takes the
+  windows' trees for acceptance cases on them (`observe`, `judge_cases`), and `Driver` is not
+  used (it never was by verify).
 - Contract 1.2 (path prefixes): `levels.Target` keeps a web target's `path` (`Targets.prefixes`),
   `flow.route_template` keeps the longest target prefix a URL is under (`prefix_segments`), and
   `timeline.outbox` passes each origin's prefixes to `label_step`, lists `path` in

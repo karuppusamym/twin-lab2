@@ -19,7 +19,7 @@ from twinlab2 import migrations
 from twinlab2 import packages
 from twinlab2.portal import create_app
 from twinlab2 import portal
-from support import Client, connect, freeze as freeze_package, new_database
+from support import Client, connect, freeze as freeze_package, new_database, wait_verification
 import test_verification
 from twinlab2 import verification
 from twinlab2 import worker
@@ -334,6 +334,8 @@ class CompareTest(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
+        from twinlab2 import verifications
+        self.addCleanup(verifications.join_in_process)
         self.gh = test_verification.FakeGitHub()
         self.addCleanup(self.gh.close)
         self.database = new_database(self.work.name)
@@ -371,6 +373,12 @@ class CompareTest(unittest.TestCase):
         response = self.client.post(f"/api/v1/apps/{self.app_id}/builds/compare", json={"sessions": [1, 2]})
         self.assertEqual(response.status_code, 200, response.text[:400])
         self.assertEqual(response.json().get("errors"), [])
+        # one verification per candidate, queued for the worker (here: worked in this process)
+        queued = response.json()["verifications"]
+        self.assertEqual([v["kind"] for v in queued], ["commit", "commit"])
+        for item in queued:
+            done = wait_verification(self.client, mock.Mock(status_code=202, json=lambda item=item: item))
+            self.assertEqual(done["state"], "failed")  # no deployment yet
         with closing(connect(self.database)) as db:
             rows = db.execute("SELECT build_id, commit_sha, state FROM releases ORDER BY build_id").fetchall()
             self.assertEqual([(r[0], r[1]) for r in rows], [(1, "1" * 40), (2, "2" * 40)])

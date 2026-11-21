@@ -147,3 +147,25 @@ Tested only on fixture trees so far (`tests/recorder/test_structure_texts.py`,
    (CaseDesk has none: try Calculator's `num1Button`):
    → their steps keep that id as `label` in the outbox flow and as `id` in `screens`; Win32's
      numeric ids (`2`, `65535`) are still not labels.
+
+## Verify: the portal's desktop replay
+
+Verify's desktop replay (`twinlab2.replay.desktop`) is unit-tested on recorded window trees
+(`tests/server/test_verify_surfaces.py`); its live run opens CaseDesk's windows, so it waits for
+this batch: step 5 of `tools\rebuild_proof\desktop_batch.ps1 -GoDesktop`
+(`desktop_live.py portal-verify`).
+
+1. Run the batch; leave the mouse and keyboard alone until it prints its last line.
+   → `portal-desktop-summary.json`: the reference CaseDesk **pass** on both recordings with every
+     `opens-*` case PASS (the positive control); each rebuild's result next to Twin Lab's verify
+     of step 4 (`desktop-summary.json`), step by step the same failures.
+2. Watch while it runs.
+   → Only CaseDesk's windows open and close; nothing is typed or clicked into another window
+     (UI Automation patterns and window messages only); each CaseDesk closes at the end of its
+     replay.
+3. A Windows verifier for the portal: set `TWINLAB2_DESKTOP_VERIFY=1` and
+   `TWINLAB2_DESKTOP_BUILDS=<folder of built exes, each with .twinlab\version>`, run
+   `python -m twinlab2.worker --types verify`, and Verify a desktop release with
+   `{"targets": {"desktop": "casedesk/CaseDesk.exe"}}`.
+   → The verification runs on that machine, shows each scenario's progress, and ends passed or
+     failed with the desktop report; without the two settings it ends with the reason, not run.

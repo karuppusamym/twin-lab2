@@ -101,11 +101,11 @@ function SessionView({ detail }: { detail: Schemas["BuildDetail"] }) {
               <Link to={`/apps/${app.id}/sessions/compare?session=${build.id}`}>Compare results</Link></p>
             {build.state === "ready_for_verification" && owner && (
               <ActionButton label="Verify this build" run={async () => {
-                const outcome = data(await api.POST("/api/v1/apps/{app_id}/verify-commit", {
+                const verification = data(await api.POST("/api/v1/apps/{app_id}/verify-commit", {
                   params: { path: { app_id: app.id } },
                   body: { repo: build.repo, sha: build.head_sha ?? "", build_id: build.id, ref: build.branch, pr_number: build.pr_number ?? undefined },
                 }));
-                navigate(`/releases/${outcome.release_id}#verification`);
+                navigate(verification.release_id ? `/releases/${verification.release_id}#verification` : `/verifications/${verification.id}`);
               }} />
             )}
           </>
