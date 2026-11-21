@@ -167,8 +167,7 @@ class ReleaseTest(unittest.TestCase):
         path.write_text(re.sub(r'^version = "[^"]+"', 'version = "7.x"', text, count=1, flags=re.M), encoding="utf-8")
         with self.assertRaises(release.ReleaseError):
             release.check(None, self.root)
-        path.write_text(re.sub(r'^version = "[^"]+"
-', "", text, count=1, flags=re.M), encoding="utf-8")
+        path.write_text(re.sub(r'^version = "[^"]+"\r?\n', "", text, count=1, flags=re.M), encoding="utf-8")
         with self.assertRaises(release.ReleaseError):
             release.current(self.root)
 
