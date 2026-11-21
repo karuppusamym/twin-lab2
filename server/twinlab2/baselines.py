@@ -174,3 +174,19 @@ def for_pack(db, app_id) -> tuple[list[dict], dict]:
         entries.append({"screen": r["screen"], "state": r["state_id"], "viewport": r["viewport"], "theme": r["theme"],
                         "scale": r["scale"], "path": path, "sha256": r["sha256"], "source": r["source"]})
     return entries, files
+
+
+def for_verify(db, app_id, manifest=None) -> list[dict]:
+    """The approved baselines Verify gates on: [{screen, state, viewport, theme, scale, png,
+    events (the recorded events that land on the state)}]. When the package names its baselines
+    (`visual_baselines`), only those (by SHA-256) count: Verify judges what was packaged."""
+    packaged = {b.get("sha256") for b in (manifest or {}).get("visual_baselines") or []}
+    states = {(n["screen"], n["state"]): n["events"] for n in needed(db, app_id)}
+    out = []
+    for r in db.execute("SELECT * FROM visual_baselines WHERE app_id = ? ORDER BY screen, state_id, viewport, theme, "
+                        "scale", (app_id,)):
+        if manifest is not None and "visual_baselines" in manifest and r["sha256"] not in packaged:
+            continue
+        out.append({"screen": r["screen"], "state": r["state_id"], "viewport": r["viewport"], "theme": r["theme"],
+                    "scale": r["scale"], "png": bytes(r["content"]), "events": states.get((r["screen"], r["state_id"]), [])})
+    return out

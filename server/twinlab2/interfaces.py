@@ -259,11 +259,28 @@ def _clean(doc, recording_id):
                 item["identifier"] = package.slug(r.get("identifier"))
             if isinstance(r.get("detail"), dict):
                 item["detail"] = r["detail"]
+            check = _down_check(r.get("down_check"))
+            if check:
+                item["down_check"] = check
             out["relationships"].append(item)
     problems = package.check_interfaces(out)
     if problems:
         raise ValueError("; ".join(problems[:5]).capitalize() + ".")
     return out
+
+
+def _down_check(raw):
+    """What Verify looks for in the consumer while its producer is down: `{path, contains?,
+    status?}`. The path is one of the consumer's own (read with GET), `contains` the expected
+    failure message. None when the owner wrote none."""
+    if not isinstance(raw, dict) or not str(raw.get("path") or "").startswith("/"):
+        return None
+    out = {"path": str(raw["path"])[:300]}
+    if raw.get("contains"):
+        out["contains"] = str(raw["contains"])[:300]
+    if isinstance(raw.get("status"), int) and 100 <= raw["status"] <= 599:
+        out["status"] = raw["status"]
+    return out if len(out) > 1 else None
 
 
 def _redacted(value):
@@ -366,6 +383,10 @@ def markdown(data) -> list[str]:
                     line += f", response fields {', '.join(schema['response'])}"
             elif r["kind"] == "file" and schema.get("columns"):
                 line += f": columns {', '.join(schema['columns'])}"
+            if r.get("down_check"):
+                line += (f". Verify stops {name.get(r['producer'])} and reads GET `{r['down_check']['path']}`, which "
+                         + (f"must show `{r['down_check']['contains']}`" if r["down_check"].get("contains") else
+                            f"must answer {r['down_check'].get('status')}"))
             line += (f". When {name.get(r['producer'])} is down: {r['when_down']}" if r.get("when_down")
                      else f". What {name.get(r['consumer'])} does when {name.get(r['producer'])} is down is not stated: "
                           "show an error, keep the user's input, and say so in BUILD-NOTES.md")
@@ -374,15 +395,187 @@ def markdown(data) -> list[str]:
     return out
 
 
-def verify(db, manifest, app_id, deployed_commit) -> list[dict]:
+class LiveProbe:
+    """What Verify may do to the deployments: read with GET (never a call that changes data), and
+    take a producer down by its lab agent's fault condition (`PUT /_lab/condition`, every route
+    answers 503) and put it back (an empty condition) before returning."""
+
+    def __init__(self, token: str = ""):
+        import os
+
+        self.token = token or os.environ.get("TWINLAB2_LAB_TOKEN", "")
+
+    def get(self, url: str, timeout: float = 8.0):
+        """(status, content type, body up to 1 MB), or None when nothing answers. Redirects are
+        not followed (a redirect to sign-in is an answer)."""
+        import urllib.error
+        import urllib.request
+
+        class _No(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+
+        try:
+            with urllib.request.build_opener(_No).open(
+                    urllib.request.Request(url, headers={"Accept": "application/json, text/*"}), timeout=timeout) as r:
+                return r.status, r.headers.get("Content-Type", ""), r.read(1_000_000)
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.headers.get("Content-Type", ""), exc.read(1_000_000)
+        except (OSError, ValueError):
+            return None
+
+    def down(self, lab_url: str):
+        """A context manager: the producer's front door answers 503 inside it. Raises
+        `Cannot(reason)` on entry when it cannot be taken down safely."""
+        from contextlib import contextmanager
+
+        from twinlab2.labagent import Agent, LabError
+
+        @contextmanager
+        def ctx():
+            agent = Agent(lab_url, token=self.token, timeout=15, holder="twinlab2-verify")
+            try:
+                now = agent.condition()
+            except LabError as exc:
+                raise Cannot(f"the lab agent does not answer ({exc})") from exc
+            if now.get("http") or now.get("faults") or now.get("db"):
+                raise Cannot("the lab agent already runs under a condition; it was left as it is")
+            try:
+                agent.set_condition({"id": "peer-down", "description": "Verify: the peer is down",
+                                     "faults": [{"match": "* *", "status": 503, "rate": 1}]})
+            except LabError as exc:
+                raise Cannot(f"the lab agent refused the condition ({exc})") from exc
+            try:
+                yield
+            finally:
+                try:
+                    agent.set_condition(None)
+                except LabError:
+                    try:
+                        agent._call("DELETE", "/_lab/condition")
+                    except LabError:
+                        pass
+
+        return ctx()
+
+
+class Cannot(Exception):
+    """A check that cannot be made, with the reason that is reported."""
+
+
+def _fields(value) -> set[str]:
+    """The field names of a JSON reply: an object's keys, or the first record's (a list)."""
+    if isinstance(value, list):
+        value = next((v for v in value if isinstance(v, dict)), {})
+    return set(value) if isinstance(value, dict) else set()
+
+
+def _schema_check(r, names, base, probe):
+    """One API or file relationship against the producer's deployment, by GET only."""
+    what = f"{r['kind']} schema from {names.get(r.get('producer'))}"
+    detail = r.get("detail") or {}
+    path = str(detail.get("path") or "")
+    if r["kind"] == "api":
+        method = str(detail.get("method") or "").upper()
+        if method not in ("GET", "HEAD"):
+            return {"what": what, "status": "not-checked",
+                    "notes": f"{method or 'the call'} {path} changes the producer's data, so Verify does not send it; "
+                             "only GET calls are read live"}
+        if not detail.get("response"):
+            return {"what": what, "status": "not-checked", "notes": "the contract lists no response fields"}
+        if "{" in path or re.search(r"/\d+(/|$)", path):
+            return {"what": what, "status": "not-checked",
+                    "notes": f"{path} names one record; give a path without an identifier to check against"}
+    else:
+        if not path.startswith("/"):
+            return {"what": what, "status": "not-checked",
+                    "notes": "the contract gives no download address (`detail.path`) for the file; an export "
+                             "made by a button is not read"}
+        if not detail.get("columns"):
+            return {"what": what, "status": "not-checked", "notes": "the contract lists no columns"}
+    got = probe.get(base.rstrip("/") + path)
+    if got is None:
+        return {"what": what, "status": "not-checked", "notes": f"{path} did not answer"}
+    status, _ctype, body = got
+    if status != 200:
+        return {"what": what, "status": "not-checked",
+                "notes": f"{path} answered {status} (a page that needs sign-in or data is not read)"}
+    if r["kind"] == "api":
+        try:
+            seen = _fields(json.loads(body))
+        except ValueError:
+            return {"what": what, "status": "fail", "notes": f"{path} did not answer with JSON"}
+        if not seen:
+            return {"what": what, "status": "not-checked", "notes": f"{path} answered with no record to read"}
+        want = [f for f in detail["response"] if isinstance(f, str)]
+        missing = [f for f in want if f not in seen]
+        return ({"what": what, "status": "fail", "notes": f"{path} lacks the response field(s) {', '.join(missing)}"}
+                if missing else
+                {"what": what, "status": "pass", "notes": f"GET {path} answers with {', '.join(want)}"})
+    import csv
+    import io
+
+    header = next(csv.reader(io.StringIO(body.decode("utf-8", "replace"))), [])
+    want = [c for c in detail["columns"] if isinstance(c, str)]
+    missing = [c for c in want if c not in header]
+    return ({"what": what, "status": "fail", "notes": f"{path} lacks the column(s) {', '.join(missing)}"} if missing else
+            {"what": what, "status": "pass", "notes": f"{path} has the columns {', '.join(want)}"})
+
+
+def _down_result(r, names, row, consumer_url, probe):
+    """Stop the producer, read the consumer's own path, put the producer back."""
+    what = f"when {names.get(r.get('producer'))} is down"
+    expected = r.get("when_down") or "not written"
+    check = r.get("down_check") or {}
+
+    def unchecked(why):
+        return {"what": what, "status": "not-checked", "notes": f"{expected} ({why})"}
+
+    if not check.get("path") or not (check.get("contains") or check.get("status")):
+        return unchecked("no check written: give a path of this application and the message or status it shows")
+    if not row["lab_url"]:
+        return unchecked("the producer has no lab agent URL, so it cannot be stopped")
+    if not consumer_url:
+        return unchecked("this application has no deployment to read")
+    try:
+        with probe.down(row["lab_url"]):
+            got = probe.get(consumer_url.rstrip("/") + check["path"])
+    except Cannot as exc:
+        return unchecked(str(exc))
+    if got is None:
+        return {"what": what, "status": "fail", "notes": f"{check['path']} did not answer while the producer was down"}
+    status, _ctype, body = got
+    text = body.decode("utf-8", "replace")
+    problems = []
+    if check.get("status") and status != check["status"]:
+        problems.append(f"answered {status}, expected {check['status']}")
+    if check.get("contains") and check["contains"].lower() not in text.lower():
+        problems.append(f"did not show “{check['contains']}”")
+    return ({"what": what, "status": "fail", "notes": f"{check['path']} {' and '.join(problems)}"} if problems else
+            {"what": what, "status": "pass",
+             "notes": f"with the producer stopped, {check['path']} shows what the contract says"})
+
+
+def verify(db, manifest, app_id, deployed_commit, probe=None) -> list[dict]:
     """What Verify can check of a package's interface contracts against the deployments:
     [{what, status (pass | fail | blocked | not-checked), notes}]. A shared identifier this
     application uses must be one its producer makes (fail otherwise: it holds Tested); each
     producer this application consumes from must have a verified deployment that answers (blocked
     otherwise: the cross-application replay cannot run, a peer being down is not this release's
-    fault). What a consumer does when its producer is down needs the producer stopped, and the API
-    and file schemas a live exchange: those are reported as not checked."""
+    fault).
+
+    Where it is safe: an API relationship by GET is read from the producer's deployment and its
+    response fields compared; a file with a download address has its columns compared; and where
+    the owner wrote a `down_check` the producer's lab agent is given an all-503 condition, the
+    consumer's path is read, and the condition removed again. Everything else (a call that
+    changes data, a file made by a button, a missing lab agent or check, a page behind sign-in)
+    stays `not-checked` with the reason; never `pass`."""
+    probe = probe or LiveProbe()
     out = []
+    consumer = db.execute(
+        "SELECT deployments.url FROM deployments JOIN releases ON releases.id = deployments.release_id "
+        "WHERE releases.app_id = ? AND deployments.verification = 'verified' ORDER BY releases.id DESC LIMIT 1",
+        (app_id,)).fetchone()
     for c in manifest.get("interfaces") or []:
         names = {a.get("id"): a.get("name") for a in c.get("apps") or []}
         for i in c.get("identifiers") or []:
@@ -392,13 +585,14 @@ def verify(db, manifest, app_id, deployed_commit) -> list[dict]:
             out.append({"what": f"shared identifier {i.get('name')}", "status": "pass" if ok else "fail",
                         "notes": (f"produced by {names.get(i.get('producer'))} with the value {i.get('value')}" if ok else
                                   f"{names.get(i.get('producer'), 'no application')} never produces it")})
-        producers = []
+        producers, rows = [], {}
         for r in c.get("relationships") or []:
             if r.get("consumer") == app_id and r.get("producer") not in producers:
                 producers.append(r.get("producer"))
         for producer in producers:
             row = db.execute(
-                "SELECT deployments.url FROM deployments JOIN releases ON releases.id = deployments.release_id "
+                "SELECT deployments.url, apps.lab_url FROM deployments "
+                "JOIN releases ON releases.id = deployments.release_id JOIN apps ON apps.id = releases.app_id "
                 "WHERE releases.app_id = ? AND deployments.verification = 'verified' ORDER BY releases.id DESC LIMIT 1",
                 (producer,)).fetchone()
             name = names.get(producer, f"application {producer}")
@@ -409,12 +603,20 @@ def verify(db, manifest, app_id, deployed_commit) -> list[dict]:
             elif deployed_commit(row["url"]) is None:
                 out.append({"what": f"peer {name}", "status": "blocked", "notes": f"{row['url']} does not answer"})
             else:
+                rows[producer] = row
                 out.append({"what": f"peer {name}", "status": "pass", "notes": f"{row['url']} answers"})
         for r in c.get("relationships") or []:
-            if r.get("consumer") == app_id:
+            if r.get("consumer") != app_id:
+                continue
+            row = rows.get(r.get("producer"))
+            if row is None:
                 out.append({"what": f"when {names.get(r.get('producer'))} is down", "status": "not-checked",
-                            "notes": (r.get("when_down") or "not written") + " (needs the producer stopped)"})
+                            "notes": (r.get("when_down") or "not written") + " (the producer is not running)"})
                 if r.get("kind") in ("api", "file"):
-                    out.append({"what": f"{r['kind']} schema from {names.get(r.get('producer'))}", "status": "not-checked",
-                                "notes": "needs a live exchange between the two deployments"})
+                    out.append({"what": f"{r['kind']} schema from {names.get(r.get('producer'))}",
+                                "status": "not-checked", "notes": "the producer is not running"})
+                continue
+            if r.get("kind") in ("api", "file"):
+                out.append(_schema_check(r, names, row["url"], probe))
+            out.append(_down_result(r, names, row, consumer["url"] if consumer else None, probe))
     return out

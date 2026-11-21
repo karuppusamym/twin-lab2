@@ -12,6 +12,10 @@ the merged pull requests.
 
 ### Added
 
+- Package format 3 leftovers: the desktop picture comparison masks the twin label (title-bar text and the
+  `TwinAppLabel` footer); Verify checks app-to-app contracts (GET API response fields, file columns, and the
+  peer-down message with the producer's lab agent held at 503, always removed afterwards); approved visual
+  baselines become required visual states in Verify (reported-only without them).
 - Recorder contract 1.8.0: completeness in separate dimensions (channel availability, event
   detail, screen/state coverage, network evidence), plus the portal's owner-reviewed scope. The
   recording page and the recorder's send review show them; the package validator counts an

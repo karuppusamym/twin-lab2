@@ -568,11 +568,11 @@ class VisualTest(unittest.TestCase):
     def test_verify_generates_a_report_only_template(self):
         folder = web_recording(self.work / "r1" / "web")
         runner = independent.TwinLabChecks(recordings=self.work)
-        path, how = runner._visual(folder, self.work)
+        path, how, _notes = runner._visual(folder, self.work)
         self.assertEqual(how, "generated")
         self.assertFalse(any(s["required"] for s in yaml.safe_load(path.read_text(encoding="utf-8"))["states"]))
         (folder / "visual.yaml").write_text("version: 1\nstates: []\n", encoding="utf-8")
-        self.assertEqual(runner._visual(folder, self.work), (None, "declared"))
+        self.assertEqual(runner._visual(folder, self.work), (None, "declared", []))
 
     def test_the_visual_dimension(self):
         states = [{"id": "after-step-1", "status": "PASS", "required": False, "viewport": "1258x570", "compared": 10, "ratio": 0.0},
