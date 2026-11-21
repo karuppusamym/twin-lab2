@@ -111,7 +111,10 @@ def web_channel_missing() -> str | None:
         from playwright._impl._driver import compute_driver_executable
     except ImportError:
         return "the web channel is not part of this build"
-    node, cli = compute_driver_executable()
+    try:
+        node, cli = compute_driver_executable()
+    except Exception:  # noqa: BLE001 - Playwright raises when the driver (node.exe) is not there
+        node = cli = ""
     if not (Path(node).is_file() and Path(cli).is_file()):
         return ("the web channel is not installed on this PC (the installer's WebChannel feature): "
                 "only desktop and mainframe applications can be recorded")  # fmt: skip
