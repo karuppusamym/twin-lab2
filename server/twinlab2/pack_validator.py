@@ -33,12 +33,21 @@ WEIGHT = {"critical": 3, "important": 2, "nice": 1}
 
 SECTIONS = {
     "scenarios": "Scenarios",
+    "behaviour": "Business behaviour beyond the happy path",
     "screens": "Screens and controls",
     "navigation": "Navigation",
     "data": "Data",
     "access": "Roles and sign-in",
     "surface": "Surface specifics",
     "visuals": "Visuals and deployment",
+}
+
+# how a release is verified, per dimension: each item counts toward one (see `dimension_of`)
+DIMENSIONS = {
+    "behavioural": "Behavioural (scenarios, outcomes, failure paths)",
+    "structural": "Structural (screens, controls, states, navigation)",
+    "visual": "Visual (appearance against approved baselines)",
+    "deployment": "Deployment (data, target, version endpoint)",
 }
 
 # what an owner can do about a gap: the page (and its section) and the action
@@ -94,6 +103,30 @@ SPEC: tuple[Item, ...] = (
          "Required and numeric fields reject input with a message; the replay compares dialogs' messages word by "
          "word, so the builder needs the exact texts.", "scenarios",
          "Quote the messages in the failure cases (for example: Amount empty → \"Enter an amount\")."),
+    # -- business behaviour beyond the happy path ----------------------------------------------------
+    # None of these is checked by the replay unconditionally (acceptance cases such as a reload or a
+    # fresh context are declared per recording), so they are important, not critical.
+    Item("behaviour.invalid_input", "behaviour", "Invalid input", "important", ALL,
+         "A recording shows valid entries; what the app refuses (empty, wrong format, out of range) is invisible "
+         "unless written down.", "scenarios", "Add failure cases for invalid input, with what the app shows."),
+    Item("behaviour.permissions", "behaviour", "Permissions", "important", ALL,
+         "Who may see or change what is not in a recording made by one person.", "scenarios",
+         "Say which roles may do each scenario and what others see (read-only, hidden, refused)."),
+    Item("behaviour.empty_results", "behaviour", "Empty results", "important", ALL,
+         "Lists and searches were recorded with rows; the copy needs to know what an empty result shows.",
+         "scenarios", "Add a failure case or scenario for a search or list with no results."),
+    Item("behaviour.retries", "behaviour", "Retries and unavailable services", "important", ALL,
+         "What happens when a save times out or a service is down decides whether a retry duplicates data.",
+         "scenarios", "Say what the app does when saving fails or times out, and whether it can be retried."),
+    Item("behaviour.duplicates", "behaviour", "Duplicates", "important", ALL,
+         "Creating the same record twice is refused, merged or allowed; the recording shows one creation.",
+         "scenarios", "Add a failure case for creating a record that already exists."),
+    Item("behaviour.cancellation", "behaviour", "Cancellation", "important", ALL,
+         "The screens have Cancel or Close; whether cancelling discards, keeps a draft or asks is not recorded.",
+         "scenarios", "Say what Cancel or Close does on the scenario's screens."),
+    Item("behaviour.persistence", "behaviour", "Persistence", "important", ALL,
+         "What was saved must still be there after a reload or a restart; acceptance cases can check a reload.",
+         "scenarios", "Say in the expected result what is still shown after a reload or restart."),
     # -- screens --------------------------------------------------------------------------------
     Item("screens.structure", "screens", "Screen structure (recorder contract 1.3)", "critical", ALL,
          "The replay compares every recorded screen's interactive elements by tag, id and classes after every step; "
@@ -117,6 +150,14 @@ SPEC: tuple[Item, ...] = (
     Item("screens.grids", "screens", "Grid columns", "important", ALL,
          "Tables and lists are rebuilt with their column headers; a grid without headers is guessed.", "evidence",
          "Attach a screenshot or layout notes of the grid (kind Screen or Utility)."),
+    Item("screens.withheld", "screens", "Identifiers withheld as possible data", "important", ALL,
+         "Identifiers, classes and labels that could be data (with a digit, an @, too long) are left out of the "
+         "structure; the replay compares by them, so a stable id such as `button1` or `addressLine2` is lost.",
+         "evidence", "Check those screens in a screenshot, and name the withheld controls in layout notes "
+                     "(kind Utility).",
+         capture_gap="The recorder and the portal drop every identifier with a digit and keep only a count "
+                     "(`withheld`), never the names: twinlab2_contract/structure.py `ident()`/`plain()`, "
+                     "twinlab2_recorder/workstation/flow.py `ident()`/`plain()`, workstation/structure.py."),
     # -- navigation -----------------------------------------------------------------------------
     Item("navigation.entry", "navigation", "Entry screen", "critical", ALL,
          "The replay opens the app at the first step's screen; without it the copy has no known start.", "flows",
@@ -182,6 +223,19 @@ SPEC: tuple[Item, ...] = (
     Item("visuals.screens", "visuals", "Screenshots or layout notes", "important", ALL,
          "Structure says what is on a screen, not where; visual checks compare the copy's picture.", "evidence",
          "Attach screenshots (kind Screen) and mark them reviewed or synthetic."),
+    Item("visuals.per_screen", "visuals", "An approved screenshot of every screen (visual baseline)", "important", ALL,
+         "The visual comparison (replay/visual.py) needs a baseline per compared state; a screen without one "
+         "cannot be judged on appearance.", "evidence",
+         "Attach an owner-approved screenshot of each screen the scenarios touch (kind Screen).",
+         capture_gap="The recorder's own screenshots (the replay's default baselines) stay on the recording "
+                     "machine and never reach the pack; the owner attaches approved ones."),
+    Item("visuals.states", "visuals", "Screenshots of special states (disabled, selected, error)", "important", ALL,
+         "A disabled button, a selected row or an error message looks different; one picture per screen shows "
+         "only one state.", "evidence",
+         "Attach screenshots of the disabled, selected and error states (kind Screen)."),
+    Item("visuals.style", "visuals", "Fonts, colours and spacing", "nice", ALL,
+         "Without them the copy looks generic even when its structure matches.", "evidence",
+         "Attach style notes (kind Utility, title with \"style\"), or name fonts and colours in a scenario's notes."),
     Item("deploy.target", "visuals", "Deployment target", "critical", ALL,
          "The builder commits the deployment files of the target (OpenShift, or a local install for desktop).",
          "setup", "Set the target platform."),
@@ -202,6 +256,19 @@ SIGNIN = re.compile(r"\b(password|passwort|sign[ -]?in|log[ -]?in|logon|anmelden
 WHO = re.compile(r"\b(role|signed in|logged in|sign in|log in|as (?:an? )?\w+|user|admin|clerk|manager)\b", re.I)
 MESSAGE = re.compile(r"[\"“”'‘’«»]|\b(message|error|shows?|says?|warn\w*)\b", re.I)
 FIELD_VALUE = re.compile(r"^[^:=]{1,60}\s*[:=]\s*\S")
+STYLE = re.compile(r"\b(style|font|colou?r|spacing|theme|palette|css)\b", re.I)
+CANCEL = re.compile(r"\b(cancel|close|abbrechen|back)\b", re.I)
+BEHAVIOUR = {  # spec item -> words that show a scenario covers it
+    "behaviour.invalid_input": r"invalid|wrong|empty|missing|required|refus|reject|format|too (long|short|large|small)"
+                               r"|out of range|not a (number|date)|without",
+    "behaviour.permissions": r"permission|not allowed|forbidden|denied|unauthori[sz]|\brole|read-only|only (an? |the )?"
+                             r"\w+s? (can|may)",
+    "behaviour.empty_results": r"no results?|empty|nothing (found|shown)|none found|no matches|zero rows|no \w+ (found|shown)",
+    "behaviour.retries": r"retry|retries|again|time ?out|timed out|unavailable|offline|try later|resubmit|connection",
+    "behaviour.duplicates": r"duplicate|already exists|twice|unique|same (number|name|id)",
+    "behaviour.cancellation": r"cancel|abort|discard|close without|back without",
+    "behaviour.persistence": r"reload|refresh|persist|restart|reopen|still (there|shown|listed)|after (a )?(log ?out|sign ?out)",
+}
 LINK_GONE = re.compile(r"^Linked event (\S+) is no longer selected")
 
 
@@ -246,7 +313,8 @@ class _Checker:
     def gap(self, item_id, details):
         item = BY_ID[item_id]
         label, href = PAGES[item.page]
-        out = {"item": item.id, "title": item.title, "section": item.section, "severity": item.severity,
+        out = {"item": item.id, "title": item.title, "section": item.section, "dimension": dimension_of(item),
+               "severity": item.severity,
                "why": item.why, "fix": {"page": label, "href": href.format(app=self.app_id or ""),
                                         "action": item.action},
                "details": [d for d in details if d][:20]}
@@ -309,6 +377,47 @@ class _Checker:
         why = "Required or numeric fields are on the scenarios' screens, but " if validated else ""
         return [why + "no failure case quotes the message the app shows."]
 
+    # -- business behaviour ------------------------------------------------------------------------
+    def text(self):
+        return " ".join(" ".join([s.get("name") or "", s.get("starting_conditions") or "", s.get("expected_result") or "",
+                                  s.get("notes") or "", *(s.get("actions") or []), *(s.get("failure_cases") or [])])
+                        for s in self.scenarios)
+
+    def typed(self):
+        return any(e.get("action") in TYPING for e in self.events)
+
+    def behaviour(self, item, applies, what):
+        if not applies:
+            return "n/a"
+        if re.search(BEHAVIOUR[item], self.text(), re.I):
+            return []
+        return [f"No scenario or failure case says {what}."]
+
+    def check_behaviour_invalid_input(self):
+        return self.behaviour("behaviour.invalid_input", self.typed(), "what happens with invalid input")
+
+    def check_behaviour_permissions(self):
+        return self.behaviour("behaviour.permissions", self.signin_seen() or re.search(r"\brole", self.text(), re.I),
+                              "who may do it and what others see")
+
+    def check_behaviour_empty_results(self):
+        grids = any(st.get("grids") for n, sc in self.screens.items() if n in self.touched for st in sc.get("states") or [])
+        search = any(re.search(r"search|find|filter|such", str(e.get("label") or ""), re.I) for e in self.events)
+        return self.behaviour("behaviour.empty_results", grids or search, "what an empty list or search shows")
+
+    def check_behaviour_retries(self):
+        return self.behaviour("behaviour.retries", self.typed(), "what happens when saving fails or times out")
+
+    def check_behaviour_duplicates(self):
+        return self.behaviour("behaviour.duplicates", self.typed(), "what happens with a record that already exists")
+
+    def check_behaviour_cancellation(self):
+        controls = any(CANCEL.search(str(c.get("label") or c.get("id") or "")) for _, c in _controls(self.screens, self.touched))
+        return self.behaviour("behaviour.cancellation", controls, "what Cancel or Close does")
+
+    def check_behaviour_persistence(self):
+        return self.behaviour("behaviour.persistence", self.typed(), "what is still there after a reload or restart")
+
     # -- screens -------------------------------------------------------------------------------
     def check_screens_structure(self):
         return [] if self.screens else ["The package has no screen structure: the recording was made before "
@@ -357,6 +466,15 @@ class _Checker:
         return sorted({f"A grid on `{name}` has no column headers." for name, g in grids
                        if not any(g.get("columns") or [])})
 
+    def check_screens_withheld(self):
+        out = []
+        for name in sorted(self.touched & set(self.screens)):
+            for i, st in enumerate(self.screens[name].get("states") or [], 1):
+                if st.get("withheld"):
+                    out.append(f"Screen `{name}`, state {i}: {st['withheld']} identifier(s), class(es) or label(s) "
+                               "withheld as possible data.")
+        return out
+
     # -- navigation ----------------------------------------------------------------------------
     def check_navigation_entry(self):
         return self.each(lambda s: not s.get("events") or s["events"][0].get("screen"),
@@ -402,11 +520,13 @@ class _Checker:
         return [] if model.get("tables") else ["No reviewed DDL is attached: the builder infers the tables."]
 
     # -- access --------------------------------------------------------------------------------
-    def check_access_signin(self):
+    def signin_seen(self):
         seen = any(c.get("type") == "password" or SIGNIN.search(str(c.get("label") or c.get("id") or ""))
                    for _, c in _controls(self.screens))
-        seen = seen or any(SIGNIN.search(str(e.get("label") or e.get("screen") or "")) for e in self.events)
-        if not seen:
+        return seen or any(SIGNIN.search(str(e.get("label") or e.get("screen") or "")) for e in self.events)
+
+    def check_access_signin(self):
+        if not self.signin_seen():
             return "n/a"
         told = any(WHO.search(s.get("starting_conditions") or "") for s in self.scenarios)
         return [] if told else ["The recording shows a sign-in, but no scenario says who is signed in."]
@@ -477,6 +597,34 @@ class _Checker:
         found = any(a.get("kind") == "Screen" for a in self.attachments)
         return [] if found else ["No reviewed screenshot or layout note is attached."]
 
+    def screenshots(self):
+        return [a for a in self.attachments if a.get("kind") == "Screen"]
+
+    def check_visuals_per_screen(self):
+        need, have = len(self.touched), len(self.screenshots())
+        if not need:
+            return "n/a"
+        return [] if have >= need else [f"{need} screen(s) are touched by the scenarios, {have} screenshot(s) are attached."]
+
+    def check_visuals_states(self):
+        special = sum(1 for n, sc in self.screens.items() if n in self.touched for st in sc.get("states") or []
+                      if any(c.get("enabled") is False or c.get("selected") or c.get("checked") for c in st.get("controls") or [])
+                      or any(re.search(r"error|alert|message|invalid", str(r.get("id") or r.get("name") or ""), re.I)
+                             for r in st.get("regions") or []))
+        errors = any(s.get("failure_cases") for s in self.scenarios)
+        if not special and not errors:
+            return "n/a"
+        need = len(self.touched) + max(special, 1 if errors else 0)
+        have = len(self.screenshots())
+        return [] if have >= need else [f"{special} recorded state(s) show disabled, selected or error controls"
+                                        + (" and failure cases are written" if errors else "")
+                                        + f"; {have} screenshot(s) cover {len(self.touched)} screen(s)."]
+
+    def check_visuals_style(self):
+        noted = any(STYLE.search(str(a.get("title") or "")) for a in self.attachments) or \
+            any(STYLE.search(s.get("notes") or "") for s in self.scenarios)
+        return [] if noted else ["No style notes (fonts, colours, spacing)."]
+
     def check_deploy_target(self):
         deploy = (self.data.get("target") or {}).get("deploy") or {}
         if deploy.get("kind") == "local":
@@ -513,12 +661,33 @@ def validate(data: dict, files: dict | None = None) -> dict:
                          "present": [i.id for i in items if i.id not in missing],
                          "missing": [i.id for i in items if i.id in missing],
                          "not_applicable": [i for i in checker.na if BY_ID[i].section == sid]})
+    dimensions = []
+    for did, title in DIMENSIONS.items():
+        items = [i for i in SPEC if dimension_of(i) == did and checker.surface in i.surfaces and i.id not in checker.na]
+        have = sum(WEIGHT[i.severity] for i in items if i.id not in missing)
+        weight = sum(WEIGHT[i.severity] for i in items)
+        dimensions.append({"id": did, "title": title, "score": round(100 * have / weight) if weight else 100,
+                           "present": [i.id for i in items if i.id not in missing],
+                           "missing": [i.id for i in items if i.id in missing],
+                           "not_applicable": [i for i in checker.na if dimension_of(BY_ID[i]) == did]})
     order = {s: n for n, s in enumerate(SEVERITIES)}
     gaps = sorted(checker.gaps, key=lambda g: (order[g["severity"]], list(BY_ID).index(g["item"])))
     counts = {s: sum(1 for g in gaps if g["severity"] == s) for s in SEVERITIES}
     return {"spec_version": SPEC_VERSION, "surface": checker.surface, "passed": counts["critical"] == 0,
             "score": round(100 * total_have / total_all) if total_all else 100, "sections": sections,
+            "dimensions": dimensions,
             "gaps": gaps, "counts": counts}
+
+
+def dimension_of(item) -> str:
+    """The verification dimension an item serves: behavioural, structural, visual or deployment."""
+    if item.section == "visuals":
+        return "deployment" if item.id.startswith("deploy.") else "visual"
+    if item.section in ("scenarios", "behaviour", "access") or item.id in ("data.examples", "data.shapes"):
+        return "behavioural"
+    if item.id in ("data.backend", "data.model"):
+        return "deployment"
+    return "structural"
 
 
 def critical(result) -> list[dict]:
@@ -536,7 +705,9 @@ def markdown(result, known_gaps=None) -> list[str]:
            f"Checked against the package completeness spec v{result['spec_version']} for a {result['surface']} "
            f"application: {result['score']}% "
            + ("(every critical item is present)." if result["passed"] else "(critical items are missing)."),
-           "Where an item is missing, say in BUILD-NOTES.md what you assumed instead.", ""]
+           "Where an item is missing, say in BUILD-NOTES.md what you assumed instead.", "",
+           "By verification dimension: " + "; ".join(f"{d['id']} {d['score']}%" for d in result["dimensions"]) + ".",
+           ""]
     for section in result["sections"]:
         if not section["present"] and not section["missing"]:
             continue
@@ -560,5 +731,6 @@ def summary(result) -> dict:
     return {"spec_version": result["spec_version"], "surface": result["surface"], "passed": result["passed"],
             "score": result["score"],
             "sections": {s["id"]: s["score"] for s in result["sections"]},
+            "dimensions": {d["id"]: d["score"] for d in result["dimensions"]},
             "missing": [{"item": g["item"], "severity": g["severity"], "details": g["details"]}
                         for g in result["gaps"]]}

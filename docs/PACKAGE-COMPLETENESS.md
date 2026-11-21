@@ -53,43 +53,68 @@ Everything the fidelity replay (`server/twinlab2/replay/`) and the release check
 
 ## The items
 
-| Item | What | Surfaces | Severity | Why it matters |
-|---|---|---|---|---|
-| `scenario.present` | At least one business scenario | all | critical | The builder builds the scenarios and the release checks replay them; without one there is nothing to build or check. |
-| `scenario.events` | Each scenario links recorded events | all | critical | A scenario is checked by replaying its recorded steps; one without events can never pass the replay. |
-| `scenario.links_current` | Every linked event is still selected | all | critical | A linked event that is no longer selected is not in the pack, so its step cannot be rebuilt or replayed. |
-| `scenario.expected` | Expected result of each scenario | all | critical | The acceptance cases judge the business outcome against it: a structure-only copy can show a wrong count, title or message and still look right. |
-| `scenario.starting` | Starting conditions of each scenario | all | important | The replay starts from a declared baseline (signed in, which records exist); without it the builder guesses the seed data. |
-| `scenario.actions` | Actions written by the owner | all | important | Recorded events say what was clicked, not why; the owner's actions tell the builder the intent of each step. |
-| `scenario.failures` | Failure cases | all | important | What the app does with wrong input is not in a happy-path recording; without it the copy accepts everything. |
-| `scenario.messages` | Validation and error messages the app shows | all | important | Required and numeric fields reject input with a message; the replay compares dialogs' messages word by word, so the builder needs the exact texts. |
-| `screens.structure` | Screen structure (recorder contract 1.3) | all | critical | The replay compares every recorded screen's interactive elements by tag, id and classes after every step; without the structure the builder cannot know them. |
-| `screens.referenced` | Every screen the scenarios touch | all | critical | Each screen a scenario's step lands on is compared with the rebuilt one; a missing screen fails that step. |
-| `screens.controls` | Controls of each screen: kind, identifier or label, order | all | critical | The replay finds each step's target among the controls and counts every interactive element; a control without kind or identifier cannot be rebuilt to match. |
-| `screens.states` | Each referenced event resolves to a screen state | all | critical | After every step the replay compares the screen state the recording shows (enabled, read-only, required, visible, checked); an event with no state has nothing to compare against. |
-| `screens.targets` | Each step's control or label | all | critical | The replay locates each step's target and it must match exactly one element; a click or entry without a control or label cannot be located. |
-| `screens.grids` | Grid columns | all | important | Tables and lists are rebuilt with their column headers; a grid without headers is guessed. |
-| `navigation.entry` | Entry screen | all | critical | The replay opens the app at the first step's screen; without it the copy has no known start. |
-| `navigation.transitions` | Navigation between screens | web, desktop | important | The scenarios move between screens; the transitions say which action leads where. |
-| `data.examples` | Synthetic values for the steps that type or select | all | critical | A recording keeps no typed value: the replay types the bound synthetic values, and a step that needs one without it blocks the replay. |
-| `data.shapes` | The shape of each example field | all | important | "Field: value" lines tell the builder which field takes which format; the replay compares value formats. |
-| `data.backend` | Data backend | all | critical | The demo creates its tables and seed data on this backend and resets to that seed. |
-| `data.model` | Data model (DDL) | all | important | Without DDL the builder infers tables from the screens, and the names will differ from the original. |
-| `access.signin` | Roles and sign-in | all | important | The recording shows a sign-in; the builder needs which roles exist and which one each scenario starts as. |
-| `web.routes` | Routes of the web screens | web | critical | The replay maps each recorded page to the copy by its route; a screen without a route cannot be reached. |
-| `web.api` | API calls (HAR or API description) | web | important | The front end calls an API; method, path template and field shapes come from a reviewed HAR or an API description. |
-| `desktop.toolkit` | Desktop toolkit (WinForms, WPF, Java, …) | desktop | important | Controls, their ControlTypes and keyboard behaviour depend on the toolkit; the builder should use the same one. |
-| `desktop.windows` | Window and dialog hierarchy | desktop | important | Which dialogs are modal and which window owns them changes how the copy behaves. |
-| `desktop.menus` | Menus used by the scenarios | desktop | important | A menu step needs its menu path; without menu controls the builder guesses the menu bar. |
-| `desktop.shortcuts` | Keyboard shortcuts | desktop | important | A key step without its key cannot be rebuilt or replayed. |
-| `mainframe.layout` | Field positions and lengths | mainframe | critical | A 3270 screen is a fixed grid: each field's row, column and length is the screen. |
-| `mainframe.attributes` | Field attributes (protected, hidden, numeric) | mainframe | important | Protected, non-display and numeric fields behave differently on the terminal. |
-| `mainframe.aid` | AID keys (Enter, PF keys, Clear) | mainframe | critical | A host transaction moves on an AID key; a step without it cannot be replayed. |
-| `mainframe.flow` | Transaction flow between host screens | mainframe | important | Which AID key on which screen leads to which next screen is the transaction. |
-| `visuals.screens` | Screenshots or layout notes | all | important | Structure says what is on a screen, not where; visual checks compare the copy's picture. |
-| `deploy.target` | Deployment target | all | critical | The builder commits the deployment files of the target (OpenShift, or a local install for desktop). |
-| `deploy.version` | Version endpoint | web, mainframe | critical | The release checks run only against a deployment that reports the built commit at the version endpoint. |
-| `deploy.repository` | Demo repository | all | nice | The deployment files name the demo repository; without it the builder fills it in. |
+| Item | What | Surfaces | Severity | Dimension | Why it matters |
+|---|---|---|---|---|---|
+| `scenario.present` | At least one business scenario | all | critical | behavioural | The builder builds the scenarios and the release checks replay them; without one there is nothing to build or check. |
+| `scenario.events` | Each scenario links recorded events | all | critical | behavioural | A scenario is checked by replaying its recorded steps; one without events can never pass the replay. |
+| `scenario.links_current` | Every linked event is still selected | all | critical | behavioural | A linked event that is no longer selected is not in the pack, so its step cannot be rebuilt or replayed. |
+| `scenario.expected` | Expected result of each scenario | all | critical | behavioural | The acceptance cases judge the business outcome against it: a structure-only copy can show a wrong count, title or message and still look right. |
+| `scenario.starting` | Starting conditions of each scenario | all | important | behavioural | The replay starts from a declared baseline (signed in, which records exist); without it the builder guesses the seed data. |
+| `scenario.actions` | Actions written by the owner | all | important | behavioural | Recorded events say what was clicked, not why; the owner's actions tell the builder the intent of each step. |
+| `scenario.failures` | Failure cases | all | important | behavioural | What the app does with wrong input is not in a happy-path recording; without it the copy accepts everything. |
+| `scenario.messages` | Validation and error messages the app shows | all | important | behavioural | Required and numeric fields reject input with a message; the replay compares dialogs' messages word by word, so the builder needs the exact texts. |
+| `behaviour.invalid_input` | Invalid input | all | important | behavioural | A recording shows valid entries; what the app refuses (empty, wrong format, out of range) is invisible unless written down. |
+| `behaviour.permissions` | Permissions | all | important | behavioural | Who may see or change what is not in a recording made by one person. |
+| `behaviour.empty_results` | Empty results | all | important | behavioural | Lists and searches were recorded with rows; the copy needs to know what an empty result shows. |
+| `behaviour.retries` | Retries and unavailable services | all | important | behavioural | What happens when a save times out or a service is down decides whether a retry duplicates data. |
+| `behaviour.duplicates` | Duplicates | all | important | behavioural | Creating the same record twice is refused, merged or allowed; the recording shows one creation. |
+| `behaviour.cancellation` | Cancellation | all | important | behavioural | The screens have Cancel or Close; whether cancelling discards, keeps a draft or asks is not recorded. |
+| `behaviour.persistence` | Persistence | all | important | behavioural | What was saved must still be there after a reload or a restart; acceptance cases can check a reload. |
+| `screens.structure` | Screen structure (recorder contract 1.3) | all | critical | structural | The replay compares every recorded screen's interactive elements by tag, id and classes after every step; without the structure the builder cannot know them. |
+| `screens.referenced` | Every screen the scenarios touch | all | critical | structural | Each screen a scenario's step lands on is compared with the rebuilt one; a missing screen fails that step. |
+| `screens.controls` | Controls of each screen: kind, identifier or label, order | all | critical | structural | The replay finds each step's target among the controls and counts every interactive element; a control without kind or identifier cannot be rebuilt to match. |
+| `screens.states` | Each referenced event resolves to a screen state | all | critical | structural | After every step the replay compares the screen state the recording shows (enabled, read-only, required, visible, checked); an event with no state has nothing to compare against. |
+| `screens.targets` | Each step's control or label | all | critical | structural | The replay locates each step's target and it must match exactly one element; a click or entry without a control or label cannot be located. |
+| `screens.grids` | Grid columns | all | important | structural | Tables and lists are rebuilt with their column headers; a grid without headers is guessed. |
+| `screens.withheld` | Identifiers withheld as possible data | all | important | structural | Identifiers, classes and labels that could be data (with a digit, an @, too long) are left out of the structure; the replay compares by them, so a stable id such as `button1` or `addressLine2` is lost. |
+| `navigation.entry` | Entry screen | all | critical | structural | The replay opens the app at the first step's screen; without it the copy has no known start. |
+| `navigation.transitions` | Navigation between screens | web, desktop | important | structural | The scenarios move between screens; the transitions say which action leads where. |
+| `data.examples` | Synthetic values for the steps that type or select | all | critical | behavioural | A recording keeps no typed value: the replay types the bound synthetic values, and a step that needs one without it blocks the replay. |
+| `data.shapes` | The shape of each example field | all | important | behavioural | "Field: value" lines tell the builder which field takes which format; the replay compares value formats. |
+| `data.backend` | Data backend | all | critical | deployment | The demo creates its tables and seed data on this backend and resets to that seed. |
+| `data.model` | Data model (DDL) | all | important | deployment | Without DDL the builder infers tables from the screens, and the names will differ from the original. |
+| `access.signin` | Roles and sign-in | all | important | behavioural | The recording shows a sign-in; the builder needs which roles exist and which one each scenario starts as. |
+| `web.routes` | Routes of the web screens | web | critical | structural | The replay maps each recorded page to the copy by its route; a screen without a route cannot be reached. |
+| `web.api` | API calls (HAR or API description) | web | important | structural | The front end calls an API; method, path template and field shapes come from a reviewed HAR or an API description. |
+| `desktop.toolkit` | Desktop toolkit (WinForms, WPF, Java, …) | desktop | important | structural | Controls, their ControlTypes and keyboard behaviour depend on the toolkit; the builder should use the same one. |
+| `desktop.windows` | Window and dialog hierarchy | desktop | important | structural | Which dialogs are modal and which window owns them changes how the copy behaves. |
+| `desktop.menus` | Menus used by the scenarios | desktop | important | structural | A menu step needs its menu path; without menu controls the builder guesses the menu bar. |
+| `desktop.shortcuts` | Keyboard shortcuts | desktop | important | structural | A key step without its key cannot be rebuilt or replayed. |
+| `mainframe.layout` | Field positions and lengths | mainframe | critical | structural | A 3270 screen is a fixed grid: each field's row, column and length is the screen. |
+| `mainframe.attributes` | Field attributes (protected, hidden, numeric) | mainframe | important | structural | Protected, non-display and numeric fields behave differently on the terminal. |
+| `mainframe.aid` | AID keys (Enter, PF keys, Clear) | mainframe | critical | structural | A host transaction moves on an AID key; a step without it cannot be replayed. |
+| `mainframe.flow` | Transaction flow between host screens | mainframe | important | structural | Which AID key on which screen leads to which next screen is the transaction. |
+| `visuals.screens` | Screenshots or layout notes | all | important | visual | Structure says what is on a screen, not where; visual checks compare the copy's picture. |
+| `visuals.per_screen` | An approved screenshot of every screen (visual baseline) | all | important | visual | The visual comparison (replay/visual.py) needs a baseline per compared state; a screen without one cannot be judged on appearance. |
+| `visuals.states` | Screenshots of special states (disabled, selected, error) | all | important | visual | A disabled button, a selected row or an error message looks different; one picture per screen shows only one state. |
+| `visuals.style` | Fonts, colours and spacing | all | nice | visual | Without them the copy looks generic even when its structure matches. |
+| `deploy.target` | Deployment target | all | critical | deployment | The builder commits the deployment files of the target (OpenShift, or a local install for desktop). |
+| `deploy.version` | Version endpoint | web, mainframe | critical | deployment | The release checks run only against a deployment that reports the built commit at the version endpoint. |
+| `deploy.repository` | Demo repository | all | nice | deployment | The deployment files name the demo repository; without it the builder fills it in. |
+
+**Business behaviour beyond the happy path** (`behaviour.*`): invalid input, permissions, empty
+results, retries, duplicates, cancellation and persistence. A recording shows what one person did
+once; these are what the copy must also do. Each applies only when the scenarios make it relevant
+(typing or saving for invalid input, retries, duplicates and persistence; a sign-in or a role for
+permissions; a grid or search for empty results; a Cancel or Close control for cancellation) and is
+present when a scenario's text covers it. They are important, not critical: the replay checks a
+reload or a fresh context only where an acceptance case declares one, never unconditionally.
+
+**Verification dimensions.** Every item serves one dimension of release verification, and the
+validator scores each (`dimensions`): behavioural (scenarios, outcomes, failure paths, examples,
+roles), structural (screens, controls, states, navigation, surface specifics), visual (approved
+screenshots per screen and per special state, style) and deployment (data backend and model,
+target, version endpoint, repository). A release's verified scope can then be stated per dimension.
 
 Each gap the validator reports also names the page that fixes it (Scenarios, Recorded flows,
 Uploaded evidence, Recordings, Data and deployment, Git repository) and the action to take there,
@@ -128,6 +153,8 @@ pages. The validator still reports them (with `capture_gap` set) so the builder 
 |---|---|---|
 | `web.api` | The recorder keeps network evidence on the recording machine; API calls reach the pack only from an attached, reviewed HAR (redacted), never as a summary of methods, path templates and field shapes. | `recorder/twinlab2_recorder/workstation/` (network evidence), `server/twinlab2/buildpack.py` |
 | `desktop.windows` | One screen per window, without its owner window or whether it is modal. | `recorder/twinlab2_recorder/workstation/structure.py` (`desktop_state`), `contract/twinlab2_contract/structure.py` |
+| `screens.withheld` | Identifiers, classes and labels that could be data (any digit, an `@`, longer than 40 characters) are dropped, so stable ids such as `button1` or `addressLine2` are lost too. Only a count reaches the portal (`withheld` per state), never the names, so the preview shows how many per screen and state, not which. | `contract/twinlab2_contract/structure.py` (`ident()`, `plain()`, `clean_state`), `recorder/twinlab2_recorder/workstation/flow.py` (`ident()`, `plain()`), `recorder/twinlab2_recorder/workstation/structure.py` |
+| `visuals.per_screen` | The recorder's screenshots (the replay's default visual baselines, `replay/visual.py`) stay on the recording machine; the pack has only screenshots the owner attaches and approves. | `recorder/twinlab2_recorder/workstation/` (pictures), `server/twinlab2/buildpack.py` |
 | `mainframe.attributes` | Only unprotected fields are sent; protected output fields appear only as the label of the next field. | `recorder/twinlab2_recorder/workstation/structure.py` (`mainframe_state`) |
 
 Fixed in the pack builder with this spec (it had them and did not copy them):

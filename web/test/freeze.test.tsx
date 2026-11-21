@@ -73,12 +73,13 @@ describe("freezing an application's builder package", () => {
     expect(gap).toHaveTextContent("important");
     expect(gap).toHaveTextContent("Attach the DDL (.sql, kind Database)");
     expect(screen.getByRole("link", { name: "Uploaded evidence" })).toHaveAttribute("href", "/apps/1#examples");
+    expect(screen.getByText(/By verification dimension/)).toHaveTextContent("deployment 78%");
     expect(screen.getByRole("button", { name: "Freeze as revision 3" })).toBeInTheDocument();
   });
 
   it("freezes a package with critical gaps only with a written reason", async () => {
     const draft = example<Schemas["PackageDraft"]>("previewPackageDraft");
-    const gap: Schemas["CompletenessGap"] = { item: "scenario.expected", title: "Expected result of each scenario", section: "scenarios", severity: "critical",
+    const gap: Schemas["CompletenessGap"] = { item: "scenario.expected", title: "Expected result of each scenario", section: "scenarios", dimension: "behavioural", severity: "critical",
       why: "The acceptance cases judge the business outcome against it.", details: ["Scenario \"Invoice an order\" does not state its expected result."],
       fix: { page: "Scenarios", href: "/apps/1#scenarios", action: "Write the expected result." } };
     draft.completeness = { ...draft.completeness, passed: false, counts: { critical: 1, important: 1, nice: 0 }, gaps: [gap, ...draft.completeness.gaps] };

@@ -2049,6 +2049,11 @@ export interface components {
             item: string;
             title: string;
             section: string;
+            /**
+             * @description The verification dimension the item serves.
+             * @enum {string}
+             */
+            dimension: "behavioural" | "structural" | "visual" | "deployment";
             /** @enum {string} */
             severity: "critical" | "important" | "nice";
             /** @description Why the builder or the replay needs it. */
@@ -2082,6 +2087,8 @@ export interface components {
             /** @description Present items weighted by severity (critical 3, important 2, nice 1). */
             score: number;
             sections: components["schemas"]["CompletenessSection"][];
+            /** @description The same items scored per verification dimension: behavioural, structural, visual, deployment. */
+            dimensions: components["schemas"]["CompletenessSection"][];
             /** @description Most severe first. */
             gaps: components["schemas"]["CompletenessGap"][];
             counts: components["schemas"]["CompletenessCounts"];

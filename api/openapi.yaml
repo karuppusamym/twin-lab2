@@ -2598,11 +2598,12 @@ components:
         action: { type: string, description: "What to do there." }
     CompletenessGap:
       type: object
-      required: [item, title, section, severity, why, fix, details]
+      required: [item, title, section, dimension, severity, why, fix, details]
       properties:
         item: { type: string, description: "The spec item, e.g. scenario.expected." }
         title: { type: string }
         section: { type: string }
+        dimension: { type: string, enum: [behavioural, structural, visual, deployment], description: "The verification dimension the item serves." }
         severity: { type: string, enum: [critical, important, nice] }
         why: { type: string, description: "Why the builder or the replay needs it." }
         fix: { $ref: "#/components/schemas/CompletenessFix" }
@@ -2628,13 +2629,17 @@ components:
     PackageCompleteness:
       type: object
       description: A package checked against the package completeness spec (server/twinlab2/pack_validator.py).
-      required: [spec_version, surface, passed, score, sections, gaps, counts]
+      required: [spec_version, surface, passed, score, sections, dimensions, gaps, counts]
       properties:
         spec_version: { type: integer }
         surface: { type: string, enum: [web, desktop, mainframe] }
         passed: { type: boolean, description: "No critical item is missing." }
         score: { type: integer, minimum: 0, maximum: 100, description: "Present items weighted by severity (critical 3, important 2, nice 1)." }
         sections: { type: array, items: { $ref: "#/components/schemas/CompletenessSection" } }
+        dimensions:
+          type: array
+          description: "The same items scored per verification dimension: behavioural, structural, visual, deployment."
+          items: { $ref: "#/components/schemas/CompletenessSection" }
         gaps: { type: array, items: { $ref: "#/components/schemas/CompletenessGap" }, description: "Most severe first." }
         counts: { $ref: "#/components/schemas/CompletenessCounts" }
     KnownGap:
@@ -3896,10 +3901,16 @@ components:
             - { id: access, title: Roles and sign-in, score: 100, present: [], missing: [], not_applicable: [access.signin] }
             - { id: surface, title: Surface specifics, score: 100, present: [web.routes, web.api], missing: [], not_applicable: [] }
             - { id: visuals, title: Visuals and deployment, score: 100, present: [visuals.screens, deploy.target, deploy.version, deploy.repository], missing: [], not_applicable: [] }
+          dimensions:
+            - { id: behavioural, title: "Behavioural (scenarios, outcomes, failure paths)", score: 100, present: [scenario.present, scenario.events, scenario.expected], missing: [], not_applicable: [] }
+            - { id: structural, title: "Structural (screens, controls, states, navigation)", score: 100, present: [screens.structure, screens.referenced, screens.controls], missing: [], not_applicable: [] }
+            - { id: visual, title: Visual (appearance against approved baselines), score: 100, present: [visuals.screens], missing: [], not_applicable: [] }
+            - { id: deployment, title: "Deployment (data, target, version endpoint)", score: 78, present: [data.backend, deploy.target, deploy.version], missing: [data.model], not_applicable: [] }
           gaps:
             - item: data.model
               title: Data model (DDL)
               section: data
+              dimension: deployment
               severity: important
               why: Without DDL the builder infers tables from the screens, and the names will differ from the original.
               fix: { page: Uploaded evidence, href: "/apps/1#examples", action: "Attach the DDL (.sql, kind Database) and mark it reviewed or synthetic." }

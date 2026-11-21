@@ -55,14 +55,24 @@ def pack(surface, scenario, screens, attachments, target_extra=None, app_extra=N
 def scenario(events, examples):
     return {"name": "Create an order", "starting_conditions": "Signed in as a clerk; no orders yet.",
             "actions": ["Open the orders", "Create one", "Save it"], "events": events,
-            "expected_result": "The order is listed with its number.",
-            "failure_cases": ['Saving without an amount shows "Enter an amount".'], "example_values": examples,
-            "unresolved_questions": [], "notes": ""}
+            "expected_result": "The order is listed with its number, and still listed after a reload.",
+            "failure_cases": ['Saving without an amount shows "Enter an amount".',
+                              'A search with no results shows "No orders".',
+                              'Saving an order number that already exists shows "Duplicate order".',
+                              'When saving times out the app says "Try again"; a retry does not save twice.',
+                              "Only clerks can create orders; viewers see the list read-only.",
+                              "Cancel closes the dialog and discards the entry."],
+            "example_values": examples, "unresolved_questions": [], "notes": ""}
 
 
 def state(sid, events, controls, grids=()):
     return {"id": sid, "controls": controls, "regions": [], "grids": list(grids), "withheld": 0,
             "events": [e["event_id"] for e in events]}
+
+
+SCREENSHOTS = [{"path": "attachments/4.png", "kind": "Screen", "title": "List"},
+               {"path": "attachments/5.png", "kind": "Screen", "title": "New order"},
+               {"path": "attachments/6.png", "kind": "Screen", "title": "Error state and style: fonts, colours"}]
 
 
 def web_pack():
@@ -78,8 +88,8 @@ def web_pack():
             {"kind": "input", "tag": "input", "id": "amount", "label": "Amount", "required": True},
             {"kind": "button", "tag": "button", "id": "save", "label": "Save"}])], "transitions": []},
     ]
-    attachments = [{"path": "attachments/1.har", "kind": "API"}, {"path": "attachments/2.png", "kind": "Screen"},
-                   {"path": "attachments/3.sql", "kind": "Database"}]
+    attachments = [{"path": "attachments/1.har", "kind": "API"}, {"path": "attachments/3.sql", "kind": "Database"},
+                   *SCREENSHOTS]
     return pack("web", scenario([e1, e2, e3], ["Amount: 12.50"]), screens, attachments)
 
 
@@ -98,8 +108,8 @@ def desktop_pack():
             {"kind": "Edit", "id": "txtAmount", "label": "Amount", "required": True},
             {"kind": "Button", "id": "btnSave", "label": "Save"}])], "transitions": []},
     ]
-    attachments = [{"path": "attachments/1.md", "kind": "Utility"}, {"path": "attachments/2.png", "kind": "Screen"},
-                   {"path": "attachments/3.sql", "kind": "Database"}]
+    attachments = [{"path": "attachments/1.md", "kind": "Utility"}, {"path": "attachments/3.sql", "kind": "Database"},
+                   *SCREENSHOTS]
     return pack("desktop", scenario([e1, e2, e3], ["Amount: 12.50"]), screens, attachments,
                 app_extra={"toolkit": "WinForms"})
 
@@ -119,9 +129,9 @@ def mainframe_pack():
          "transitions": [{"from_state": "s2", "to": inquiry, "to_state": "s1", "action": "aid", "key": "PF3",
                           "count": 1}]},
     ]
-    attachments = [{"path": "attachments/2.png", "kind": "Screen"}, {"path": "attachments/3.sql", "kind": "Database"}]
+    attachments = [{"path": "attachments/3.sql", "kind": "Database"}, *SCREENSHOTS]
     sc = scenario([e1, e2, e3], ["ACCOUNT: 0012345678"])
-    sc["failure_cases"] = ['An unknown account shows the message "ACCOUNT NOT FOUND".']
+    sc["failure_cases"].append('An unknown account shows the message "ACCOUNT NOT FOUND".')
     return pack("mainframe", sc, screens, attachments)
 
 
@@ -262,16 +272,51 @@ class ValidatorTest(unittest.TestCase):
         data["attachments"] = []
         data["target"]["data_model"] = {"files": [], "tables": []}
         data["app"]["git_url"] = ""
-        set_scenario(failure_cases=[], starting_conditions="")(data, files)
+        set_scenario(failure_cases=[], starting_conditions="", expected_result="The order is listed.")(data, files)
         result = pack_validator.validate(data, files)
         self.assertTrue(result["passed"])
         self.assertEqual({g["item"] for g in result["gaps"]},
-                         {"web.api", "visuals.screens", "data.model", "deploy.repository", "scenario.failures",
-                          "scenario.starting", "scenario.messages"})
+                         {"web.api", "visuals.screens", "visuals.per_screen", "visuals.style", "data.model",
+                          "deploy.repository", "scenario.failures", "scenario.starting", "scenario.messages",
+                          "behaviour.invalid_input", "behaviour.empty_results", "behaviour.retries",
+                          "behaviour.duplicates", "behaviour.persistence"})
         self.assertEqual(result["counts"]["critical"], 0)
         self.assertTrue(all(g["severity"] != "critical" for g in result["gaps"]))
         api = next(g for g in result["gaps"] if g["item"] == "web.api")
         self.assertIn("HAR", api["capture_gap"])
+
+    def test_withheld_identifiers_are_shown_per_screen(self):
+        data, files = web_pack()
+        data["screens"][1]["states"][0]["withheld"] = 2
+        gap = next(g for g in pack_validator.validate(data, files)["gaps"] if g["item"] == "screens.withheld")
+        self.assertEqual(gap["severity"], "important")
+        self.assertIn("state 1: 2 identifier(s)", gap["details"][0])
+        self.assertIn("ident()", gap["capture_gap"])
+
+    def test_scores_per_verification_dimension(self):
+        data, files = web_pack()
+        data["attachments"] = [a for a in data["attachments"] if a["kind"] != "Screen"]
+        result = pack_validator.validate(data, files)
+        dims = {d["id"]: d for d in result["dimensions"]}
+        self.assertEqual(list(dims), list(pack_validator.DIMENSIONS))
+        self.assertLess(dims["visual"]["score"], 100)
+        self.assertEqual((dims["behavioural"]["score"], dims["structural"]["score"], dims["deployment"]["score"]),
+                         (100, 100, 100))
+        self.assertIn("visuals.per_screen", dims["visual"]["missing"])
+        self.assertTrue(all(g["dimension"] == "visual" for g in result["gaps"]))
+        summary = pack_validator.summary(result)
+        self.assertEqual(summary["dimensions"]["deployment"], 100)
+
+    def test_happy_path_only_scenarios_miss_business_behaviour(self):
+        data, files = web_pack()
+        set_scenario(failure_cases=[], expected_result="The order is listed.")(data, files)
+        gaps = {g["item"]: g for g in pack_validator.validate(data, files)["gaps"]}
+        for item in ("behaviour.invalid_input", "behaviour.empty_results", "behaviour.retries",
+                     "behaviour.duplicates", "behaviour.persistence"):
+            self.assertEqual(gaps[item]["severity"], "important", item)
+        data["screens"][1]["states"][0]["controls"].append({"kind": "button", "tag": "button", "id": "cancel",
+                                                            "label": "Cancel"})
+        self.assertIn("behaviour.cancellation", {g["item"] for g in pack_validator.validate(data, files)["gaps"]})
 
     def test_items_that_do_not_apply_are_not_counted(self):
         data, files = web_pack()
@@ -316,10 +361,10 @@ class ValidatorTest(unittest.TestCase):
 class SpecDocumentTest(unittest.TestCase):
     def test_the_document_lists_every_item_with_its_severity_and_surfaces(self):
         doc = (ROOT / "docs" / "PACKAGE-COMPLETENESS.md").read_text(encoding="utf-8")
-        rows = {m.group(1): (m.group(3).strip(), m.group(4)) for m in
-                re.finditer(r"^\| `([a-z]+\.[a-z_]+)` \| ([^|]+) \| ([^|]+) \| (\w+) \|", doc, re.M)}
-        expected = {i.id: ("all" if i.surfaces == pack_validator.SURFACES else ", ".join(i.surfaces), i.severity)
-                    for i in pack_validator.SPEC}
+        rows = {m.group(1): (m.group(3).strip(), m.group(4), m.group(5)) for m in
+                re.finditer(r"^\| `([a-z]+\.[a-z_]+)` \| ([^|]+) \| ([^|]+) \| (\w+) \| (\w+) \|", doc, re.M)}
+        expected = {i.id: ("all" if i.surfaces == pack_validator.SURFACES else ", ".join(i.surfaces), i.severity,
+                           pack_validator.dimension_of(i)) for i in pack_validator.SPEC}
         self.assertEqual(rows, expected)
 
     def test_every_capture_gap_is_documented(self):

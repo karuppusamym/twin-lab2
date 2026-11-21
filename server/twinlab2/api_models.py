@@ -500,6 +500,7 @@ class CompletenessGap(Model):
     item: str
     title: str
     section: str
+    dimension: Literal['behavioural', 'structural', 'visual', 'deployment']
     severity: Literal['critical', 'important', 'nice']
     why: str
     fix: CompletenessFix
@@ -520,6 +521,7 @@ class PackageCompleteness(Model):
     passed: bool
     score: int
     sections: list[CompletenessSection]
+    dimensions: list[CompletenessSection]
     gaps: list[CompletenessGap]
     counts: CompletenessCounts
 

@@ -141,6 +141,8 @@ export function CompletenessChecklist({ completeness, fixLinks }: { completeness
           ))}</tbody>
         </table>
       </div>
+      <p id="completeness-dimensions">By verification dimension:{" "}
+        {c.dimensions.map((d, i) => <span key={d.id}>{i ? "; " : ""}<span title={d.title}>{d.id}</span> {d.score}%</span>)}.</p>
       {c.gaps.length > 0 && (
         <ul className="checks" id="completeness-gaps" aria-label="Missing items">
           {c.gaps.map((g) => (
