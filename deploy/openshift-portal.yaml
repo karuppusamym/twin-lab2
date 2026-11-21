@@ -1,19 +1,31 @@
-# The TwinLab2 portal on OpenShift. Not applied to a real cluster yet: review before use.
+# The TwinLab2 portal on OpenShift. NOT YET RUN ON A CLUSTER: it is schema-checked (kubeconform in
+# CI) and its image is smoke-tested as an arbitrary UID, but review it before use. The runbook is
+# docs/deploying-on-openshift.md.
 #
-#   oc create secret generic twinlab2 --from-literal=secret-key=$(openssl rand -hex 32) \
+#   oc create secret generic twinlab2 \
+#     --from-literal=secret-key=$(openssl rand -hex 32) \
 #     --from-literal=cookie-secret=$(openssl rand -base64 32 | head -c 32) \
 #     --from-literal=database-url='postgresql://twinlab2:PASSWORD@POSTGRES-HOST:5432/twinlab2?sslmode=require'
 #   oc apply -f deploy/openshift-portal.yaml        (after setting the image and host below)
 #
+# (tests/server/test_deploy_manifests.py reads the keys of that command: every secretKeyRef below
+# must name one of them.)
+#
 # People sign in through the OpenShift OAuth proxy; the recorders reach /api/agent/ with their
-# machine token (the proxy lets those paths through without a sign-in).
+# machine token (the proxy lets those paths through without a sign-in), and the kubelet reaches
+# /readyz the same way.
 #
 # The portal database is PostgreSQL (DATABASE_URL from the secret): a managed instance or an
 # operator-run cluster, with a database and an owner role made for TwinLab2. The portal applies
 # its pending migrations at start (under an advisory lock, so replicas starting together are
-# safe) and keeps no state in the pod: artifacts (evidence, packs, releases, recordings) go to the
-# S3 bucket below, with credentials from the pod's role or AWS_* variables. To move an existing SQLite catalog in, see
-# "Shared deployment" in the README (python migrations.py copy).
+# safe) and keeps no state in the pod: sessions are rows of the database, artifacts (evidence,
+# packs, releases, recordings) go to the S3 bucket below, with credentials from the pod's role or
+# AWS_* variables. So it runs as 2 replicas and rolls one new pod in before an old one goes. To
+# move an existing SQLite catalog in, see "Shared deployment" in the README (python migrations.py
+# copy); a SQLite catalog on a volume allows 1 replica only (and a Recreate rollout).
+#
+# The build worker is its own Deployment (twinlab2-worker): it scales, restarts and is sized apart
+# from the portal, from the same image.
 apiVersion: v1
 kind: List
 items:
@@ -28,17 +40,23 @@ items:
     kind: Deployment
     metadata:
       name: twinlab2
-      labels: {app.kubernetes.io/name: twinlab2}
+      labels: {app.kubernetes.io/name: twinlab2, app.kubernetes.io/component: portal}
     spec:
-      replicas: 1
-      strategy: {type: RollingUpdate}
+      replicas: 2
+      # a new pod is ready (its /readyz through the proxy answers) before an old one is taken
+      # out; the old one drains (preStop) after the Service stopped sending to it: no 502s
+      strategy:
+        type: RollingUpdate
+        rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+      minReadySeconds: 5
       selector:
-        matchLabels: {app.kubernetes.io/name: twinlab2}
+        matchLabels: {app.kubernetes.io/name: twinlab2, app.kubernetes.io/component: portal}
       template:
         metadata:
-          labels: {app.kubernetes.io/name: twinlab2}
+          labels: {app.kubernetes.io/name: twinlab2, app.kubernetes.io/component: portal}
         spec:
           serviceAccountName: twinlab2
+          terminationGracePeriodSeconds: 40
           containers:
             - name: portal
               image: REGISTRY/twinlab2-portal:TAG
@@ -49,6 +67,8 @@ items:
                   value: trusted-proxy
                 - name: TWINLAB2_TRUSTED_PROXIES  # the sidecar reaches the portal on the pod's loopback
                   value: 127.0.0.1,::1
+                - name: TWINLAB2_SECURE_COOKIES  # the session cookie only over HTTPS (the Route is TLS)
+                  value: "1"
                 - name: DATABASE_URL
                   valueFrom: {secretKeyRef: {name: twinlab2, key: database-url}}
                 - name: TWINLAB2_ARTIFACT_BACKEND  # files go to S3; the database keeps refs
@@ -58,24 +78,32 @@ items:
                 - name: TWINLAB2_HOSTS
                   value: twinlab2.apps.example.test
               resources:
-                requests: {cpu: 50m, memory: 128Mi}
+                requests: {cpu: 50m, memory: 192Mi}
                 limits: {memory: 512Mi}
-            # the build worker (python -m twinlab2.worker): works the job queue in the same database
-            - name: worker
-              image: REGISTRY/twinlab2-portal:TAG
-              command: ["python", "-m", "twinlab2.worker"]
-              env:
-                - name: DATABASE_URL
-                  valueFrom: {secretKeyRef: {name: twinlab2, key: database-url}}
-                - name: TWINLAB2_ARTIFACT_BACKEND  # files go to S3; the database keeps refs
-                  value: s3
-                - name: TWINLAB2_S3_BUCKET
-                  value: twinlab2-artifacts
-              resources:
-                requests: {cpu: 20m, memory: 96Mi}
-                limits: {memory: 256Mi}
+              # bound to 127.0.0.1:8080 (only the sidecar reaches it): liveness and startup run
+              # in the container; startup allows 5 minutes for the migrations at start
+              startupProbe:
+                exec: {command: [python, -m, twinlab2.probe, http, "http://127.0.0.1:8080/livez"]}
+                periodSeconds: 5
+                timeoutSeconds: 4
+                failureThreshold: 60
+              livenessProbe:
+                exec: {command: [python, -m, twinlab2.probe, http, "http://127.0.0.1:8080/livez"]}
+                periodSeconds: 20
+                timeoutSeconds: 4
+                failureThreshold: 3
+              # the database at the current migration and the artifact store, through the proxy
+              # (skip-auth below), as the Route reaches the pod; Host is the pod's IP
+              readinessProbe:
+                httpGet: {path: /readyz, port: https, scheme: HTTPS}
+                periodSeconds: 10
+                timeoutSeconds: 4
+                failureThreshold: 3
+              lifecycle:
+                preStop:  # keep serving while the endpoints controller and the router drop the pod
+                  exec: {command: [sleep, "10"]}
             - name: oauth-proxy
-              image: registry.redhat.io/openshift4/ose-oauth-proxy:latest
+              image: registry.redhat.io/openshift4/ose-oauth-proxy:v4.17
               args:
                 - --https-address=:8443
                 - --provider=openshift
@@ -87,11 +115,22 @@ items:
                 - --pass-user-headers=true
                 - --skip-auth-regex=^/api/agent/
                 - --skip-auth-regex=^/api/uploads
-                - --skip-auth-regex=^/healthz$
+                - --skip-auth-regex=^/(livez|readyz|healthz)$
               ports:
                 - {name: https, containerPort: 8443}
+              resources:
+                requests: {cpu: 10m, memory: 32Mi}
+                limits: {memory: 128Mi}
               readinessProbe:
                 httpGet: {path: /oauth/healthz, port: https, scheme: HTTPS}
+                periodSeconds: 10
+              livenessProbe:
+                httpGet: {path: /oauth/healthz, port: https, scheme: HTTPS}
+                periodSeconds: 20
+                failureThreshold: 3
+              lifecycle:
+                preStop:  # the proxy stops after the portal's drain (Kubernetes 1.30+ / OpenShift 4.17+)
+                  sleep: {seconds: 10}
               volumeMounts:
                 - {name: tls, mountPath: /etc/tls/private}
                 - {name: proxy-secret, mountPath: /etc/proxy/secret}
@@ -102,6 +141,65 @@ items:
               secret:
                 secretName: twinlab2
                 items: [{key: cookie-secret, path: cookie-secret}]
+  - apiVersion: policy/v1
+    kind: PodDisruptionBudget
+    metadata:
+      name: twinlab2
+    spec:
+      minAvailable: 1  # a node drain keeps one portal pod serving
+      selector:
+        matchLabels: {app.kubernetes.io/name: twinlab2, app.kubernetes.io/component: portal}
+  # the build worker (python -m twinlab2.worker): works the job queue in the same database
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: twinlab2-worker
+      labels: {app.kubernetes.io/name: twinlab2, app.kubernetes.io/component: worker}
+    spec:
+      replicas: 1  # more are safe: jobs are leased (jobqueue.py)
+      strategy:
+        type: RollingUpdate
+        rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+      selector:
+        matchLabels: {app.kubernetes.io/name: twinlab2, app.kubernetes.io/component: worker}
+      template:
+        metadata:
+          labels: {app.kubernetes.io/name: twinlab2, app.kubernetes.io/component: worker}
+        spec:
+          serviceAccountName: twinlab2
+          # a job in flight is leased: one cut short is taken over when its lease runs out
+          terminationGracePeriodSeconds: 60
+          containers:
+            - name: worker
+              image: REGISTRY/twinlab2-portal:TAG
+              command: [python, -m, twinlab2.worker]
+              env:
+                - name: TWINLAB2_SECRET_KEY  # the same key as the portal (signed artifact links)
+                  valueFrom: {secretKeyRef: {name: twinlab2, key: secret-key}}
+                - name: DATABASE_URL
+                  valueFrom: {secretKeyRef: {name: twinlab2, key: database-url}}
+                - name: TWINLAB2_ARTIFACT_BACKEND  # files go to S3; the database keeps refs
+                  value: s3
+                - name: TWINLAB2_S3_BUCKET
+                  value: twinlab2-artifacts
+              resources:
+                requests: {cpu: 20m, memory: 128Mi}
+                limits: {memory: 512Mi}
+              # alive while its loop (or its job's heartbeat) writes workers.seen_at for this pod
+              startupProbe:
+                exec: {command: [python, -m, twinlab2.probe, worker, --max-age, "180"]}
+                periodSeconds: 5
+                timeoutSeconds: 10
+                failureThreshold: 60
+              livenessProbe:
+                exec: {command: [python, -m, twinlab2.probe, worker, --max-age, "180"]}
+                periodSeconds: 60
+                timeoutSeconds: 10
+                failureThreshold: 3
+              readinessProbe:
+                exec: {command: [python, -m, twinlab2.probe, worker, --max-age, "180"]}
+                periodSeconds: 60
+                timeoutSeconds: 10
   - apiVersion: v1
     kind: Service
     metadata:
@@ -109,7 +207,7 @@ items:
       annotations:
         service.beta.openshift.io/serving-cert-secret-name: twinlab2-tls
     spec:
-      selector: {app.kubernetes.io/name: twinlab2}
+      selector: {app.kubernetes.io/name: twinlab2, app.kubernetes.io/component: portal}
       ports:
         - {name: https, port: 443, targetPort: https}
   - apiVersion: route.openshift.io/v1

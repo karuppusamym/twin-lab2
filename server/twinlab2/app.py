@@ -25,7 +25,7 @@ from pathlib import Path
 import secrets
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -41,7 +41,47 @@ from twinlab2.rest import Routes, fail
 
 log = logging.getLogger("twinlab2")
 MAX_BODY = 16 * 1024 * 1024  # a request body (a recorder upload chunk is 8 MiB)
-NOT_THE_APP = ("api/", "artifacts/", "healthz", "assets/")
+NOT_THE_APP = ("api/", "artifacts/", "healthz", "livez", "readyz", "errors/", "assets/")
+# the probes: answered whatever the Host header (a kubelet sends the pod's IP), never logged
+PROBES = {"/livez", "/readyz", "/healthz"}
+RETRY_AFTER = "5"  # seconds, on a 503 of /readyz
+
+
+class Hosts(TrustedHostMiddleware):
+    """TrustedHostMiddleware, except for the probes: a kubelet's `Host: <pod-ip>:<port>` is no
+    name the portal serves, and /livez and /readyz show nothing about it."""
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path") in PROBES and scope.get("method") in ("GET", "HEAD"):
+            return await self.app(scope, receive, send)
+        return await super().__call__(scope, receive, send)
+
+
+def readiness(store):
+    """(ready, checks): the database answers at the current migration, and the artifact store
+    answers. Never raises."""
+    checks, ready = {}, True
+    try:
+        connection = rest.db()
+        connection.execute("SELECT 1").fetchone()
+        versions = migrations.applied(connection)
+        at, want = (max(versions) if versions else 0), migrations.latest()
+        if at < want:
+            checks["database"], ready = f"migrating (at {at}, needs {want})", False
+        else:
+            checks["database"] = "ok"
+    except Exception as error:  # noqa: BLE001 - a probe answers, it does not crash
+        log.warning("readyz: database: %s", error)
+        checks["database"], ready = f"unreachable ({type(error).__name__})", False
+    try:
+        ping = getattr(store, "ping", None)
+        if ping is not None:
+            ping()
+        checks["artifacts"] = "ok"
+    except Exception as error:  # noqa: BLE001
+        log.warning("readyz: artifact store: %s", error)
+        checks["artifacts"], ready = f"unreachable ({type(error).__name__})", False
+    return ready, checks
 
 
 def web_dist() -> Path:
@@ -57,13 +97,33 @@ in <code>web/</code>, or <code>npm run dev</code> there and open its address. Th
 <code>/api/v1/</code>.</p></main></body></html>"""
 
 
-def web_routes(secret):
+def web_routes(secret, store):
     routes = Routes()
 
-    @routes.get("/healthz", auth.public)
-    def health():
-        rest.db().execute("SELECT 1")
-        return {"ok": True}
+    @routes.add(["GET", "HEAD"], "/livez", auth.public)
+    def livez():
+        """The process answers (the liveness probe): nothing else is checked, so a database
+        outage makes the pod unready, not restarted."""
+        return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
+    def ready():
+        ok, checks = readiness(store)
+        headers = {"Cache-Control": "no-store"}
+        if not ok:
+            headers["Retry-After"] = RETRY_AFTER
+        return JSONResponse({"ok": ok, "checks": checks}, status_code=200 if ok else 503, headers=headers)
+
+    # /healthz: the old name, kept as an alias of /readyz
+    routes.add(["GET", "HEAD"], "/readyz", auth.public)(ready)
+    routes.add(["GET", "HEAD"], "/healthz", auth.public)(lambda: ready())
+
+    @routes.get("/errors/{code}", auth.public)
+    def error_type(code: str):
+        """What an error `type` (/errors/<code>) means: the registry of rest.CODES."""
+        if code not in rest.CODES:
+            fail(404)
+        status, description = rest.CODES[code]
+        return {"type": rest.type_uri(code), "code": code, "status": status or None, "description": description}
 
     @routes.get("/artifacts/{token}", auth.public)  # the signed, short-lived link is the credential
     def artifact_download(token: str):
@@ -160,7 +220,7 @@ def create_app(target, store=None):
     rest.install_errors(app)
     for module in (routes_portal, routes_registry, routes_builds, uploads):
         app.include_router(module.routes.router)
-    app.include_router(web_routes(secret).router)  # last: its fallbacks match every other path
+    app.include_router(web_routes(secret, store).router)  # last: its fallbacks match every other path
 
     def link(token):
         request = rest.g.get("request")
@@ -172,19 +232,25 @@ def create_app(target, store=None):
         return lambda: artifacts.unbind(bound)
 
     hosts = [h.strip() for h in os.environ.get("TWINLAB2_HOSTS", "").split(",") if h.strip()]
-    # outermost first: hosts, body size, the session cookie, then the request's state
+    # outermost first: the request id (and its log line), hosts, body size, the session cookie,
+    # the conditional GETs, then the request's state
     app.add_middleware(rest.RequestState, target=target, settings=settings, around=around)
+    app.add_middleware(rest.ETags)
     # the cookie ends with the server-side session (auth.start_session), not with the browser
     app.add_middleware(SessionMiddleware, secret_key=secret, session_cookie="session",
                        max_age=int(settings.session_hours * 3600),
                        same_site="lax", https_only=os.environ.get("TWINLAB2_SECURE_COOKIES") == "1")
     app.add_middleware(rest.BodyLimit, limit=MAX_BODY)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "::1", *hosts])
+    app.add_middleware(Hosts, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "::1", *hosts])
+    app.add_middleware(rest.RequestLog)
     return app
 
 
 def asgi():
     """The portal for an ASGI server: its database at DATABASE_URL (else the SQLite file
     TWINLAB2_DATABASE, else .state/catalog.db)."""
-    logging.basicConfig(level=os.environ.get("TWINLAB2_LOG_LEVEL", "INFO"))
+    logging.basicConfig(level=os.environ.get("TWINLAB2_LOG_LEVEL", "INFO"),
+                        format="%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s")
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(rest.RequestIdFilter())
     return create_app(database.from_env())

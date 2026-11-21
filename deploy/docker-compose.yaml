@@ -46,6 +46,11 @@ services:
     command: ["gunicorn", "--bind", "0.0.0.0:8080", "twinlab2.app:asgi()"]
     ports: ["127.0.0.1:8766:8080"]
     volumes: [artifacts:/artifacts]
+    # the database at the current migration and the artifact store (as OpenShift's readiness probe)
+    healthcheck:
+      test: ["CMD", "python", "-m", "twinlab2.probe", "http", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      start_period: 60s
   worker:
     build: {context: .., dockerfile: deploy/Dockerfile}
     depends_on:
@@ -53,8 +58,14 @@ services:
     environment:
       DATABASE_URL: postgresql://twinlab2:twinlab2@postgres:5432/twinlab2
       TWINLAB2_ARTIFACT_DIR: /artifacts
+      TWINLAB2_SECRET_KEY: change-me-to-a-long-random-value  # the portal's key
     command: ["python", "-m", "twinlab2.worker"]
     volumes: [artifacts:/artifacts]
+    # alive while its loop writes workers.seen_at (as OpenShift's liveness probe)
+    healthcheck:
+      test: ["CMD", "python", "-m", "twinlab2.probe", "worker"]
+      interval: 30s
+      start_period: 60s
 volumes:
   postgres:
   # artifact files (evidence, packs, releases), shared by the portal and the worker
