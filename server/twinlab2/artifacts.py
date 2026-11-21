@@ -79,6 +79,15 @@ class ArtifactError(Exception):
     pass
 
 
+class ArtifactDeleted(ArtifactError):
+    """The artifact's stored object was deleted (retention, an owner's request or a purge): its
+    row and a tombstone say when and why (lifecycle.py). The API answers 410 `gone`."""
+
+    def __init__(self, artifact_id, deleted_at, reason, tombstone_id=None):
+        super().__init__(f"artifact {artifact_id} was deleted on {deleted_at} ({reason})")
+        self.artifact_id, self.deleted_at, self.reason, self.tombstone_id = artifact_id, deleted_at, reason, tombstone_id
+
+
 class ChecksumMismatch(ArtifactError):
     def __init__(self, expected, actual):
         super().__init__(f"checksum mismatch: expected sha256 {expected}, got {actual}")
@@ -127,16 +136,18 @@ class LocalStore:
 
     backend = "local"
 
-    def __init__(self, root, prefix: str = ""):
+    def __init__(self, root, prefix: str = "", keyring=None):
         self.root = Path(root)
         self.bucket = "local"
         self.prefix = prefix
+        self.keyring = keyring  # crypto.Keyring: files are sealed (envelope encryption) when set
         for name in ("objects", "tmp", "uploads"):
             (self.root / name).mkdir(parents=True, exist_ok=True)
 
     def describe(self) -> dict:
         return {"backend": "local", "location": str(self.root), "versioning": "every put is a new version file",
-                "direct_upload": False}
+                "direct_upload": False,
+                "encryption": f"envelope (AES-256-GCM, key {self.keyring.current_id})" if self.keyring else "none"}
 
     def ping(self) -> None:
         """Raises unless the store's folder is there and writable (the portal's /readyz)."""
@@ -156,11 +167,46 @@ class LocalStore:
         version_id = f"{time.time_ns():020d}-{secrets.token_hex(4)}"
         final = self._path(key, version_id)
         final.parent.mkdir(parents=True, exist_ok=True)
+        if self.keyring is not None:
+            from twinlab2 import crypto
+
+            sealed = Path(str(tmp_path) + ".sealed")
+            try:
+                crypto.seal_file(tmp_path, sealed, self.keyring)
+                os.replace(sealed, final)
+            finally:
+                sealed.unlink(missing_ok=True)
+                Path(tmp_path).unlink(missing_ok=True)
+            return version_id
         os.replace(tmp_path, final)
         return version_id
 
     def open(self, ref: ArtifactRef):
-        return builtins.open(self._path(ref.key, ref.version_id), "rb")
+        from twinlab2 import crypto
+
+        return crypto.open_file(self._path(ref.key, ref.version_id), self.keyring)
+
+    def file_of(self, ref: ArtifactRef) -> Path:
+        """The file that holds the object (sealed when encryption is on)."""
+        return self._path(ref.key, ref.version_id)
+
+    def delete(self, ref: ArtifactRef) -> None:
+        """Remove the object's version file (gone already is fine)."""
+        self._path(ref.key, ref.version_id).unlink(missing_ok=True)
+
+    def purge_key(self, key: str) -> int:
+        """Remove every version file of `key`; returns how many there were."""
+        folder = self._path(key, "0").parent
+        if not folder.is_dir():
+            return 0
+        found = [f for f in folder.iterdir() if f.is_file()]
+        for f in found:
+            f.unlink(missing_ok=True)
+        try:
+            folder.rmdir()
+        except OSError:
+            pass
+        return len(found)
 
     def exists(self, ref: ArtifactRef) -> bool:
         return self._path(ref.key, ref.version_id).is_file()
@@ -178,7 +224,7 @@ class S3Store:
     SINGLE_PUT_LIMIT = 64 * 1024 * 1024
 
     def __init__(self, bucket, prefix="", region=None, endpoint_url=None, client=None,
-                 direct_upload=True, temp_dir=None):
+                 direct_upload=True, temp_dir=None, sse=None, kms_key_id=None):
         if not bucket:
             raise ArtifactError("TWINLAB2_S3_BUCKET is required for the s3 artifact backend")
         if client is None:
@@ -192,6 +238,28 @@ class S3Store:
         self.region, self.endpoint_url = region, endpoint_url
         self.direct_upload = direct_upload
         self._temp = Path(temp_dir) if temp_dir else None
+        # server-side encryption asked for on every write: AES256 (SSE-S3) or aws:kms (SSE-KMS)
+        if sse not in (None, "", "AES256", "aws:kms"):
+            raise ArtifactError("TWINLAB2_S3_SSE must be AES256 or aws:kms")
+        self.sse, self.kms_key_id = sse or None, kms_key_id or None
+
+    def _sse(self) -> dict:
+        if not self.sse:
+            return {}
+        args = {"ServerSideEncryption": self.sse}
+        if self.sse == "aws:kms" and self.kms_key_id:
+            args["SSEKMSKeyId"] = self.kms_key_id
+        return args
+
+    def _encryption(self) -> str:
+        asked = (f"{self.sse} on every write" + (f" (key {self.kms_key_id})" if self.kms_key_id else "")
+                 if self.sse else "not asked by the portal")
+        try:
+            rules = self.client.get_bucket_encryption(Bucket=self.bucket)["ServerSideEncryptionConfiguration"]["Rules"]
+            default = rules[0]["ApplyServerSideEncryptionByDefault"]["SSEAlgorithm"]
+        except Exception:  # noqa: BLE001 - no default encryption, or no permission to read it
+            default = "unknown"
+        return f"{asked}; bucket default: {default}"
 
     def describe(self) -> dict:
         try:
@@ -200,7 +268,7 @@ class S3Store:
             status = f"unknown ({type(error).__name__})"
         return {"backend": "s3", "bucket": self.bucket, "prefix": self.prefix or "(none)",
                 "region": self.region or "(default)", "endpoint": self.endpoint_url or "AWS S3",
-                "versioning": status, "direct_upload": self.direct_upload}
+                "versioning": status, "direct_upload": self.direct_upload, "encryption": self._encryption()}
 
     def ping(self) -> None:
         """Raises unless the bucket answers (the portal's /readyz)."""
@@ -225,7 +293,7 @@ class S3Store:
             if size <= self.SINGLE_PUT_LIMIT:
                 with builtins.open(tmp_path, "rb") as body:
                     answer = self.client.put_object(Bucket=self.bucket, Key=key, Body=body,
-                                                    ContentType=content_type, Metadata=meta)
+                                                    ContentType=content_type, Metadata=meta, **self._sse())
                 return self._version(answer.get("VersionId"))
             upload = self.create_multipart(key, content_type, meta)
             parts = []
@@ -258,7 +326,7 @@ class S3Store:
     # multipart uploads (the resumable upload API)
     def create_multipart(self, key, content_type, metadata=None) -> str:
         return self.client.create_multipart_upload(Bucket=self.bucket, Key=key, ContentType=content_type,
-                                                   Metadata=metadata or {})["UploadId"]
+                                                   Metadata=metadata or {}, **self._sse())["UploadId"]
 
     def upload_part(self, key, upload_id, number, data) -> str:
         return self.client.upload_part(Bucket=self.bucket, Key=key, UploadId=upload_id,
@@ -294,6 +362,23 @@ class S3Store:
     def delete_version(self, key, version_id) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key, **self._vargs(version_id))
 
+    def delete(self, ref: ArtifactRef) -> None:
+        """Remove the object's version for good (a DELETE of that version id, not a marker)."""
+        self.client.delete_object(Bucket=ref.bucket, Key=ref.key, **self._vargs(ref))
+
+    def purge_key(self, key: str) -> int:
+        """Remove every version and delete marker of exactly `key`; returns how many."""
+        removed, args = 0, {"Bucket": self.bucket, "Prefix": key}
+        while True:
+            answer = self.client.list_object_versions(**args)
+            for item in answer.get("Versions", []) + answer.get("DeleteMarkers", []):
+                if item["Key"] == key:
+                    self.client.delete_object(Bucket=self.bucket, Key=key, VersionId=item["VersionId"])
+                    removed += 1
+            if not answer.get("IsTruncated"):
+                return removed
+            args.update(KeyMarker=answer.get("NextKeyMarker"), VersionIdMarker=answer.get("NextVersionIdMarker"))
+
 
 def _safe_name(name) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", str(name))[:120] or "download"
@@ -306,15 +391,23 @@ def from_env(database=None, environ=None):
     prefix = (env.get("TWINLAB2_S3_PREFIX") or "").strip().strip("/")
     prefix = prefix + "/" if prefix else ""
     if backend == "local":
+        from twinlab2 import crypto
+
         root = env.get("TWINLAB2_ARTIFACT_DIR") or (
             state_dir(database) / "artifacts" if database else STATE / "artifacts")
-        return LocalStore(root)
+        try:
+            keyring = crypto.Keyring.from_env(env)
+        except crypto.SealError as error:
+            raise ArtifactError(str(error)) from error
+        return LocalStore(root, keyring=keyring)
     if backend == "s3":
         return S3Store(env.get("TWINLAB2_S3_BUCKET", "").strip(), prefix=prefix,
                        region=env.get("TWINLAB2_S3_REGION") or env.get("AWS_REGION") or None,
                        endpoint_url=env.get("TWINLAB2_S3_ENDPOINT_URL") or None,
                        direct_upload=env.get("TWINLAB2_S3_DIRECT_UPLOAD", "1") != "0",
-                       temp_dir=env.get("TWINLAB2_ARTIFACT_TMP") or None)
+                       temp_dir=env.get("TWINLAB2_ARTIFACT_TMP") or None,
+                       sse=(env.get("TWINLAB2_S3_SSE") or "").strip() or None,
+                       kms_key_id=(env.get("TWINLAB2_S3_SSE_KMS_KEY_ID") or "").strip() or None)
     raise ArtifactError(f"TWINLAB2_ARTIFACT_BACKEND must be local or s3, not {backend!r}")
 
 
@@ -528,11 +621,16 @@ def save(db, ref: ArtifactRef) -> ArtifactRef:
     return replace(ref, id=row[0])
 
 
-def load(db, artifact_id) -> ArtifactRef:
-    row = db.execute(f"SELECT {_COLUMNS} FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
+def load(db, artifact_id, include_deleted=False) -> ArtifactRef:
+    """The ref of an `artifacts` row. ArtifactDeleted when its object was deleted (lifecycle.py),
+    unless `include_deleted`."""
+    row = db.execute(f"SELECT {_COLUMNS}, deleted_at, deleted_reason, tombstone_id FROM artifacts WHERE id = ?",
+                     (artifact_id,)).fetchone()
     if row is None:
         raise LookupError(f"no artifact {artifact_id}")
-    (id_, backend, bucket, key, version, sha, size, ctype, kind, app_id, created) = tuple(row)
+    (id_, backend, bucket, key, version, sha, size, ctype, kind, app_id, created, deleted, reason, stone) = tuple(row)
+    if deleted and not include_deleted:
+        raise ArtifactDeleted(id_, deleted, reason, stone)
     return ArtifactRef(backend, bucket, key, version, sha, size, ctype, kind, created, app_id=app_id, id=id_)
 
 

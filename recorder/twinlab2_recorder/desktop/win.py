@@ -932,6 +932,15 @@ def mouse_click(x: int, y: int) -> None:
     user32.SetCursorPos(old.x, old.y)
 
 
+def value_of(el) -> str:
+    """A control's current Value (ValuePattern), or "" when it has none."""
+    try:
+        v = el.GetCurrentPropertyValue(P_VALUE)
+    except comtypes.COMError:
+        return ""
+    return v if isinstance(v, str) else ""
+
+
 def set_value(el, text: str) -> None:
     _pattern(el, PAT_VALUE, UIA.IUIAutomationValuePattern).SetValue(text)
 

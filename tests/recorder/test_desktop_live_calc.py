@@ -171,3 +171,112 @@ class CaptureOfAGoneWindow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Nesting(unittest.TestCase):
+    """Contract 1.6 `in`: each control and region names the region it is inside (L6)."""
+
+    def test_controls_name_their_container_not_the_window(self):
+        from twinlab2_recorder.workstation import structure
+
+        tree = {"type": "Window", "aid": "Main", "name": "Calculator", "children": [
+            {"type": "Custom", "aid": "NavView", "children": [
+                {"type": "Group", "name": "", "children": [  # an unnamed layer in between
+                    {"type": "Group", "aid": "NumberPad", "children": [
+                        {"type": "Button", "aid": "num1Button", "name": "One", "name_is": "structure"}]}]},
+                {"type": "Button", "aid": "TogglePaneButton", "name": "Open Navigation", "name_is": "structure"}]},
+            {"type": "Button", "aid": "Top", "name": "Top", "name_is": "structure"}]}
+        state = structure.desktop_state(tree)
+        where = {c["id"]: c.get("in") for c in state["controls"]}
+        self.assertEqual(where, {"num1Button": "NumberPad", "TogglePaneButton": "NavView", "Top": None})
+        regions = {r["id"]: r.get("in") for r in state["regions"]}
+        self.assertEqual(regions, {"Main": None, "NavView": None, "NumberPad": "NavView"})
+
+    def test_the_contract_keeps_in(self):
+        from twinlab2_contract import structure as st
+
+        state = st.clean_state({"controls": [{"kind": "Button", "id": "num1Button", "in": "NumberPad"}],
+                                "regions": [{"kind": "Group", "id": "NumberPad", "in": "NavView"}],
+                                "grids": [{"kind": "List", "rows": "few", "in": "DockPanel"}]})
+        self.assertEqual(state["controls"][0]["in"], "NumberPad")
+        self.assertEqual(state["regions"][0]["in"], "NavView")
+        self.assertEqual(state["grids"][0]["in"], "DockPanel")
+        bad = st.clean_state({"controls": [{"kind": "Button", "id": "b", "in": "C-1001 Ada Example"}]})
+        self.assertNotIn("in", bad["controls"][0])
+
+
+class RecorderWindowDpi(unittest.TestCase):
+    def test_not_windows_is_scale_one(self):
+        from unittest import mock
+
+        from twinlab2_recorder import main as agent_main
+
+        with mock.patch.object(agent_main.sys, "platform", "linux"):
+            self.assertEqual(agent_main.dpi_aware(), 1.0)
+
+    def test_windows_declares_per_monitor_awareness_and_reads_the_scale(self):
+        import ctypes
+        from unittest import mock
+
+        from twinlab2_recorder import main as agent_main
+
+        calls = []
+        fake = mock.Mock()
+        fake.shcore.SetProcessDpiAwareness.side_effect = lambda v: calls.append(v)
+        fake.user32.GetDpiForSystem.return_value = 144
+        with mock.patch.object(agent_main.sys, "platform", "win32"), \
+                mock.patch.object(ctypes, "windll", fake, create=True):
+            self.assertEqual(agent_main.dpi_aware(), 1.5)
+        self.assertEqual(calls, [2])
+
+
+class BuiltProgramSchema(unittest.TestCase):
+    """build.py: the schema the program carries must be the one its code speaks (the rerun's first
+    build carried a 1.4.0 schema from an editable install of another checkout and refused to send)."""
+
+    def test_the_bundled_schema_version_is_read(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "recorder_build", Path(__file__).resolve().parents[2] / "recorder" / "build.py")
+        build = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "_internal" / "twinlab2_contract"
+            folder.mkdir(parents=True)
+            self.assertIsNone(build.bundled_schema_version(Path(tmp)))
+            (folder / "recorder-contract.schema.json").write_text(json.dumps({"x-contract-version": "1.4.0"}),
+                                                                   encoding="utf-8")
+            self.assertEqual(build.bundled_schema_version(Path(tmp)), "1.4.0")
+
+
+class PagesAndLabelledRegions(unittest.TestCase):
+    """Contract 1.6, from the rerun's Verify: a tab holds its page, and a container named only by
+    its caption ("Scientific functions") is a region by label."""
+
+    def test_a_tab_page_and_a_caption_named_group(self):
+        from twinlab2_recorder.workstation import structure
+
+        tree = {"type": "Window", "aid": "Main", "children": [
+            {"type": "Tab", "aid": "DockPivot", "children": [
+                {"type": "TabItem", "aid": "HistoryLabel", "name": "History", "name_is": "structure", "children": [
+                    {"type": "Button", "aid": "ClearHistory", "name": "Clear all history", "name_is": "structure"}]}]},
+            {"type": "Group", "name": "Scientific functions", "name_is": "structure", "children": [
+                {"type": "Button", "aid": "logBase10Button", "name": "Log", "name_is": "structure"}]},
+            {"type": "Group", "name": "C-1001 Ada Example", "name_is": "data", "children": []}]}
+        state = structure.desktop_state(tree)
+        where = {c["id"]: c.get("in") for c in state["controls"]}
+        self.assertEqual(where["ClearHistory"], "HistoryLabel")
+        self.assertEqual(where["logBase10Button"], "Scientific functions")
+        labelled = [r for r in state["regions"] if r.get("label")]
+        self.assertEqual(labelled, [{"kind": "Group", "label": "Scientific functions", "visible": True}])
+
+    def test_the_contract_keeps_a_labelled_region_and_a_label_in(self):
+        from twinlab2_contract import structure as st
+
+        state = st.clean_state({"controls": [{"kind": "Button", "id": "logBase10Button", "in": "Scientific functions"}],
+                                "regions": [{"kind": "Group", "label": "Scientific functions"},
+                                            {"kind": "Group", "label": "a sentence that is far too long here"}]})
+        self.assertEqual(state["controls"][0]["in"], "Scientific functions")
+        self.assertEqual(state["regions"], [{"kind": "Group", "label": "Scientific functions"}])
+        self.assertEqual(state["withheld"], 1)

@@ -724,6 +724,43 @@ class ApiTest(unittest.TestCase):
         both = bob.post(path, json={"answer": "x", "request_key": "alias-2"}, headers={"Idempotency-Key": "alias-3"})
         self.assertEqual((both.status_code, both.json()["code"]), (400, "idempotency_key_mismatch"))
 
+    def test_zz_operations(self):
+        """The operations API (named to run last: it deletes from the shared world)."""
+        import hashlib
+
+        root, alice = self.as_("root"), self.as_("alice")
+        summary = self.ok(root.get("/api/v1/admin/operations"))
+        self.assertEqual(summary["storage"]["backend"], "local")
+        policy = self.ok(root.put("/api/v1/admin/retention", json={"build_logs": 3650, "schedule": "off"}))
+        self.assertEqual((policy["build_logs"], policy["updated_by"]), (3650, "root"))
+        self.assertEqual(root.put("/api/v1/admin/retention", json={"audit": 5}).json()["code"], "invalid_request")
+        run = self.ok(root.post("/api/v1/admin/retention/runs", json={"dry_run": True}), 202)
+        worker.run(self.database, once=True, types=("retention",))
+        done = self.ok(root.get(f"/api/v1/admin/retention/runs/{run['id']}"))
+        self.assertEqual((done["state"], done["result"]["build_logs"]["count"]), ("done", 0))
+        export = root.get("/api/v1/admin/audit-export", params={"since": "2000-01-01", "format": "csv"})
+        self.assertEqual(export.status_code, 200)
+        self.assertTrue(export.text.startswith("id,at,actor,app_id,action,object_type,object_id,details\n"))
+        self.assertIn("package.freeze", export.text)
+        # the attachment is in the frozen package too: a purge finds and deletes both
+        sha = hashlib.sha256(b"# The invoice API\n").hexdigest()
+        found = self.ok(root.get(f"/api/v1/admin/files/{sha}"))
+        self.assertTrue(found["artifacts"] and found["inside"])
+        purged = self.ok(root.post(f"/api/v1/admin/files/{sha}/purge", json={"note": "Test purge."}))
+        self.assertGreaterEqual(purged["artifacts_deleted"], 1)
+        gone = alice.get(f"/api/v1/apps/{self.billing}/packages/{self.package['rev']}/download")
+        self.assertEqual((gone.status_code, gone.json()["code"]), (410, "gone"))
+        stones = self.ok(alice.get(f"/api/v1/apps/{self.billing}/tombstones"))["tombstones"]
+        self.assertIn("frozen_package" if any(s["object_type"] == "frozen_package" for s in stones) else "attachment",
+                      [s["object_type"] for s in stones])
+        self.assertTrue(self.ok(root.get("/api/v1/admin/tombstones"))["tombstones"])
+        refused = self.as_("carol").post(f"/api/v1/recordings/{RECORDING}/deletion", json={"reason": "No."})
+        self.assertEqual(refused.status_code, 403)
+        deleted = self.ok(alice.post(f"/api/v1/recordings/{RECORDING}/deletion",
+                                     json={"reason": "Recorded by mistake.", "purge_packages": True}))
+        self.assertEqual(sorted(deleted["apps"]), sorted([self.billing, self.casedesk]))
+        self.assertEqual(alice.get(f"/api/v1/recordings/{RECORDING}").status_code, 404)
+
 
 class LocalSignInTest(unittest.TestCase):
     """A portal with local users (no proxy): sign in, wrong password, sign out."""

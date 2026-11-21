@@ -14,7 +14,8 @@ Actions written today (dotted, `area.verb`):
   reason), `package.download`;
 - builds and releases: `build.start` (for the build-job routes), `release.test`,
   `release.publish`, `deployment.register`;
-- access: `role.assign`, `role.remove`, `user.save`;
+- access: `role.assign`, `role.remove`, `user.save`, `access.request`, `access.approve`, `access.decline`
+  (routes_access: requests for a role and their decisions);
 - catalog: `app.create`, `app.merge`, `app.status`.
 """
 

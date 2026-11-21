@@ -138,6 +138,12 @@ def _text(value, most: int = 160) -> str | None:
     return None
 
 
+def region_ref(text: object) -> bool:
+    """`in` (contract 1.6): the region a control, region or grid is inside, by the region's
+    identifier or, for a region named only by its caption, by that label (words)."""
+    return ident(text) or (isinstance(text, str) and words(text, 4) == text)
+
+
 def clean_control(c) -> tuple[dict | None, int]:
     """(the control as the contract allows it, how many of its words were dropped)."""
     if not isinstance(c, dict):
@@ -160,6 +166,10 @@ def clean_control(c) -> tuple[dict | None, int]:
         dropped += len(classes) - len(kept)
         if kept:
             out["classes"] = kept
+    if region_ref(c.get("in")):
+        out["in"] = c["in"]
+    elif c.get("in") is not None:
+        dropped += 1
     if c.get("label") is not None:
         label = words(c["label"])
         if label:
@@ -198,15 +208,25 @@ def clean_state(s) -> dict | None:
             controls.append(item)
     regions = []
     for r in (s.get("regions") or [])[: LIMITS["regions"]]:
-        if not isinstance(r, dict) or not (ident(r.get("id")) or (r.get("id") is None and ident(r.get("name"))))                 or not (isinstance(r.get("kind"), str) and IDENT.match(r["kind"])):
+        if not isinstance(r, dict) or not (isinstance(r.get("kind"), str) and IDENT.match(r["kind"])):
             withheld += 1
             continue
-        item = {"kind": r["kind"][:24], **({"id": r["id"]} if r.get("id") is not None else {"name": r["name"]})}
+        # 1.6: a region named only by its caption ("Scientific functions") carries it as `label`
+        labelled = (r.get("id") is None and r.get("name") is None and isinstance(r.get("label"), str)
+                    and words(r["label"], 4) == r["label"])
+        if not (ident(r.get("id")) or (r.get("id") is None and ident(r.get("name"))) or labelled):
+            withheld += 1
+            continue
+        item = {"kind": r["kind"][:24], **({"id": r["id"]} if r.get("id") is not None else
+                                          {"name": r["name"]} if r.get("name") is not None else
+                                          {"label": r["label"]})}
         classes = [x for x in (r.get("classes") or []) if ident(x)][: LIMITS["classes"]] if isinstance(r.get("classes"), list) else []
         if classes:
             item["classes"] = classes
         if isinstance(r.get("visible"), bool):
             item["visible"] = r["visible"]
+        if region_ref(r.get("in")):  # 1.6: the region it is in
+            item["in"] = r["in"]
         regions.append(item)
     grids = []
     for g in (s.get("grids") or [])[: LIMITS["grids"]]:
@@ -228,6 +248,8 @@ def clean_state(s) -> dict | None:
             item["columns"] = columns
         if isinstance(g.get("visible"), bool):
             item["visible"] = g["visible"]
+        if region_ref(g.get("in")):
+            item["in"] = g["in"]
         grids.append(item)
     texts = []
     for t in (s.get("texts") or [])[: LIMITS["texts"]] if isinstance(s.get("texts"), list) else []:
