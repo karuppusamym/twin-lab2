@@ -122,7 +122,7 @@ function RecordedApps({ refs, recordingId }: { refs: Schemas["RecordingRefs"]; r
         {refs.session.state === "recovered" && " · recovered after the recorder stopped"}. The recording stays on that machine at <code>recordings/{refs.session.id}</code>.</p>
       {refs.contract && (
         <p className="muted">Sent by {refs.contract.recorder} {refs.contract.recorder_version} · recorder contract {refs.contract.contract_version}
-          {refs.contract.twinlab_commit && <> · Twin Lab <code>{short(refs.contract.twinlab_commit)}</code></>}.</p>
+          {refs.contract.twinlab_commit && <> · recorder source <code>{short(refs.contract.twinlab_commit)}</code></>}.</p>
       )}
       <ol className="timeline">{refs.timeline.map((run, i) => (
         <li key={i} className={run.app === "presence" ? "presence" : ""}>{run.name} <span className="muted">{plural(run.steps, "step")}</span></li>

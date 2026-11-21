@@ -43,7 +43,7 @@ class Agent:
                                                           {"detail": "Method Not Allowed"}):  # fmt: skip
                 raise LabError(
                     "this lab runs an older lab agent that cannot do that yet: restart it "
-                    "(Lab > Rebuild and restart, or Twin Lab's `lab up <app>`)"
+                    "(rebuild and restart the lab)"
                 )
             if isinstance(detail, dict) and isinstance(detail.get("detail"), dict):
                 inner = detail["detail"]

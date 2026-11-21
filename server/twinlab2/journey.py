@@ -136,7 +136,7 @@ def app_journey(
         examples_href, examples_action = "/machines", "Pair a machine"
     else:
         examples_hint = ("Request a recording of the process on a paired machine, or import a "
-                         "Twin Lab steps.jsonl.")
+                         "recording file (steps.jsonl).")
         examples_href, examples_action = "/sessions", "Request a recording"
     if attention:
         rec = attention[0]

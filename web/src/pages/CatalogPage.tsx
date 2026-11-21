@@ -99,7 +99,7 @@ function ImportRecording() {
   return (
     <form onSubmit={submit} aria-label="Import recording">
       <label>Recording name <input required value={name} onChange={(e) => setName(e.target.value)} /></label>
-      <label>Twin Lab steps.jsonl <input type="file" accept=".jsonl" required onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label>
+      <label>Recording file (steps.jsonl) <input type="file" accept=".jsonl" required onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label>
       <ErrorText error={upload.error} />
       <button disabled={upload.isPending}>Import recording</button>
     </form>

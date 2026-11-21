@@ -1068,7 +1068,7 @@ paths:
     post:
       tags: [recordings]
       operationId: importRecording
-      summary: Import a Twin Lab recording (steps.jsonl)
+      summary: Import a recording file (steps.jsonl)
       description: |
         Signed in. The recording id is the digest of its events. A recovered upload of the same
         session merges by `event_id`; a conflicting event is 409. Audited as `recording.import`.
@@ -1360,7 +1360,7 @@ paths:
     post:
       tags: [automations]
       operationId: importAutomation
-      summary: Import a Twin Lab automation.yaml
+      summary: Import an automation file (automation.yaml)
       description: Links only the applications (by name) the caller owns; unmatched names go to the notes.
       x-twinlab-role: signed-in
       requestBody:
@@ -2839,7 +2839,7 @@ components:
       required: [name, log]
       properties:
         name: { type: string }
-        log: { type: string, contentMediaType: application/jsonl, description: "A Twin Lab steps.jsonl" }
+        log: { type: string, contentMediaType: application/jsonl, description: "A recording file (steps.jsonl)" }
     Event:
       type: object
       required: [event_id, seq, action, source, in_gap]

@@ -74,7 +74,7 @@ function ImportAutomation() {
   }, (d) => navigate(`/automations/${d.automation.id}`));
   return (
     <form aria-label="Import automation" onSubmit={(e) => { e.preventDefault(); upload.mutate(undefined); }}>
-      <label>Or import a Twin Lab automation.yaml <input type="file" accept=".yaml,.yml" required onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label>
+      <label>Or import an automation file (automation.yaml) <input type="file" accept=".yaml,.yml" required onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label>
       <ErrorText error={upload.error} />
       <button disabled={upload.isPending}>Import</button>
     </form>

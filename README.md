@@ -9,6 +9,15 @@ cd web; npm ci; npm run build; cd ..      # the web app, once (web/dist)
 python -m twinlab2.portal                 # http://127.0.0.1:8765
 ```
 
+**Demo.** `python tools/demo_portal.py` (after `pip install -r requirements-test.txt` and the web
+build) starts the portal on http://127.0.0.1:8782 with one recording ("Month-end close") across ten
+applications: web apps told apart by path on shared hosts, two different desktop programs both
+titled "Billing", a TN3270 host. Billing is taken through the whole journey to a published release;
+Accounts Receivable has a frozen package ready to build; the discovered applications wait for a scope
+decision. Sign in as `alice` (owner, admin), `bob` (builder of Billing) or `vera` (viewer of Billing);
+the passwords are in the script's docstring. Everything outside the portal is a local stand-in (build
+provider, GitHub, deployment, replay): no real service is called and nothing costs money.
+
 The portal is one ASGI application (FastAPI, `server/twinlab2/app.py`) that serves the JSON API
 `/api/v1` ([api/openapi.yaml](api/openapi.yaml)), the recorder's agent API (`/api/agent/…`,
 `/api/uploads…`), the downloads and the built React app (`web/dist`; every other page address

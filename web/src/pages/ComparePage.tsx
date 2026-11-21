@@ -32,7 +32,7 @@ function CompareView({ comparison }: { comparison: Schemas["Comparison"] }) {
       <Crumbs><Link to={`/apps/${app.id}`}>{app.name}</Link> · <Link to={`/apps/${app.id}/build`}>Build</Link> · Compare results</Crumbs>
       <h1>Compare results: {app.name}</h1>
       <p className="muted">Each candidate's commit is checked with the same acceptance checks as a release: the commit's
-        required GitHub checks and Twin Lab's independent scenario checks against a deployment of that commit. Nothing is
+        required GitHub checks and TwinLab2's independent scenario checks against a deployment of that commit. Nothing is
         merged or published from here.</p>
       {results.length === 0 ? <p>No session has produced a commit yet.</p> : (
         <>
