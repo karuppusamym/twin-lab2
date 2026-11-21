@@ -139,7 +139,8 @@
     "action": "aid",
     "screen": "ACCOUNT INQUIRY",
     "control": "key",
-    "label": "PF3"
+    "label": "PF3",
+    "key": "PF3"
    }
   ]
  },
@@ -171,7 +172,9 @@
    "web": {
     "status": "complete",
     "gaps": [],
-    "notes": []
+    "notes": [
+     "pictures: 0 of 3 steps have one"
+    ]
    },
    "desktop": {
     "status": "complete",

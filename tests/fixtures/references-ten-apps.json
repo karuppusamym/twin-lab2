@@ -2767,7 +2767,9 @@
    "web": {
     "status": "complete",
     "gaps": [],
-    "notes": []
+    "notes": [
+     "pictures: 0 of 22 steps have one"
+    ]
    },
    "desktop": {
     "status": "complete",

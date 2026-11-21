@@ -105,7 +105,7 @@ one, the steps as labels. The recording itself stays on the PC unless the person
 | `control` | no | the **control reference**: the control's type, such as `Button`, `Edit`, `input`, `select`, `field` (a 3270 input field), `key` or `screen` |
 | `label` | no | the control's **label**: its automation id or name (`btnSave`, `txtSearch`), a web element's id or name, a 3270 field's label (`USERID`) or a key's name (`PF3`) |
 | `screen` | no | the **screen reference**: a desktop window's automation id or title, a web route with ids replaced by `{id}` (`https://host/cases/{id}`), or a 3270 screen's title (or its layout id when there is none) |
-| `key` | no | a named key pressed in the step (`Enter`, `Tab`, `F1`…`F12`) |
+| `key` | no | a named key pressed in the step (`Enter`, `Tab`, `Esc`, `Delete`, `Backspace`, `F1`…`F24`), and on a 3270 step every attention key (AID): `Enter`, `PF1`…`PF24`, `PA1`…`PA3`, `Clear`. A key's name is no data though it holds a digit |
 
 A step never holds a typed value, the content of a screen or field, or a picture. The portal stores
 only these six fields and drops any other field. It drops text over 160 characters or with control
@@ -247,6 +247,8 @@ portal still accepts 1.0.x to 1.3.x. What changed, from the blind-rebuild proof'
 | web route templates (`twinlab2_recorder.workstation.flow.route_template`) | a segment of two to 24 lower-case letters is kept as itself (`/orders/new/items`, `/billing/lookup`), except right after a segment that names people or accounts (`users`, `customers`, `accounts`, `u`, ... `flow.PEOPLE`), where a lower-case word may be a username slug (`/users/jdoe` stays `/users/{id}`). Digits, upper case, separators, e-mail addresses, UUIDs and longer words stay `{id}`; a typed value in a whole segment is its shape before this rule runs |
 | desktop screens | a message box (`#32770`, which has no AutomationId) is named by its title when that is plain and at most four words |
 | desktop combo boxes | a drop-down's `options` and `option_texts` come from its expand step's list (the tree is read while the list is closed), under the code-list rule |
+| 3270 keys (no schema change; a 1.4 portal before this keeps them too) | an `aid` step's `key` is any AID (`PF3`, `PA1`, `Clear`), not only `Enter` and `F1`…`F12`, in the flow and on its transition (`twinlab2_contract.structure.key_name`: a transition's `key`, and a 3270 key step's `label`, may be a key name with digits). A key that leaves a 3270 screen in the same state (`Clear` redrawing it, a key the host ignores) is a transition from that state to itself |
+| web pictures (no schema change) | the web channel's first `completeness` note says how many steps have a picture, how many the recorder dropped (`picture_dropped`: the next action had begun) and how many a step names that are not in the folder (removed after recording), so a missing picture is not read as one the recorder failed to write |
 
 Privacy of the route rule: a lower-case single word after another route word that is not something
 the person typed is taken as the route's own name. A username slug in that place (`/projects/jdoe`,

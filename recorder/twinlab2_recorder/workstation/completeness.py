@@ -185,7 +185,12 @@ def manifest(folder: Path, meta: dict) -> dict:
             state = from_journal(capture.read(capture.path_of(folder, ch)), ch)
         else:
             state = _legacy(folder, ch, meta)
-        channels[ch] = _fit_channel(_merge(state, supervised.get(ch)))
+        state = _merge(state, supervised.get(ch))
+        if ch == "web":
+            note = picture_note(folder)
+            if note:
+                state = dict(state, notes=[note, *(state.get("notes") or [])])  # first: never cut
+        channels[ch] = _fit_channel(state)
     statuses = [channels[c]["status"] for c in want]
     if all(s == "complete" for s in statuses):
         overall = "complete"
@@ -205,6 +210,46 @@ def manifest(folder: Path, meta: dict) -> dict:
     return {"overall": overall, "channels": channels, "network_evidence": evidence,
             "recovered": bool(meta.get("recovered") or meta.get("state") == "recovered"),
             "loss_window_seconds": capture.LOSS_WINDOW_S if journaled else None}  # fmt: skip
+
+
+def picture_note(folder: Path) -> str | None:
+    """What the web recordings' pictures are: how many steps have one, how many the recorder
+    dropped (the next action had begun: `picture_dropped`), and how many a step names that are
+    not in the folder (removed after recording). A visual comparison then knows a missing
+    picture was never a recorder failure to write it. None when there is no web step."""
+    import json
+
+    steps = kept = dropped = missing = 0
+    for part in [folder / "web", *sorted(folder.glob("web-*"))]:
+        try:
+            lines = (part / "steps.jsonl").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                step = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(step, dict):
+                continue
+            steps += 1
+            shot = step.get("screenshot")
+            if isinstance(shot, str) and shot:
+                if (part / shot).is_file():
+                    kept += 1
+                else:
+                    missing += 1
+            elif step.get("picture_dropped"):
+                dropped += 1
+    if not steps:
+        return None
+    note = f"pictures: {kept} of {steps} steps have one"
+    if dropped:
+        note += f"; {dropped} dropped by the recorder (the next action had begun before it could be taken)"
+    if missing:
+        note += (f"; {missing} named by a step are not in the recording folder (removed after recording, "
+                 "not compared)")
+    return note
 
 
 def _has_har(folder: Path) -> bool:
