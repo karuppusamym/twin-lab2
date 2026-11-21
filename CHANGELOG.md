@@ -12,6 +12,10 @@ the merged pull requests.
 
 ### Added
 
+- Package format 3 leftovers: the desktop picture comparison masks the twin label (title-bar text and the
+  `TwinAppLabel` footer); Verify checks app-to-app contracts (GET API response fields, file columns, and the
+  peer-down message with the producer's lab agent held at 503, always removed afterwards); approved visual
+  baselines become required visual states in Verify (reported-only without them).
 - Release pipeline: a `vMAJOR.MINOR.PATCH` tag builds the portal image, pushes it to GHCR with
   build provenance, builds the recorder (`TwinLabRecorder-<version>-win-x64.zip` with its SHA-256),
   and publishes a GitHub release with this changelog's section (`.github/workflows/release.yml`).

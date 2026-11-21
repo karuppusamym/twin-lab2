@@ -166,8 +166,12 @@ documented-only items never count as covered. `evidence.json` carries the levels
   with their schema, launch and reset order, what a consumer does when its producer is down).
   Inferred from the recording, editable by the owners; `interfaces.identifiers` (critical) reports
   a value typed here that its producer never makes, or a different synthetic value. Verify checks
-  the identifiers and that each producer's verified deployment answers; peer-down behaviour and
-  schemas are reported as not checked;
+  the identifiers and that each producer's verified deployment answers. Where it is safe it also reads the
+  producer's GET API and compares the response fields, compares a file's columns when the contract gives its
+  download address (`detail.path`), and, where the owner wrote a `down_check` (`path`, `contains` or `status`),
+  puts the producer's lab agent under an all-503 condition, reads that path of the consumer, and removes the
+  condition. Calls that change data, files made by a button, pages behind sign-in and a missing lab agent stay
+  `not-checked` with the reason; they are never `pass`;
 - **the "AI generated Twin App" label** (`target.twin_label`, `deploy.twin_label`, critical): web, a
   fixed banner with `data-twin-app` and `<meta name="twin-app">`; desktop, a title suffix and a
   status label (AutomationId `TwinAppLabel`); 3270, a protected field on a row the recorded screens

@@ -42,8 +42,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -150,24 +152,33 @@ class TwinLabChecks:
         """The surfaces a recording has steps on."""
         return [s for s in SURFACES if self.recording(recording_id, s) is not None]
 
-    def _visual(self, folder, work):
-        """(visual.yaml to use or None, how it was decided: declared | generated | none)."""
+    def _visual(self, folder, work, baselines=None):
+        """(visual.yaml to use or None, how it was decided: declared | approved baselines |
+        generated | none)."""
         from twinlab2.replay import visual
 
         if (folder / visual.FILE).is_file():
-            return None, "declared"
+            return None, "declared", []
+        if baselines:
+            try:
+                out, how, notes = approved_visual(folder, Path(work), baselines)
+                if out is not None:
+                    return out, how, notes
+            except Exception as error:  # noqa: BLE001 - falls back to the report-only states
+                logging.getLogger(__name__).warning("approved baselines not used: %s", error)
         try:
             if not visual.pictures_of(folder):
-                return None, "none"
+                return None, "none", []
             from twinlab2_contract.evidence import recording as recmod
 
             out = Path(work) / visual.FILE
             out.write_text(visual.template(recmod.load(folder), required=False), encoding="utf-8")
-            return out, "generated"
+            return out, "generated", []
         except Exception as error:  # noqa: BLE001 - visual is reported, never blocks the replay
-            return None, f"none (the template could not be generated: {type(error).__name__}: {error})"[:300]
+            return None, f"none (the template could not be generated: {type(error).__name__}: {error})"[:300], []
 
-    def replay(self, recording_id, base_url, surface="web", target=None, origins=None, twin_label=False):
+    def replay(self, recording_id, base_url, surface="web", target=None, origins=None, twin_label=False,
+               baselines=None):
         """The report of one recording replayed on one surface (web: against base_url, or each
         source in `origins` against its replica; mainframe: the TN3270 host `target`; desktop:
         the executable `target`), as a dict with at least `status`; None when the recording has
@@ -180,7 +191,7 @@ class TwinLabChecks:
             cmd = [sys.executable, "-m", "twinlab2.replay", str(folder), "--surface", surface, "--json", str(out)]
             if twin_label:  # a format-3 package: the twin's label on every screen, out of the comparisons
                 cmd.append("--twin-label")
-            visual_from = None
+            visual_from, baseline_notes = None, []
             if surface == "web":
                 if importlib.util.find_spec("playwright") is None:
                     return {"status": "not-run", "surface": surface, "cases": [], "problems": [
@@ -190,7 +201,7 @@ class TwinLabChecks:
                     cmd += ["--base-url", base_url]
                 for source, replica in (origins or {}).items():
                     cmd += ["--map", f"{source}={replica}"]
-                generated, visual_from = self._visual(folder, work)
+                generated, visual_from, baseline_notes = self._visual(folder, work, baselines)
                 if generated is not None:
                     cmd += ["--visual", str(generated), "--artifacts", str(Path(work) / "pictures")]
             else:
@@ -209,6 +220,8 @@ class TwinLabChecks:
             report.setdefault("surface", surface)
             if visual_from:
                 report["visual_declaration"] = visual_from
+            if baseline_notes:
+                report["baseline_notes"] = baseline_notes
             return report
 
     def persistence(self, lab_url, base_url):
@@ -229,6 +242,49 @@ class TwinLabChecks:
             return json.loads(done.stdout.strip().splitlines()[-1])
         except (IndexError, ValueError):
             return {"result": "fail", "notes": "the reset check did not run: " + done.stderr.strip()[-500:]}
+
+
+def approved_visual(folder, work, baselines):
+    """The visual.yaml Verify replays with when the owner approved baselines: the recorder's
+    report-only states, and for each approved baseline (a screen state, light theme, scale 1,
+    at the recording's viewport) a **required** state whose baseline is the approved image,
+    taken after the recording's step that lands on that state. Returns (path or None, how, notes);
+    the baselines that cannot be compared are in the notes (reported, never passed)."""
+    import yaml
+    from twinlab2.replay import visual
+    from twinlab2.replay.acceptance import _raw_steps
+    from twinlab2_contract.evidence import recording as recmod
+
+    rec = recmod.load(folder)
+    doc = yaml.safe_load(visual.template(rec, required=False)) or {"version": 1, "states": []}
+    seq_of = {d["event_id"]: d["seq"] for d in _raw_steps(folder)
+              if isinstance(d.get("seq"), int) and d.get("event_id")}
+    states = {st["after"]: st for st in doc.get("states") or []}
+    approved = Path(work) / "approved"
+    approved.mkdir(exist_ok=True)
+    notes, used = [], 0
+    for n, b in enumerate(baselines):
+        who = f"{b['screen']} / {b['state']}"
+        seq = next((seq_of[e] for e in b.get("events") or [] if e in seq_of), None)
+        if seq is None:
+            continue  # another recording's state
+        if b.get("theme") != "light" or float(b.get("scale") or 1) != 1:
+            notes.append(f"{who}: {b.get('theme')} theme at scale {b.get('scale')} is not replayed (light, 1)")
+            continue
+        (approved / f"{n}.png").write_bytes(b["png"])
+        state = states.get(seq) or {"after": seq, "mode": "threshold", "max_ratio": 0.02, "tolerance": 16, "exclude": []}
+        state.update(id=re.sub(r"[^A-Za-z0-9_.-]+", "-", f"baseline-{b['screen']}-{b['state']}")[:80], required=True,
+                     approved=f"approved/{n}.png", viewport=b.get("viewport") or doc.get("viewport"))
+        state.pop("note", None)
+        states[seq] = state
+        used += 1
+    if not used:
+        return None, "none approved for this recording", notes
+    doc["states"] = [states[k] for k in sorted(states, key=lambda k: (not isinstance(k, int), k))]
+    out = Path(work) / visual.FILE
+    head = "# Verify: the owner's approved baselines are required; the recorder's pictures are reported.\n"
+    out.write_text(head + yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return out, "approved baselines", notes
 
 
 def scenario_recordings(manifest, scenario_id):
@@ -280,6 +336,8 @@ def _accepts(method, name):
 def _replay(runner, recording_id, surface, base_url, plan):
     origins = ((plan.get("web") or {}).get("origins") or None) if surface == "web" else None
     label = {"twin_label": True} if plan.get("twin_label") and _accepts(runner.replay, "twin_label") else {}
+    if plan.get("baselines") and surface == "web" and _accepts(runner.replay, "baselines"):
+        label["baselines"] = plan["baselines"]
     if surface == "web" and not origins:
         return runner.replay(recording_id, base_url, **label)
     target = plan.get(surface) if surface != "web" else None
@@ -377,6 +435,12 @@ def run(runner, scenarios, manifest, base_url, lab_url, progress=None, plan=None
     report["reset"] = runner.reset(lab_url) if lab_url else {
         "result": None, "notes": "No lab agent URL is configured for this application, so reset was not checked."}
     report["dimensions"] = dimensions(list(replayed.values()), report["scenarios"])
+    visual = report["dimensions"]["visual"]
+    if plan.get("baselines") and not visual["required"]:
+        # the owner approved baselines and none was compared: never fall back to "reported"
+        visual.update(status="blocked", required=len(plan["baselines"]), scope=(
+            f"{len(plan['baselines'])} approved baseline(s) matched no state of a replayed recording"
+            + (f" ({'; '.join(visual['baseline_notes'])})" if visual.get("baseline_notes") else "")))
     return report
 
 
@@ -449,6 +513,9 @@ def dimensions(reports, scenarios):
     if states and not req:
         ratios = sorted(float(v.get("ratio") or 0) for v in states if v.get("compared"))
         visual["median_ratio"] = ratios[len(ratios) // 2] if ratios else None
+    notes = sorted({n for r in ran for n in r.get("baseline_notes") or []})
+    if notes:
+        visual["baseline_notes"] = notes
     visual["not_passed"] = [{"id": v.get("id"), "status": v.get("status"), "required": bool(v.get("required")),
                              "note": (v.get("note") or "")[:200]} for v in states if v.get("status") != "PASS"][:12]
     return {"behavioural": behavioural, "structural": structural, "visual": visual}
@@ -461,6 +528,7 @@ def _visual_scope(declared, states, required, viewports):
         return "not compared"
     size = f" at {', '.join(viewports)}" if viewports else ""
     if required:
-        return f"{states} picture state(s){size} declared in visual.yaml, {required} required"
+        where = "approved by the owner as baselines" if "approved baselines" in declared else "declared in visual.yaml"
+        return f"{states} picture state(s){size}, {required} required ({where})"
     return (f"{states} picture state(s){size} generated from the recorder's pictures: reported only, "
             "they do not decide Tested (declare visual.yaml to require them)")

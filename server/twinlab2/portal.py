@@ -16,6 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 import urllib.request
 
 
+from twinlab2 import baselines
 from twinlab2 import acceptance_checks
 from twinlab2 import audit
 from twinlab2 import auth
@@ -368,6 +369,8 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
                 exe, _observed, why = desktop_target(targets)
                 if exe:
                     plan["desktop"] = exe
+    if manifest.get("visual_baselines"):
+        plan["baselines"] = baselines.for_verify(connection, app["id"], manifest)
     label_required = twin_label_required(manifest)
     label = {"required": label_required, "text": package.TWIN_LABEL, "status": "not-required"}
     if label_required:
