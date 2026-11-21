@@ -86,6 +86,9 @@ class AppRole(Model):
     role: Role
 
 
+HomeRole = Literal['admin', 'owner', 'builder', 'viewer', 'none']
+
+
 class Session(Model):
     signed_in: bool
     user: str | None
@@ -95,6 +98,8 @@ class Session(Model):
     login_available: bool
     csrf_token: str
     roles: list[AppRole]
+    can_create_apps: bool | None = None
+    home_role: HomeRole | None = None
 
 
 class SignIn(Model):
@@ -108,12 +113,13 @@ class AppRef(Model):
 
 
 class JourneyStep(Model):
-    id: Literal['choose', 'examples', 'behaviour', 'build', 'verify', 'open']
+    id: Literal['choose', 'examples', 'behaviour', 'repository', 'build', 'verification', 'verify', 'open']
     title: str
     state: Literal['done', 'next', 'todo']
     hint: str
     href: str
     action: str
+    blocked: str | None = None
 
 
 class Journey(Model):
@@ -1221,7 +1227,7 @@ class TestInput(Model):
 
 class SetupPage(Model):
     apps: list[AppRef]
-    storage: dict[str, str | bool | float | None]
+    storage: dict[str, str | bool | float | None] | None
 
 
 class Worker(Model):
@@ -1311,6 +1317,258 @@ class AgentMessage(Model):
     pass
 
 
+class ScopeLabel(Model):
+    value: AppStatus
+    label: str
+    decision: Literal['replicate', 'not_replicated'] | None
+
+
+class IdentityView(Model):
+    key: str
+    display: str
+    surface: str
+    facts: dict[str, str]
+
+
+class PackageReadiness(Model):
+    state: Literal['none', 'draft', 'frozen']
+    rev: int | None
+    blockers: int | None
+    warnings: int | None
+    up_to_date: bool | None
+    reason: str
+
+
+class BuildBrief(Model):
+    id: int
+    state: str
+    state_label: str
+    outstanding: int
+    head_sha: str | None
+
+
+class ReleaseBrief(Model):
+    id: int
+    version: str
+    state: ReleaseState
+
+
+class RowAction(Model):
+    label: str
+    href: str
+    blocked: str
+
+
+class WorkboardRow_Scope(Model):
+    status: AppStatus
+    label: str
+
+
+class WorkboardRow(Model):
+    app_id: int
+    name: str
+    my_role: Role | Any
+    identity: IdentityView | Any
+    scope: WorkboardRow_Scope
+    steps: int
+    selected: int | None
+    reviewed: bool | None
+    scenarios: int | None
+    package: PackageReadiness | Any
+    build: BuildBrief | Any
+    release: ReleaseBrief | Any
+    stage: str
+    action: RowAction | Any
+
+
+class TimelineRun(Model):
+    from_index: int
+    to_index: int
+    start: str | None
+    end: str | None
+    steps: int
+    samples: list[str]
+
+
+class TimelineLane(Model):
+    app_id: int
+    name: str
+    surface: str
+    steps: int
+    runs: list[TimelineRun]
+
+
+class Timeline(Model):
+    axis: Literal['time', 'order']
+    start: str | None
+    end: str | None
+    total: int
+    lanes: list[TimelineLane]
+
+
+class SharedHost_AppsItem(Model):
+    app_id: int
+    name: str
+    path: str
+
+
+class SharedHost(Model):
+    host: str
+    apps: list[SharedHost_AppsItem]
+    text: str
+
+
+class Workboard_Recording(Model):
+    id: str
+    name: str
+    status_label: str
+
+
+class Workboard_Counts(Model):
+    apps: int
+    needs_decision: int
+    replicate: int
+    not_replicated: int
+    approved_packages: int
+
+
+class Workboard(Model):
+    recording: Workboard_Recording
+    apps: list[WorkboardRow]
+    counts: Workboard_Counts
+    download_href: str | None
+    timeline: Timeline
+    shared_hosts: list[SharedHost]
+    labels: list[ScopeLabel]
+
+
+class Suggestion(Model):
+    app_id: int
+    name: str
+    status: AppStatus
+    status_label: str
+    score: int
+    reasons: list[str]
+    can_merge: bool
+
+
+class TriageCard_RecordingsItem(Model):
+    id: str
+    name: str
+    steps: int
+
+
+class TriageCard(Model):
+    app_id: int
+    name: str
+    revision: int
+    status: AppStatus
+    status_label: str
+    surface: str
+    identities: list[IdentityView]
+    recordings: list[TriageCard_RecordingsItem]
+    steps: int
+    screens: list[str]
+    controls: list[str]
+    suggestions: list[Suggestion]
+
+
+class Triage_Recording(Model):
+    id: str
+    name: str
+
+
+class Triage(Model):
+    apps: list[TriageCard]
+    same_as: list[AppRef]
+    labels: list[ScopeLabel]
+    recording: Triage_Recording | Any
+
+
+class TriageDecision(Model):
+    app_id: int
+    decision: Literal['replicate', 'not_replicated']
+    expected_revision: int | None = None
+
+
+class TriageDecisions(Model):
+    decisions: list[TriageDecision]
+
+
+class TriageOutcome_AppsItem(Model):
+    id: int
+    name: str
+    status: AppStatus
+    status_label: str
+    previous: AppStatus
+
+
+class TriageOutcome(Model):
+    apps: list[TriageOutcome_AppsItem]
+    message: str
+
+
+class PublishedDemo(Model):
+    app_id: int
+    name: str
+    purpose: str
+    release_id: int
+    version: str
+    url: str | None
+    verified: bool
+
+
+class ReadyToBuild(Model):
+    app_id: int
+    name: str
+    rev: int
+    approved_at: str
+    build: BuildBrief | Any
+    release: ReleaseBrief | Any
+
+
+class WaitingQuestion(Model):
+    build_id: int
+    app_id: int
+    name: str
+    questions: int
+
+
+class WorkboardLink(Model):
+    id: str
+    name: str
+    received_at: str | None
+    apps: int
+    needs_decision: int
+
+
+class Home(Model):
+    role: HomeRole
+    user: str | None
+    can_create_apps: bool
+    published: list[PublishedDemo]
+    ready_to_build: list[ReadyToBuild]
+    waiting: list[WaitingQuestion]
+    workboards: list[WorkboardLink]
+    triage_count: int
+    is_admin: bool
+
+
+class ReleaseInput(Model):
+    build_id: int | None = None
+    sha: str | None = None
+    repo: str | None = None
+    pr_number: int | None = None
+    ref: str | None = None
+
+
+class ReleaseRegistered(Model):
+    release: ReleaseSummary
+    created: bool
+    href: str
+    next: str
+
+
 AgentMessage.model_rebuild()
 AnswerInput.model_rebuild()
 AnswerResult.model_rebuild()
@@ -1332,6 +1590,7 @@ AutomationDetail.model_rebuild()
 AutomationPage.model_rebuild()
 AutomationRef.model_rebuild()
 Build.model_rebuild()
+BuildBrief.model_rebuild()
 BuildDetail.model_rebuild()
 BuildFull.model_rebuild()
 BuildMessage.model_rebuild()
@@ -1368,8 +1627,10 @@ FlowStep.model_rebuild()
 FreezeInput.model_rebuild()
 Gap.model_rebuild()
 History.model_rebuild()
+Home.model_rebuild()
 Identity.model_rebuild()
 IdentityInput.model_rebuild()
+IdentityView.model_rebuild()
 Job.model_rebuild()
 Journey.model_rebuild()
 JourneyStep.model_rebuild()
@@ -1390,6 +1651,7 @@ PackageCompleteness.model_rebuild()
 PackageDraft.model_rebuild()
 PackageFile.model_rebuild()
 PackageList.model_rebuild()
+PackageReadiness.model_rebuild()
 PackageRevision.model_rebuild()
 PackageRevisionSummary.model_rebuild()
 Page.model_rebuild()
@@ -1397,6 +1659,8 @@ PairingCode.model_rebuild()
 Preflight.model_rebuild()
 Problem.model_rebuild()
 Provider.model_rebuild()
+PublishedDemo.model_rebuild()
+ReadyToBuild.model_rebuild()
 RecordedApp.model_rebuild()
 RecordedFlow.model_rebuild()
 RecordingDetail.model_rebuild()
@@ -1407,7 +1671,10 @@ RecordingRef.model_rebuild()
 RecordingRefs.model_rebuild()
 RecordingStatus.model_rebuild()
 RecordingSummary.model_rebuild()
+ReleaseBrief.model_rebuild()
 ReleaseDetail.model_rebuild()
+ReleaseInput.model_rebuild()
+ReleaseRegistered.model_rebuild()
 ReleaseSummary.model_rebuild()
 ReleaseTest.model_rebuild()
 Repo.model_rebuild()
@@ -1416,17 +1683,29 @@ RequestKey.model_rebuild()
 RoleAssignment.model_rebuild()
 RoleList.model_rebuild()
 RoleUpdate.model_rebuild()
+RowAction.model_rebuild()
 Scenario.model_rebuild()
 ScenarioField.model_rebuild()
 ScenarioInput.model_rebuild()
 ScenarioList.model_rebuild()
+ScopeLabel.model_rebuild()
 Session.model_rebuild()
 SetupPage.model_rebuild()
 ShareInput.model_rebuild()
+SharedHost.model_rebuild()
 SignIn.model_rebuild()
+Suggestion.model_rebuild()
 TestInput.model_rebuild()
 TestedRelease.model_rebuild()
+Timeline.model_rebuild()
+TimelineLane.model_rebuild()
+TimelineRun.model_rebuild()
 ToolDecision.model_rebuild()
+Triage.model_rebuild()
+TriageCard.model_rebuild()
+TriageDecision.model_rebuild()
+TriageDecisions.model_rebuild()
+TriageOutcome.model_rebuild()
 UploadProgress.model_rebuild()
 UrlMatchInput.model_rebuild()
 UserInput.model_rebuild()
@@ -1435,4 +1714,8 @@ VerificationSettings.model_rebuild()
 VerifiedScope.model_rebuild()
 VerifyCommitInput.model_rebuild()
 VerifyOutcome.model_rebuild()
+WaitingQuestion.model_rebuild()
+Workboard.model_rebuild()
+WorkboardLink.model_rebuild()
+WorkboardRow.model_rebuild()
 Worker.model_rebuild()

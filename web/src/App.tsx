@@ -12,6 +12,7 @@ import { CapturePage } from "./pages/CapturePage";
 import { CatalogPage } from "./pages/CatalogPage";
 import { ComparePage } from "./pages/ComparePage";
 import { HistoryPage } from "./pages/HistoryPage";
+import { HomePage } from "./pages/HomePage";
 import { LoginPage } from "./pages/LoginPage";
 import { MachinesPage } from "./pages/MachinesPage";
 import { MergePage } from "./pages/MergePage";
@@ -22,6 +23,7 @@ import { RecordingPage } from "./pages/RecordingPage";
 import { RecordingsPage } from "./pages/RecordingsPage";
 import { ReleasePage } from "./pages/ReleasePage";
 import { SetupPage } from "./pages/SetupPage";
+import { TriagePage } from "./pages/TriagePage";
 import { UsersPage } from "./pages/UsersPage";
 import { SessionProvider, useSessionQuery } from "./session";
 
@@ -38,7 +40,10 @@ export function makeQueryClient() {
 export function AppRoutes() {
   return (
     <Routes>
-      <Route path="/" element={<CatalogPage />} />
+      <Route path="/" element={<HomePage />} />
+      <Route path="/apps" element={<CatalogPage />} />
+      <Route path="/triage" element={<TriagePage />} />
+      <Route path="/recordings/:recordingId/triage" element={<TriagePage />} />
       <Route path="/login" element={<Navigate to="/" replace />} />
       <Route path="/apps/:appId" element={<AppPage />} />
       <Route path="/apps/:appId/setup" element={<AppSetupPage />} />

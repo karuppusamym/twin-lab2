@@ -1,6 +1,12 @@
 """Where an application is in the journey, and the one thing to do next.
 
-Choose application -> Add examples -> Review required behaviour -> Build -> Verify -> Open or download
+Choose application -> Add examples -> Review required behaviour -> Connect repository -> Build ->
+Verification settings -> Verify -> Open or download
+
+The repository and the verification settings are real steps (a build commits to the demo
+repository; verification reads it and needs the target platform and launch instructions), so no
+required setting hides under Setup. A step that cannot be done yet carries `blocked`: the reason,
+in one sentence, with the step's `href` pointing at the fix.
 
 The approach (and much of the wording) follows Twin Lab's portal guide (`portal/guide.py`): pure functions
 over facts the portal already has, so the catalog, the application page and the tests agree.
@@ -18,20 +24,29 @@ import json
 
 from twinlab2 import completeness as compl
 
-JOURNEY = ("Choose application", "Add examples", "Review required behaviour", "Build", "Verify",
-           "Open or download")  # fmt: skip
+JOURNEY = ("Choose application", "Add examples", "Review required behaviour", "Connect repository", "Build",
+           "Verification settings", "Verify", "Open or download")  # fmt: skip
 
 # Release states (portal.STATES: packaged, tested, published) that count as verified, and as
 # ready to open or download. A catalog without a release state column has neither.
 VERIFIED_STATES = {"tested", "published"}
 OPEN_STATES = {"published"}
 
-# What a scope decision is called on the pages. The stored values stay as they are.
+# The one mapping of scope statuses (the API's `AppStatus`) to what the pages call them. The stored
+# values stay as they are; api/openapi.yaml (`AppStatus`) and web/src/lib/scope.ts repeat this table.
+#   known          -> "Replicate"                    an owner chose to build a copy
+#   discovered     -> "Needs a scope decision"       a recording found it, nobody decided yet (system state)
+#   not_replicated -> "Not replicated (used only)"   recordings note it only as having been used
 STATUS_LABELS = {
-    "known": "Confirmed application",
-    "discovered": "Discovered: decide scope",
-    "not_replicated": "Not replicated",
+    "known": "Replicate",
+    "discovered": "Needs a scope decision",
+    "not_replicated": "Not replicated (used only)",
 }
+# What an owner may choose: "discovered" is the state before a decision, never a choice.
+OWNER_CHOICES = ("known", "not_replicated")
+
+# Build session states (builds.py) in which a session is still working on the package.
+BUILD_ACTIVE = {"queued", "starting", "running", "waiting_for_answer"}
 
 
 @dataclass
@@ -43,6 +58,7 @@ class Step:
     href: str
     action: str = ""  # the button's words
     state: str = "todo"  # done | next | todo
+    blocked: str = ""  # why the step cannot be done yet ("" = it can)
 
 
 @dataclass
@@ -94,11 +110,18 @@ def app_journey(
     briefs: int,
     releases: list[dict],
     attention: list[dict] = (),
+    repository: bool = True,
+    verification: bool = True,
+    build_sessions: list[dict] = (),
+    connected_repos: int = 1,
 ) -> Journey:
     """The journey of one application. `releases` is newest first. `attention` lists the
     recordings of the application that are partial or failed and not accepted as they are, each
     {"id", "name", "overall", "summary"}: a stopped recording is not complete by itself, so
-    examples are not done while one needs attention."""
+    examples are not done while one needs attention. `repository`: the demo repository is set;
+    `verification`: the target platform and launch instructions are; `build_sessions` (newest
+    first, {"id", "state", "head_sha"}); `connected_repos`: GitHub repositories an admin connected
+    for build sessions."""
     base = f"/apps/{app_id}"
     setup = f"{base}/setup"
     latest = releases[0] if releases else None
@@ -120,13 +143,15 @@ def app_journey(
         missing.append(f"Complete recording ({rec['name']} is {rec['overall']})")
 
     if status == "discovered":
-        choose_hint = ("A recording found this application: confirm it to replicate it, merge it "
-                       "into the application it is the same as, or mark it as not replicated.")
+        choose_hint = ("A recording found this application: replicate it, mark it as the same as an "
+                       "application you have, or record it as not replicated (used only).")
         choose_action = "Decide scope"
+        choose_href = f"/triage#app-{app_id}"
     else:
         absent = [m.lower() for m in ("Owner", "Purpose") if m in missing]
         choose_hint = f"Say who owns this application and what the demo is for: add its {' and '.join(absent)}."
         choose_action = "Add " + " and ".join(absent)
+        choose_href = f"{base}#choose"
     if not identities:
         examples_hint = ("Add the application's identity (its executable, web address or mainframe "
                          "host) so a recording can target it.")
@@ -143,12 +168,28 @@ def app_journey(
         examples_hint = (f"Recording “{rec['name']}” stopped but is {rec['overall']}: {rec['summary']}. "
                          "Re-record the missing part, or review it and accept it as it is.")
         examples_href, examples_action = f"/recordings/{rec['id']}", f"Review {rec['overall']} recording"
+    build_href, build_action, build_blocked = f"{base}/build-pack/preview", "Freeze builder package", ""
+    build_hint = ("Preview the builder package, check its readiness report, approve and freeze it, "
+                  "then start a build session from it.")
+    session = build_sessions[0] if build_sessions else None
     if briefs:
-        build_hint = ("Have the app built from the approved builder package, then register the "
-                      "committed build as a release (README: Releases).")
-    else:
-        build_hint = ("Preview the builder package, check its pre-freeze report, approve and "
-                      "freeze it, and have the app built from it.")
+        build_href, build_action = f"{base}/build", "Start a build"
+        build_hint = "Start a build session from the approved builder package."
+        if session and session.get("state") == "ready_for_verification" and session.get("head_sha"):
+            build_href, build_action = f"/builds/{session['id']}", "Verify this build"
+            build_hint = (f"Build session #{session['id']} has a commit ready: verify it, which registers it "
+                          "as a release of this application.")
+        elif session and session.get("state") == "waiting_for_answer":
+            build_href, build_action = f"/builds/{session['id']}", "Answer the provider"
+            build_hint = f"Build session #{session['id']} is waiting for your answer to a question."
+        elif session and session.get("state") in BUILD_ACTIVE:
+            build_href, build_action = f"/builds/{session['id']}", "Open build session"
+            build_hint = f"Build session #{session['id']} is working on the package."
+        elif not connected_repos:
+            build_blocked = ("No GitHub repository is connected for build sessions: a portal admin connects one "
+                             "under Setup, Build sessions.")
+    if not repository:
+        build_blocked = "No demo repository is set: connect one first."
     if latest:
         verify_hint = (f"Replay the recorded examples against release {latest['version']} and mark "
                        "it tested.")
@@ -157,21 +198,27 @@ def app_journey(
 
     steps = [
         Step("choose", JOURNEY[0], status == "known" and bool(owner) and bool(purpose),
-             choose_hint, f"{base}#choose", choose_action),
+             choose_hint, choose_href, choose_action),
         Step("examples", JOURNEY[1], examples > 0 and not attention, examples_hint, examples_href,
              examples_action),
         Step("behaviour", JOURNEY[2], behaviour,
              "Review the recorded examples and add a business scenario for each outcome the "
              "demo must reproduce: starting conditions, actions, expected result, failure cases.",
              f"{base}#behaviour", "Add a scenario"),
-        Step("build", JOURNEY[3], bool(releases), build_hint,
-             f"{base}#build" if briefs else f"{base}/build-pack/preview",
-             "Register a release" if briefs else "Freeze builder package"),
-        Step("verify", JOURNEY[4], state in VERIFIED_STATES, verify_hint, release_href,
-             "Verify release"),
-        Step("open", JOURNEY[5], state in OPEN_STATES,
+        Step("repository", JOURNEY[3], repository,
+             "Set the demo repository: the GitHub repository the build commits to, which "
+             "verification reads.", setup + "#git", "Set repository"),
+        Step("build", JOURNEY[4], bool(releases), build_hint, build_href, build_action, blocked=build_blocked),
+        Step("verification", JOURNEY[5], verification,
+             "Say how the built demo is checked: its target platform and launch instructions.",
+             setup + "#verification", "Set verification",
+             blocked="" if repository else "Verification reads the demo repository: connect one first."),
+        Step("verify", JOURNEY[6], state in VERIFIED_STATES, verify_hint, release_href,
+             "Verify release", blocked="" if releases else "There is no release to verify yet: build one first."),
+        Step("open", JOURNEY[7], state in OPEN_STATES,
              "Publish the tested release, so that others can open the demo or download it.",
-             release_href, "Publish release"),
+             release_href, "Publish release",
+             blocked="" if state in VERIFIED_STATES else "Only a tested release can be published."),
     ]  # fmt: skip
     if status == "not_replicated":
         for s in steps:
@@ -195,6 +242,7 @@ def facts(db, app) -> dict:
     releases = [dict(zip(wanted, row)) for row in db.execute(
         f"SELECT {', '.join(wanted)} FROM releases WHERE app_id = ? ORDER BY id DESC", (app_id,))]
     keys = app.keys()
+    tables = db.tables()
     return {
         "status": app["status"],
         "owner": (app["owner"] if "owner" in keys else "") or "",
@@ -207,6 +255,13 @@ def facts(db, app) -> dict:
         "briefs": count("SELECT count(*) FROM builder_packages WHERE app_id = ?"),
         "releases": releases,
         "attention": recordings_needing_attention(db, app_id),
+        "repository": bool(((app["git_url"] if "git_url" in keys else "") or "").strip()),
+        "verification": all(((app[c] if c in keys else "") or "").strip() for c in ("target_platform", "launch")),
+        "build_sessions": [dict(zip(("id", "state", "head_sha"), row)) for row in db.execute(
+            "SELECT id, state, head_sha FROM builds WHERE app_id = ? ORDER BY id DESC LIMIT 1", (app_id,))]
+        if "builds" in tables else [],
+        "connected_repos": db.execute("SELECT count(*) FROM github_repos").fetchone()[0]
+        if "github_repos" in tables else 0,
     }
 
 

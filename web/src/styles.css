@@ -220,3 +220,45 @@ form.toolbar label:first-child { flex: 2 1 14rem; }
 .event-picker { display: grid; gap: var(--space-2); }
 .pager { display: flex; align-items: center; gap: var(--space-3); margin: var(--space-3) 0; }
 table.apps-table th[scope="row"] { min-width: 12rem; }
+
+/* -- surfaces: one colour per surface, always with its word ------------------------------------- */
+:root { --surface-web: #2b6cb0; --surface-desktop: #7b4fb8; --surface-mainframe: #b7791f; --surface-unknown: #718096; }
+.surface { display: inline-block; border-radius: var(--radius-sm); padding: 0 .4rem; font-size: var(--text-xs); font-weight: 600; color: #fff; background: var(--surface-unknown); }
+.surface-web { background: var(--surface-web); }
+.surface-desktop { background: var(--surface-desktop); }
+.surface-mainframe { background: var(--surface-mainframe); }
+.legend { display: flex; gap: var(--space-2); margin: var(--space-1) 0; }
+
+/* -- the recording workboard and its timeline -------------------------------------------------- */
+table.workboard { font-size: var(--text-sm); }
+table.workboard thead th { white-space: nowrap; }
+table.workboard .badge { white-space: nowrap; }
+table.workboard th[scope="row"] { min-width: 10rem; }
+table.workboard td:last-child { min-width: 9rem; }
+.blocked { color: var(--failed-text); font-size: var(--text-muted-size); }
+p.blocked { background: var(--failed-bg); border-left: 4px solid var(--failed-strong); padding: var(--space-1) var(--space-3); border-radius: var(--radius-sm); }
+nav.progress a.blocked:not(.done) { border-style: dashed; }
+.swimlanes { display: grid; gap: .3rem; margin: var(--space-3) 0; }
+.swimlane { display: grid; grid-template-columns: minmax(8rem, 12rem) 1fr 2.5rem; gap: var(--space-2); align-items: center; }
+.swimlane-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-muted-size); }
+.swimlane-track { position: relative; height: 1.1rem; background: var(--color-bg); border: var(--border-width) solid var(--color-border-soft); border-radius: var(--radius-sm); }
+.swimlane-track .run { position: absolute; top: 1px; bottom: 1px; min-width: 6px; padding: 0; border-radius: .2rem; border: 0; opacity: .9; }
+.swimlane-track .run:hover, .swimlane-track .run:focus-visible { opacity: 1; outline-offset: 1px; }
+.swimlane-count { text-align: right; }
+.shared-hosts ul { margin: var(--space-1) 0; }
+details.details-section { background: var(--color-surface); border: var(--border-width) solid var(--color-border); border-radius: var(--radius-lg); padding: var(--space-3) var(--space-5); margin-bottom: var(--space-4); }
+details.details-section > summary .summary-title { font-size: var(--text-lg); font-weight: 700; }
+details.details-section > section { border: 0; padding: var(--space-2) 0; }
+@media (max-width: 600px) { .swimlane { grid-template-columns: 1fr; } }
+
+/* -- scope triage ------------------------------------------------------------------------------ */
+.triage { display: grid; gap: var(--space-4); }
+.triage-card h2 input { width: auto; }
+.looks-like h3 { font-size: var(--text-base); margin: var(--space-2) 0 var(--space-1); }
+.looks-like ol { margin: 0; padding-left: 1.2rem; }
+.looks-like li { margin: .2rem 0; }
+.inline-check { display: inline-flex; align-items: center; gap: var(--space-1); font-weight: 600; }
+.inline-check input { width: auto; }
+div.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-3); background: var(--color-surface); border: var(--border-width) solid var(--color-border); border-radius: var(--radius-lg); margin: var(--space-3) 0; }
+.triage-card form.inline label { display: inline-flex; align-items: center; gap: var(--space-1); }
+.triage-card form.inline select { width: auto; }

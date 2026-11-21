@@ -18,6 +18,10 @@ import support  # noqa: E402
 import os  # noqa: E402
 
 os.environ.setdefault("TWINLAB2_SECRET_KEY", "tests-only-secret")
+# Most tests set their world up as whichever user suits them (often one with no role yet), so they
+# let anyone add an application; the default rule (`owners`: admins and existing owners) is tested
+# where it is set explicitly (test_workboard, test_demo_portal).
+os.environ.setdefault("TWINLAB2_APP_CREATORS", "anyone")
 
 
 def _no_console_windows():

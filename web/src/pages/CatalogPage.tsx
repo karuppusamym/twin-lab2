@@ -4,12 +4,10 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, data, postForm, type Schemas } from "../api/client";
 import { JourneyLink, TestedReleaseLine } from "../components/shared";
 import { Badge, ErrorText, Pager, QueryView, useAction, useTitle } from "../components/ui";
+import { SCOPE_LABELS } from "../lib/scope";
+import { useSession } from "../session";
 
-const STATUSES: { value: Schemas["AppStatus"]; label: string }[] = [
-  { value: "known", label: "Confirmed application" },
-  { value: "discovered", label: "Discovered: decide scope" },
-  { value: "not_replicated", label: "Not replicated" },
-];
+const STATUSES = (Object.keys(SCOPE_LABELS) as Schemas["AppStatus"][]).map((value) => ({ value, label: SCOPE_LABELS[value] }));
 const SORTS = [
   { value: "", label: "Catalog order" }, { value: "name", label: "Name (A–Z)" }, { value: "-name", label: "Name (Z–A)" },
   { value: "owner", label: "Owner" }, { value: "status", label: "Status" }, { value: "stage", label: "Stage (earliest first)" },
@@ -19,7 +17,10 @@ type Sort = Exclude<(typeof SORTS)[number]["value"], "">;
 const LIMIT = 50;
 
 export function CatalogPage() {
-  useTitle(undefined);
+  useTitle("Applications");
+  const session = useSession();
+  const canCreate = session.can_create_apps ?? true;
+  const owner = session.is_admin || session.roles.some((r) => r.role === "owner");
   const [params, setParams] = useSearchParams();
   const get = (k: string) => params.get(k) ?? "";
   const [q, setQ] = useState(get("q"));
@@ -89,20 +90,20 @@ export function CatalogPage() {
             ) : filtered ? (
               <p>No application matches. <button type="button" className="secondary" onClick={() => { setQ(""); setParams(view === "table" ? { view } : {}); }}>Clear the filters</button></p>
             ) : (
-              <p>No applications yet. Add one below, or a recording registers the applications it finds.</p>
+              <p>No applications yet.{canCreate ? " Add one below, or a recording registers the applications it finds." : " An owner adds you to an application."}</p>
             )}
             <Pager page={c.page} onOffset={(o) => put("offset", o ? String(o) : "")} label="Application pages" />
-            <div className="columns">
-              <AddApp />
-              <section aria-labelledby="recordings-heading">
+            {(canCreate || owner) && <div className="columns">
+              {canCreate && <AddApp />}
+              {owner && <section aria-labelledby="recordings-heading">
                 <h2 id="recordings-heading">Recordings</h2>
                 {c.recordings.length ? (
                   <ul className="list">{c.recordings.map((r) => <li key={r.id}><Link to={`/recordings/${encodeURIComponent(r.id)}`}>{r.name}</Link></li>)}</ul>
                 ) : <p>No recordings yet.</p>}
                 {c.recordings.length >= 50 && <p><Link to="/recordings">All recordings</Link></p>}
                 <ImportRecording />
-              </section>
-            </div>
+              </section>}
+            </div>}
           </>
         )}
       </QueryView>

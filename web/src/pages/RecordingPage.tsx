@@ -3,7 +3,8 @@ import { useDeferredValue, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
 import { FlowTable } from "../components/shared";
-import { ActionButton, Badge, ConflictView, DirtyNote, ErrorText, Pager, QueryView, conflictOf, useAction, useDraft, useLeaveWarning, useTitle } from "../components/ui";
+import { ActionButton, Badge, ConflictView, Crumbs, DirtyNote, ErrorText, Pager, QueryView, conflictOf, useAction, useDraft, useLeaveWarning, useTitle } from "../components/ui";
+import { Workboard } from "../components/Workboard";
 import { capitalize, plural, short, when, words } from "../lib/format";
 import { useCan } from "../session";
 
@@ -22,75 +23,91 @@ export function RecordingPage() {
 function RecordingView({ rec }: { rec: Schemas["RecordingDetail"] }) {
   const { status, refs } = rec;
   const c = status.completeness;
+  const [params] = useSearchParams();
+  const assigning = params.has("app_id");
   return (
     <>
+      <Crumbs><Link to="/recordings">Recordings</Link></Crumbs>
       <h1>{rec.name}</h1>
-      <section id="details" aria-labelledby="details-h">
-        <h2 id="details-h">Recording details</h2>
-        <p id="completeness"><Badge kind={c && c.overall === "complete" ? "recorded" : c ? "discovered" : "packaged"}>{status.label}</Badge> {status.summary}.</p>
-        {c?.recovered && (
-          <p className="warning" id="recovered"><b>Recovered after the recorder stopped unexpectedly.</b> The recording was rebuilt from its journal
-            {c.loss_window_seconds != null && `: up to ${plural(c.loss_window_seconds, "second")} before the interruption may be lost`}. Check the events around the interruption before relying on them.</p>
-        )}
-        {status.attention ? (
-          <div className="warning" id="attention">
-            <p><b>Needs attention: this recording stopped, but it is {c?.overall}.</b> A stopped recording is not complete by itself. Re-record the missing part, or accept the recording as it is if what it has is enough.</p>
-            <ActionButton label="Accept it as it is" run={async () => data(await api.POST("/api/v1/recordings/{recording_id}/completeness/accept", { params: { path: { recording_id: rec.id } } }))} />
-          </div>
-        ) : status.accepted && <p className="muted">Accepted as it is by {status.accepted_by} on {when(status.accepted_at)}.</p>}
-        {c && (
-          <table className="flow" id="channels">
-            <thead><tr><th scope="col">Channel</th><th scope="col">Status</th><th scope="col">Affected time</th><th scope="col">Notes</th></tr></thead>
-            <tbody>
-              {Object.entries(c.channels).map(([name, ch]) => (
-                <tr key={name}>
-                  <td>{capitalize(name)}</td><td>{words(ch.status)}</td>
-                  <td>{ch.gaps.map((g, i) => <span key={i}>{g.from.slice(11, 16)}–{g.to.slice(11, 16)}{g.reason && <span className="muted"> ({g.reason})</span>}{i < ch.gaps.length - 1 && <br />}</span>)}</td>
-                  <td>{ch.notes.join("; ")}</td>
-                </tr>
+      <p id="completeness"><Badge kind={c && c.overall === "complete" ? "recorded" : c ? "discovered" : "packaged"}>{status.label}</Badge> {status.summary}.</p>
+      {c?.recovered && (
+        <p className="warning" id="recovered"><b>Recovered after the recorder stopped unexpectedly.</b> The recording was rebuilt from its journal
+          {c.loss_window_seconds != null && `: up to ${plural(c.loss_window_seconds, "second")} before the interruption may be lost`}. Check the events around the interruption before relying on them.</p>
+      )}
+      {status.attention ? (
+        <div className="warning" id="attention">
+          <p><b>Needs attention: this recording stopped, but it is {c?.overall}.</b> A stopped recording is not complete by itself. Re-record the missing part, or accept the recording as it is if what it has is enough.</p>
+          <ActionButton label="Accept it as it is" run={async () => data(await api.POST("/api/v1/recordings/{recording_id}/completeness/accept", { params: { path: { recording_id: rec.id } } }))} />
+        </div>
+      ) : status.accepted && <p className="muted">Accepted as it is by {status.accepted_by} on {when(status.accepted_at)}.</p>}
+      <Workboard recordingId={rec.id} />
+      <details id="details" className="details-section">
+        <summary><span className="summary-title">Details</span> <span className="muted">channels, preflight, upload, every application&apos;s recorded steps</span></summary>
+        <section aria-labelledby="channels-h">
+          <h3 id="channels-h">Channels</h3>
+          {c ? (
+            <table className="flow" id="channels">
+              <thead><tr><th scope="col">Channel</th><th scope="col">Status</th><th scope="col">Affected time</th><th scope="col">Notes</th></tr></thead>
+              <tbody>
+                {Object.entries(c.channels).map(([name, ch]) => (
+                  <tr key={name}>
+                    <td>{capitalize(name)}</td><td>{words(ch.status)}</td>
+                    <td>{ch.gaps.map((g, i) => <span key={i}>{g.from.slice(11, 16)}–{g.to.slice(11, 16)}{g.reason && <span className="muted"> ({g.reason})</span>}{i < ch.gaps.length - 1 && <br />}</span>)}</td>
+                    <td>{ch.notes.join("; ")}</td>
+                  </tr>
+                ))}
+                <tr><td>Network evidence</td><td>{c.network_evidence}</td><td /><td /></tr>
+              </tbody>
+            </table>
+          ) : <p className="muted">No channel report for this recording.</p>}
+          {refs && refs.ranges.length > 0 && (
+            <div className="lanes" aria-label="Affected time ranges">
+              <p className="muted">{refs.session.started?.slice(11, 16)} – {refs.session.ended?.slice(11, 16)}</p>
+              {refs.ranges.map((lane) => (
+                <div className="lane" key={lane.label}>
+                  <span className="lane-name">{lane.label}</span>
+                  <span className={`lane-bar ${lane.status}`}>{lane.gaps.map((g, i) => g.left != null && (
+                    <span key={i} className="gap" style={{ left: `${g.left}%`, width: `${g.width ?? 0}%` }} title={`${g.text} ${g.reason ?? ""}`} />
+                  ))}</span>
+                  <span className="muted">{words(lane.status)}{lane.gaps.map((g) => ` · ${g.text}`).join("")}</span>
+                </div>
               ))}
-              <tr><td>Network evidence</td><td>{c.network_evidence}</td><td /><td /></tr>
-            </tbody>
-          </table>
-        )}
-        {refs && refs.ranges.length > 0 && (
-          <div className="lanes" aria-label="Affected time ranges">
-            <p className="muted">{refs.session.started?.slice(11, 16)} – {refs.session.ended?.slice(11, 16)}</p>
-            {refs.ranges.map((lane) => (
-              <div className="lane" key={lane.label}>
-                <span className="lane-name">{lane.label}</span>
-                <span className={`lane-bar ${lane.status}`}>{lane.gaps.map((g, i) => g.left != null && (
-                  <span key={i} className="gap" style={{ left: `${g.left}%`, width: `${g.width ?? 0}%` }} title={`${g.text} ${g.reason ?? ""}`} />
-                ))}</span>
-                <span className="muted">{words(lane.status)}{lane.gaps.map((g) => ` · ${g.text}`).join("")}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        <h3>Preflight</h3>
-        {status.preflight ? (
-          <>
-            <p>{status.preflight.ready ? "Ready to record" : "Not ready: recording started with failed checks"}.</p>
-            <ul className="checks" id="preflight">{status.preflight.checks.map((ck) => (
-              <li key={ck.name} className={ck.ok ? "ok" : "failed"}>{ck.ok ? "✓" : "✗"} {ck.name}{ck.detail && <span className="muted"> {ck.detail}</span>}</li>
-            ))}</ul>
-          </>
-        ) : <p className="muted">No preflight results{status.workstation ? " (older recorder)" : " for an imported event log"}.</p>}
-        <h3>Upload</h3>
-        {rec.upload ? (
-          <p id="upload">{rec.upload.text}{rec.upload.percent != null && <> <progress max={100} value={rec.upload.percent}>{rec.upload.percent}%</progress></>}</p>
-        ) : <p className="muted" id="upload">Upload progress: not available.</p>}
-        <h3>Evidence preview</h3>
-        {rec.preview.length ? rec.preview.map((p) => (
-          <div key={p.app_id}>
-            <p><Link to={`/apps/${p.app_id}`}>{p.name}</Link>: {plural(p.count, "event")} selected{!p.reviewed && ", not yet reviewed"}{p.suggested > 0 && `, ${p.suggested} new`}.</p>
-            {p.events.length > 0 && <EventTable events={p.events} />}
-            {p.count > p.events.length && <p className="muted">and {p.count - p.events.length} more.</p>}
-          </div>
-        )) : <p className="muted">No application has evidence from this recording yet.</p>}
-      </section>
-      {refs && <RecordedApps refs={refs} recordingId={rec.id} />}
-      <Assignment rec={rec} />
+            </div>
+          )}
+        </section>
+        <section aria-labelledby="preflight-h">
+          <h3 id="preflight-h">Preflight</h3>
+          {status.preflight ? (
+            <>
+              <p>{status.preflight.ready ? "Ready to record" : "Not ready: recording started with failed checks"}.</p>
+              <ul className="checks" id="preflight">{status.preflight.checks.map((ck) => (
+                <li key={ck.name} className={ck.ok ? "ok" : "failed"}>{ck.ok ? "✓" : "✗"} {ck.name}{ck.detail && <span className="muted"> {ck.detail}</span>}</li>
+              ))}</ul>
+            </>
+          ) : <p className="muted">No preflight results{status.workstation ? " (older recorder)" : " for an imported event log"}.</p>}
+        </section>
+        <section aria-labelledby="upload-h">
+          <h3 id="upload-h">Upload</h3>
+          {rec.upload ? (
+            <p id="upload">{rec.upload.text}{rec.upload.percent != null && <> <progress max={100} value={rec.upload.percent}>{rec.upload.percent}%</progress></>}</p>
+          ) : <p className="muted" id="upload">Upload progress: not available.</p>}
+        </section>
+        <section aria-labelledby="preview-h">
+          <h3 id="preview-h">Evidence preview</h3>
+          {rec.preview.length ? rec.preview.map((p) => (
+            <div key={p.app_id}>
+              <p><Link to={`/apps/${p.app_id}`}>{p.name}</Link>: {plural(p.count, "event")} selected{!p.reviewed && ", not yet reviewed"}{p.suggested > 0 && `, ${p.suggested} new`}.</p>
+              {p.events.length > 0 && <EventTable events={p.events} />}
+              {p.count > p.events.length && <p className="muted">and {p.count - p.events.length} more.</p>}
+            </div>
+          )) : <p className="muted">No application has evidence from this recording yet.</p>}
+        </section>
+        {refs && <RecordedApps refs={refs} recordingId={rec.id} />}
+      </details>
+      <details id="assign" className="details-section" open={assigning}>
+        <summary><span className="summary-title">Assign events</span> <span className="muted">select this recording&apos;s events for one application and describe its outcome</span></summary>
+        <Assignment rec={rec} />
+      </details>
     </>
   );
 }
@@ -116,7 +133,7 @@ function RecordedApps({ refs, recordingId }: { refs: Schemas["RecordingRefs"]; r
   const can = useCan();
   return (
     <section aria-labelledby="recorded-h" id="recorded-apps">
-      <h2 id="recorded-h">Recorded applications</h2>
+      <h3 id="recorded-h">Recorded applications</h3>
       <p className="muted">Recorded on {refs.machine ?? "a machine since revoked"}{refs.session.started && `, ${when(refs.session.started)}`}
         {refs.session.ended && ` to ${refs.session.ended.slice(11, 16)}`}{refs.automation && ` · for ${refs.automation}`}
         {refs.session.state === "recovered" && " · recovered after the recorder stopped"}. The recording stays on that machine at <code>recordings/{refs.session.id}</code>.</p>
@@ -124,6 +141,7 @@ function RecordedApps({ refs, recordingId }: { refs: Schemas["RecordingRefs"]; r
         <p className="muted">Sent by {refs.contract.recorder} {refs.contract.recorder_version} · recorder contract {refs.contract.contract_version}
           {refs.contract.twinlab_commit && <> · recorder source <code>{short(refs.contract.twinlab_commit)}</code></>}.</p>
       )}
+      <p className="muted">The order the recorder saw the applications in, as runs of steps. A run named after several applications is a host they share whose steps are told apart by path (the longest path prefix wins).</p>
       <ol className="timeline">{refs.timeline.map((run, i) => (
         <li key={i} className={run.app === "presence" ? "presence" : ""}>{run.name} <span className="muted">{plural(run.steps, "step")}</span></li>
       ))}</ol>
@@ -138,7 +156,7 @@ function RecordedApps({ refs, recordingId }: { refs: Schemas["RecordingRefs"]; r
             {a.latest_package ? (
               <>Package: <Link to={`/apps/${a.app_id}/packages/${a.latest_package.rev}`}>revision {a.latest_package.rev}</Link>{" "}
                 <span className="muted">approved by {a.latest_package.approved_by} · {when(a.latest_package.approved_at)} · <code>{short(a.latest_package.sha256)}</code></span>
-                {can("builder", a.app_id) && <> · <a href={`/api/v1/apps/${a.app_id}/packages/${a.latest_package.rev}/download`}>Download</a></>}</>
+                {can("builder", a.app_id) && <> · <a href={`/api/v1/apps/${a.app_id}/packages/${a.latest_package.rev}/download`} aria-label={`Download revision ${a.latest_package.rev} of ${a.name}`}>Download</a></>}</>
             ) : <span className="muted">No builder-approved package of {a.name} yet.</span>}
           </p>
         </details>
@@ -160,8 +178,7 @@ function Assignment({ rec }: { rec: Schemas["RecordingDetail"] }) {
   const [choice, setChoice] = useState(appId ? String(appId) : "");
   const allowed = rec.assignable_apps.some((a) => a.id === appId);
   return (
-    <section aria-labelledby="assign-h" id="assign">
-      <h2 id="assign-h">Assign events</h2>
+    <section aria-label="Assign events" id="assign-events">
       <p>{plural(rec.events_total, "event")}. Select the events and describe the outcome for the chosen demo app.</p>
       {rec.assignable_apps.length ? (
         <>

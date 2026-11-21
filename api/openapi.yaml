@@ -269,8 +269,12 @@ paths:
       x-twinlab-idempotent: stored
       parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Add an application
-      description: Whoever creates an application owns it; a named `owner` is assigned the owner role too.
-      x-twinlab-role: signed-in
+      description: |
+        Whoever creates an application owns it; a named `owner` is assigned the owner role too.
+        Who may add one is `TWINLAB2_APP_CREATORS`: `owners` (the default: a portal admin, or anyone
+        who owns an application already), `admins`, or `anyone` signed in. Others get 403 `role`;
+        `Session.can_create_apps` says which applies to the caller.
+      x-twinlab-role: signed-in (see description)
       requestBody:
         required: true
         content:
@@ -288,6 +292,7 @@ paths:
                 created: { value: { id: 4, name: Order Portal } }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/v1/apps/{app_id}:
     parameters: [{ $ref: "#/components/parameters/AppId" }]
@@ -574,6 +579,44 @@ paths:
                 outcome: { $ref: "#/components/examples/VerifyOutcome" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/apps/{app_id}/releases:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    post:
+      tags: [releases]
+      operationId: registerRelease
+      summary: Register a release from a commit or a build session
+      description: |
+        A Packaged release of a commit, from GitHub: a build session's head commit (`build_id`; its
+        repository, pull request, branch and package revision), or `sha` in the demo repository
+        (`repo` to name another), answering the latest frozen package. A commit already registered
+        is returned (`created` false). Registering does not verify: the release page's
+        verification is the next step. Replaces the README's `release` command for the main flow.
+      x-twinlab-role: builder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReleaseInput" }
+            examples:
+              fromSession: { value: { build_id: 3 } }
+              fromCommit: { value: { sha: 7c41e9b2d05f3a68c1e4b97a20d6f58e3b9c1a74 } }
+      responses:
+        "201":
+          description: Registered (or the existing release of that commit).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseRegistered" }
+              examples:
+                registered:
+                  value:
+                    release: { id: 8, version: 7c41e9b2d05f, revision: 4be1c0ffee51a8d2e9f04b17c6a3d58e2f9b01c4, commit_sha: 7c41e9b2d05f3a68c1e4b97a20d6f58e3b9c1a74, archive_sha: 5d0c2e7a4f9b81c63e2d17a05b9f4c8e1a36d2b70f5c9e84a1b3d6f2e07c5a98, state: packaged }
+                    created: true
+                    href: /releases/8
+                    next: "Verify the release: replay the recorded examples against its deployment."
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/apps/{app_id}/merge-plan:
     parameters:
@@ -1444,6 +1487,122 @@ paths:
   # ---------------------------------------------------------------------------------------------
   # capture sessions (Request a recording)
   # ---------------------------------------------------------------------------------------------
+  /api/v1/recordings/{recording_id}/workboard:
+    parameters: [{ $ref: "#/components/parameters/RecordingId" }]
+    get:
+      tags: [recordings]
+      operationId: getRecordingWorkboard
+      summary: A recording's workboard
+      description: |
+        One row per application the recording holds: its identity (surface, host and path or
+        program file), scope decision, steps in this recording, events selected and reviewed,
+        scenarios, package state with readiness (blockers and warnings of `pack_validator`: of the
+        current draft for an owner, of the latest frozen revision for a builder), build session and
+        release, and **one** next action. Fields a caller's role does not cover are null (restricted
+        evidence stays with owners). Also the timeline as one swim lane per application over the
+        recording's time axis, the hosts several applications share (told apart by the longest
+        path prefix), and the link to download every approved package of the recording.
+      x-twinlab-role: recording reviewer
+      responses:
+        "200":
+          description: The workboard.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workboard" }
+              examples:
+                twoApps: { $ref: "#/components/examples/Workboard" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/triage:
+    get:
+      tags: [apps]
+      operationId: getTriage
+      summary: Scope triage
+      description: |
+        The applications the caller owns that wait for a scope decision (status `discovered`), one
+        card each: identity, surface, steps, sample screens and controls, and up to three ranked
+        "looks like" suggestions (same host, same or similar name, same vendor, similar program
+        file). With `recording_id` (a reviewer of it): that recording's applications; with
+        `status=all` the decided ones too, to change a decision. `same_as` lists the applications
+        the caller owns (to merge into); `labels` is the one mapping of scope statuses to the words
+        the pages use.
+      x-twinlab-role: signed-in (owner of each card's application)
+      parameters:
+        - { name: recording_id, in: query, schema: { type: string, maxLength: 120 } }
+        - { name: status, in: query, schema: { type: string, enum: [discovered, all] } }
+      responses:
+        "200":
+          description: The triage.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Triage" }
+              examples:
+                outlook: { $ref: "#/components/examples/Triage" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/triage/decisions:
+    post:
+      tags: [apps]
+      operationId: decideScope
+      summary: Decide the scope of one or many applications
+      description: |
+        `replicate` (status `known`) or `not_replicated` (recorded as used only), for each listed
+        application, all or none; each needs the owner role (else 403). With `expected_revision`, a
+        change since then answers 409 `conflict`. Reversible: deciding again changes it back.
+        "Same as" is a merge (preview, then confirm: the merge operations), never a bulk decision.
+      x-twinlab-role: owner of each application
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TriageDecisions" }
+            examples:
+              two: { value: { decisions: [{ app_id: 9, decision: replicate }, { app_id: 13, decision: not_replicated }] } }
+      responses:
+        "200":
+          description: Decided.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TriageOutcome" }
+              examples:
+                decided:
+                  value:
+                    apps: [{ id: 3, name: Outlook, status: not_replicated, status_label: Not replicated (used only), previous: discovered }]
+                    message: "Outlook: not replicated (later recordings note it only as used). You can reverse this at any time from the triage."
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/home:
+    get:
+      tags: [session]
+      operationId: getHome
+      summary: The signed-in user's home
+      description: |
+        What the caller's role needs first. `role` is the highest role held anywhere (`admin` for a
+        portal admin, `none` without any role). `published`: the visible applications' latest
+        published release (what a viewer opens). `ready_to_build`: applications the caller builds
+        that have a frozen package, with the latest build session and release; `waiting`: build
+        sessions with questions or tool approvals waiting for an answer. `workboards`: the
+        recordings the caller reviews (newest first, at most 20), with how many applications wait
+        for a scope decision; `triage_count`: all applications the caller owns that wait for one.
+      x-twinlab-role: signed-in
+      responses:
+        "200":
+          description: The home.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Home" }
+              examples:
+                owner: { $ref: "#/components/examples/HomeOwner" }
+                builder: { $ref: "#/components/examples/HomeBuilder" }
+                viewer: { $ref: "#/components/examples/HomeViewer" }
+                admin: { $ref: "#/components/examples/HomeAdmin" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/v1/capture-sessions:
     get:
       tags: [capture]
@@ -2387,7 +2546,18 @@ components:
     AppStatus:
       type: string
       enum: [known, discovered, not_replicated]
-      description: The scope decision. Labels — known Confirmed application; discovered Discovered, decide scope; not_replicated Not replicated.
+      description: |
+        The scope decision. The one mapping of values to what the pages say (journey.STATUS_LABELS,
+        web/src/lib/scope.ts; `Triage.labels` and `Workboard.labels` carry it too):
+
+        | value | label | triage decision |
+        |---|---|---|
+        | `known` | Replicate | `replicate` |
+        | `discovered` | Needs a scope decision | (none: the state before a decision) |
+        | `not_replicated` | Not replicated (used only) | `not_replicated` |
+
+        "Same as" is not a status: it merges the application into another (the merge operations).
+        An owner chooses only `known` or `not_replicated`; `discovered` is set by a recording.
     ShareState:
       type: string
       enum: [restricted, reviewed, synthetic]
@@ -2444,6 +2614,12 @@ components:
           type: array
           description: The caller's role on each application they have one on.
           items: { $ref: "#/components/schemas/AppRole" }
+        can_create_apps: { type: boolean, description: "Whether the caller may add an application (`TWINLAB2_APP_CREATORS`)." }
+        home_role: { $ref: "#/components/schemas/HomeRole" }
+    HomeRole:
+      type: string
+      enum: [admin, owner, builder, viewer, none]
+      description: The highest role the user holds on any application (`admin` for a portal admin).
     AppRole:
       type: object
       required: [app_id, app_name, role]
@@ -2469,12 +2645,13 @@ components:
       type: object
       required: [id, title, state, hint, href, action]
       properties:
-        id: { type: string, enum: [choose, examples, behaviour, build, verify, open] }
+        id: { type: string, enum: [choose, examples, behaviour, repository, build, verification, verify, open] }
         title: { type: string }
         state: { type: string, enum: [done, next, todo] }
         hint: { type: string, description: "What to do, in one plain sentence." }
         href: { type: string, description: "A web-app path (the web app keeps the portal's page paths, e.g. `/apps/1#examples`)." }
         action: { type: string, description: "The button's words." }
+        blocked: { type: string, description: "Why the step cannot be done yet, in one sentence (empty: it can); `href` points at the fix." }
     Journey:
       type: object
       required: [stage, missing, out_of_scope, steps, next]
@@ -3821,8 +3998,8 @@ components:
       properties:
         apps: { type: array, items: { $ref: "#/components/schemas/AppRef" }, description: "Applications the caller owns." }
         storage:
-          type: object
-          description: The artifact storage, described without credentials.
+          type: [object, "null"]
+          description: The artifact storage, described without credentials; null for everyone but portal admins.
           additionalProperties: { type: [string, boolean, number, "null"] }
     Worker:
       type: object
@@ -3945,6 +4122,293 @@ components:
   #   apps: 1 Billing Desk (web), 2 CaseDesk (desktop), 3 Outlook (discovered)
   #   recording 9f2c4e1a7b3d5f60 holds Billing Desk and CaseDesk, each with its own steps and package
   # -----------------------------------------------------------------------------------------------
+    ScopeLabel:
+      type: object
+      required: [value, label, decision]
+      properties:
+        value: { $ref: "#/components/schemas/AppStatus" }
+        label: { type: string }
+        decision: { type: [string, "null"], enum: [replicate, not_replicated, null], description: "The triage decision that sets it." }
+    IdentityView:
+      type: object
+      required: [key, display, surface, facts]
+      properties:
+        key: { type: string }
+        display: { type: string, description: "Host and path, program file, or mainframe host." }
+        surface: { type: string, description: "web, desktop or mainframe." }
+        facts:
+          type: object
+          description: What the recorder told of a program (exe, company, product, version, toolkit).
+          additionalProperties: { type: string }
+    PackageReadiness:
+      type: object
+      required: [state, rev, blockers, warnings, up_to_date, reason]
+      properties:
+        state: { type: string, enum: [none, draft, frozen], description: "`draft`: changes not frozen yet." }
+        rev: { type: [integer, "null"], description: "The latest frozen revision." }
+        blockers: { type: [integer, "null"], description: "Critical readiness gaps (null: not checked)." }
+        warnings: { type: [integer, "null"], description: "Important readiness gaps." }
+        up_to_date: { type: [boolean, "null"], description: "The draft is the latest frozen revision (owners)." }
+        reason: { type: string }
+    BuildBrief:
+      type: object
+      required: [id, state, state_label, outstanding, head_sha]
+      properties:
+        id: { type: integer }
+        state: { type: string }
+        state_label: { type: string }
+        outstanding: { type: integer, description: "Questions and tool approvals waiting for an answer." }
+        head_sha: { type: [string, "null"] }
+    ReleaseBrief:
+      type: object
+      required: [id, version, state]
+      properties:
+        id: { type: integer }
+        version: { type: string }
+        state: { $ref: "#/components/schemas/ReleaseState" }
+    RowAction:
+      type: object
+      required: [label, href, blocked]
+      properties:
+        label: { type: string }
+        href: { type: string, description: "A web-app path." }
+        blocked: { type: string, description: "Why it cannot be done yet (empty: it can)." }
+    WorkboardRow:
+      type: object
+      required: [app_id, name, my_role, identity, scope, steps, selected, reviewed, scenarios, package, build, release, stage, action]
+      properties:
+        app_id: { type: integer }
+        name: { type: string }
+        my_role: { oneOf: [{ $ref: "#/components/schemas/Role" }, { type: "null" }] }
+        identity: { oneOf: [{ $ref: "#/components/schemas/IdentityView" }, { type: "null" }] }
+        scope:
+          type: object
+          required: [status, label]
+          properties:
+            status: { $ref: "#/components/schemas/AppStatus" }
+            label: { type: string }
+        steps: { type: integer, description: "Steps of this application in this recording." }
+        selected: { type: [integer, "null"], description: "Events selected for its package (owners)." }
+        reviewed: { type: [boolean, "null"], description: "Whether an owner reviewed the selection (owners)." }
+        scenarios: { type: [integer, "null"], description: "Business scenarios (owners)." }
+        package: { oneOf: [{ $ref: "#/components/schemas/PackageReadiness" }, { type: "null" }] }
+        build: { oneOf: [{ $ref: "#/components/schemas/BuildBrief" }, { type: "null" }] }
+        release: { oneOf: [{ $ref: "#/components/schemas/ReleaseBrief" }, { type: "null" }] }
+        stage: { type: string, description: "The journey stage." }
+        action: { oneOf: [{ $ref: "#/components/schemas/RowAction" }, { type: "null" }] }
+    TimelineRun:
+      type: object
+      required: [from_index, to_index, start, end, steps, samples]
+      properties:
+        from_index: { type: integer, description: "Position of its first step among all the recording's steps." }
+        to_index: { type: integer }
+        start: { type: [string, "null"] }
+        end: { type: [string, "null"] }
+        steps: { type: integer }
+        samples: { type: array, items: { type: string }, description: "Up to five of its steps, as text." }
+    TimelineLane:
+      type: object
+      required: [app_id, name, surface, steps, runs]
+      properties:
+        app_id: { type: integer }
+        name: { type: string }
+        surface: { type: string }
+        steps: { type: integer }
+        runs: { type: array, items: { $ref: "#/components/schemas/TimelineRun" } }
+    Timeline:
+      type: object
+      required: [axis, start, end, total, lanes]
+      properties:
+        axis: { type: string, enum: [time, order], description: "`order` when some step has no capture time." }
+        start: { type: [string, "null"] }
+        end: { type: [string, "null"] }
+        total: { type: integer }
+        lanes: { type: array, items: { $ref: "#/components/schemas/TimelineLane" } }
+    SharedHost:
+      type: object
+      required: [host, apps, text]
+      properties:
+        host: { type: string }
+        apps:
+          type: array
+          items:
+            type: object
+            required: [app_id, name, path]
+            properties:
+              app_id: { type: integer }
+              name: { type: string }
+              path: { type: string }
+        text: { type: string, description: "How its steps were told apart (the longest path prefix)." }
+    Workboard:
+      type: object
+      required: [recording, apps, counts, download_href, timeline, shared_hosts, labels]
+      properties:
+        recording:
+          type: object
+          required: [id, name, status_label]
+          properties:
+            id: { type: string }
+            name: { type: string }
+            status_label: { type: string }
+        apps: { type: array, items: { $ref: "#/components/schemas/WorkboardRow" } }
+        counts:
+          type: object
+          required: [apps, needs_decision, replicate, not_replicated, approved_packages]
+          properties:
+            apps: { type: integer }
+            needs_decision: { type: integer }
+            replicate: { type: integer }
+            not_replicated: { type: integer }
+            approved_packages: { type: integer, description: "Applications with a frozen package the caller builds." }
+        download_href: { type: [string, "null"], description: "One ZIP of the approved packages (null: none)." }
+        timeline: { $ref: "#/components/schemas/Timeline" }
+        shared_hosts: { type: array, items: { $ref: "#/components/schemas/SharedHost" } }
+        labels: { type: array, items: { $ref: "#/components/schemas/ScopeLabel" } }
+    Suggestion:
+      type: object
+      required: [app_id, name, status, status_label, score, reasons, can_merge]
+      properties:
+        app_id: { type: integer }
+        name: { type: string }
+        status: { $ref: "#/components/schemas/AppStatus" }
+        status_label: { type: string }
+        score: { type: integer }
+        reasons: { type: array, items: { type: string } }
+        can_merge: { type: boolean, description: "The caller owns it too (a merge needs both)." }
+    TriageCard:
+      type: object
+      required: [app_id, name, revision, status, status_label, surface, identities, recordings, steps, screens, controls, suggestions]
+      properties:
+        app_id: { type: integer }
+        name: { type: string }
+        revision: { type: integer }
+        status: { $ref: "#/components/schemas/AppStatus" }
+        status_label: { type: string }
+        surface: { type: string }
+        identities: { type: array, items: { $ref: "#/components/schemas/IdentityView" } }
+        recordings:
+          type: array
+          items:
+            type: object
+            required: [id, name, steps]
+            properties:
+              id: { type: string }
+              name: { type: string }
+              steps: { type: integer }
+        steps: { type: integer }
+        screens: { type: array, items: { type: string } }
+        controls: { type: array, items: { type: string } }
+        suggestions: { type: array, items: { $ref: "#/components/schemas/Suggestion" } }
+    Triage:
+      type: object
+      required: [apps, same_as, labels, recording]
+      properties:
+        apps: { type: array, items: { $ref: "#/components/schemas/TriageCard" } }
+        same_as: { type: array, items: { $ref: "#/components/schemas/AppRef" } }
+        labels: { type: array, items: { $ref: "#/components/schemas/ScopeLabel" } }
+        recording:
+          oneOf:
+            - type: object
+              required: [id, name]
+              properties:
+                id: { type: string }
+                name: { type: string }
+            - { type: "null" }
+    TriageDecision:
+      type: object
+      required: [app_id, decision]
+      properties:
+        app_id: { type: integer }
+        decision: { type: string, enum: [replicate, not_replicated] }
+        expected_revision: { type: [integer, "null"] }
+    TriageDecisions:
+      type: object
+      required: [decisions]
+      properties:
+        decisions: { type: array, maxItems: 200, items: { $ref: "#/components/schemas/TriageDecision" } }
+    TriageOutcome:
+      type: object
+      required: [apps, message]
+      properties:
+        apps:
+          type: array
+          items:
+            type: object
+            required: [id, name, status, status_label, previous]
+            properties:
+              id: { type: integer }
+              name: { type: string }
+              status: { $ref: "#/components/schemas/AppStatus" }
+              status_label: { type: string }
+              previous: { $ref: "#/components/schemas/AppStatus" }
+        message: { type: string, description: "What was decided, and that it can be reversed." }
+    PublishedDemo:
+      type: object
+      required: [app_id, name, purpose, release_id, version, url, verified]
+      properties:
+        app_id: { type: integer }
+        name: { type: string }
+        purpose: { type: string }
+        release_id: { type: integer }
+        version: { type: string }
+        url: { type: [string, "null"], description: "Its deployment (a verified one first)." }
+        verified: { type: boolean }
+    ReadyToBuild:
+      type: object
+      required: [app_id, name, rev, approved_at, build, release]
+      properties:
+        app_id: { type: integer }
+        name: { type: string }
+        rev: { type: integer }
+        approved_at: { type: string }
+        build: { oneOf: [{ $ref: "#/components/schemas/BuildBrief" }, { type: "null" }] }
+        release: { oneOf: [{ $ref: "#/components/schemas/ReleaseBrief" }, { type: "null" }] }
+    WaitingQuestion:
+      type: object
+      required: [build_id, app_id, name, questions]
+      properties:
+        build_id: { type: integer }
+        app_id: { type: integer }
+        name: { type: string }
+        questions: { type: integer }
+    WorkboardLink:
+      type: object
+      required: [id, name, received_at, apps, needs_decision]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        received_at: { type: [string, "null"] }
+        apps: { type: integer }
+        needs_decision: { type: integer }
+    Home:
+      type: object
+      required: [role, user, can_create_apps, published, ready_to_build, waiting, workboards, triage_count, is_admin]
+      properties:
+        role: { $ref: "#/components/schemas/HomeRole" }
+        user: { type: [string, "null"] }
+        can_create_apps: { type: boolean }
+        published: { type: array, items: { $ref: "#/components/schemas/PublishedDemo" } }
+        ready_to_build: { type: array, items: { $ref: "#/components/schemas/ReadyToBuild" } }
+        waiting: { type: array, items: { $ref: "#/components/schemas/WaitingQuestion" } }
+        workboards: { type: array, items: { $ref: "#/components/schemas/WorkboardLink" } }
+        triage_count: { type: integer }
+        is_admin: { type: boolean }
+    ReleaseInput:
+      type: object
+      properties:
+        build_id: { type: [integer, "null"], description: "A build session of the application: its head commit." }
+        sha: { type: [string, "null"], maxLength: 64, description: "The full commit SHA (without `build_id`)." }
+        repo: { type: [string, "null"], maxLength: 200, description: "owner/name; default: the demo repository." }
+        pr_number: { type: [integer, "null"] }
+        ref: { type: [string, "null"], maxLength: 200 }
+    ReleaseRegistered:
+      type: object
+      required: [release, created, href, next]
+      properties:
+        release: { $ref: "#/components/schemas/ReleaseSummary" }
+        created: { type: boolean }
+        href: { type: string }
+        next: { type: string }
   examples:
     SessionOwner:
       value:
@@ -3958,6 +4422,8 @@ components:
         roles:
           - { app_id: 1, app_name: Billing Desk, role: owner }
           - { app_id: 2, app_name: CaseDesk, role: owner }
+        can_create_apps: true
+        home_role: owner
     SessionBuilder:
       value:
         signed_in: true
@@ -3969,6 +4435,8 @@ components:
         csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
         roles:
           - { app_id: 1, app_name: Billing Desk, role: builder }
+        can_create_apps: false
+        home_role: builder
     SessionViewer:
       value:
         signed_in: true
@@ -3980,6 +4448,8 @@ components:
         csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
         roles:
           - { app_id: 1, app_name: Billing Desk, role: viewer }
+        can_create_apps: false
+        home_role: viewer
     SessionAdmin:
       value:
         signed_in: true
@@ -3990,6 +4460,8 @@ components:
         login_available: true
         csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
         roles: []
+        can_create_apps: true
+        home_role: admin
     SessionSignedOut:
       value:
         signed_in: false
@@ -4000,19 +4472,186 @@ components:
         login_available: true
         csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
         roles: []
+        can_create_apps: false
+        home_role: none
+
+    Workboard:
+      value:
+        recording: { id: 9f2c4e1a7b3d5f60, name: Order to invoice, status_label: Complete }
+        counts: { apps: 3, needs_decision: 1, replicate: 2, not_replicated: 0, approved_packages: 1 }
+        download_href: /api/v1/recordings/9f2c4e1a7b3d5f60/packages/download
+        labels:
+          - { value: known, label: Replicate, decision: replicate }
+          - { value: discovered, label: Needs a scope decision, decision: null }
+          - { value: not_replicated, label: Not replicated (used only), decision: not_replicated }
+        apps:
+          - app_id: 3
+            name: Outlook
+            my_role: owner
+            identity: { key: "desktop:Microsoft Corporation/Outlook", display: OUTLOOK.EXE, surface: desktop, facts: { exe: OUTLOOK.EXE, company: Microsoft Corporation } }
+            scope: { status: discovered, label: Needs a scope decision }
+            steps: 4
+            selected: null
+            reviewed: null
+            scenarios: 0
+            package: null
+            build: null
+            release: null
+            stage: Choose application
+            action: { label: Decide scope, href: "/recordings/9f2c4e1a7b3d5f60/triage#app-3", blocked: "" }
+          - app_id: 1
+            name: Billing Desk
+            my_role: owner
+            identity: { key: "web:https://billing.example.test", display: billing.example.test, surface: web, facts: {} }
+            scope: { status: known, label: Replicate }
+            steps: 2
+            selected: 2
+            reviewed: true
+            scenarios: 1
+            package: { state: frozen, rev: 1, blockers: 0, warnings: 2, up_to_date: true, reason: "" }
+            build: { id: 3, state: ready_for_verification, state_label: Ready for verification, outstanding: 0, head_sha: 7c41e9b2d05f3a68c1e4b97a20d6f58e3b9c1a74 }
+            release: null
+            stage: Build
+            action: { label: Verify this build, href: /builds/3, blocked: "" }
+          - app_id: 2
+            name: CaseDesk
+            my_role: owner
+            identity: { key: "desktop:Contoso/CaseDesk", display: CaseDesk.exe, surface: desktop, facts: { exe: CaseDesk.exe, company: Contoso } }
+            scope: { status: known, label: Replicate }
+            steps: 1
+            selected: 1
+            reviewed: false
+            scenarios: 0
+            package: { state: none, rev: null, blockers: null, warnings: null, up_to_date: null, reason: "No business scenario yet: a package needs one." }
+            build: null
+            release: null
+            stage: Review required behaviour
+            action: { label: Review steps, href: "/recordings/9f2c4e1a7b3d5f60?app_id=2#assign", blocked: "" }
+        timeline:
+          axis: time
+          start: "2026-11-20T09:00:00Z"
+          end: "2026-11-20T09:04:00Z"
+          total: 7
+          lanes:
+            - app_id: 1
+              name: Billing Desk
+              surface: web
+              steps: 2
+              runs:
+                - { from_index: 0, to_index: 1, start: "2026-11-20T09:00:00Z", end: "2026-11-20T09:01:00Z", steps: 2, samples: ["09:00:00 click Orders · Orders", "09:01:00 submit Invoice · Invoice"] }
+            - app_id: 2
+              name: CaseDesk
+              surface: desktop
+              steps: 1
+              runs:
+                - { from_index: 2, to_index: 2, start: "2026-11-20T09:02:00Z", end: "2026-11-20T09:02:00Z", steps: 1, samples: ["09:02:00 click Save · Case 1042"] }
+            - app_id: 3
+              name: Outlook
+              surface: desktop
+              steps: 4
+              runs:
+                - { from_index: 3, to_index: 6, start: "2026-11-20T09:03:00Z", end: "2026-11-20T09:04:00Z", steps: 4, samples: ["09:03:00 click Send · Inbox"] }
+        shared_hosts: []
+
+    Triage:
+      value:
+        recording: null
+        labels:
+          - { value: known, label: Replicate, decision: replicate }
+          - { value: discovered, label: Needs a scope decision, decision: null }
+          - { value: not_replicated, label: Not replicated (used only), decision: not_replicated }
+        same_as:
+          - { id: 1, name: Billing Desk }
+          - { id: 2, name: CaseDesk }
+        apps:
+          - app_id: 3
+            name: Outlook
+            revision: 1
+            status: discovered
+            status_label: Needs a scope decision
+            surface: desktop
+            identities:
+              - { key: "desktop:Microsoft Corporation/Outlook", display: OUTLOOK.EXE, surface: desktop, facts: { exe: OUTLOOK.EXE, company: Microsoft Corporation } }
+            recordings:
+              - { id: 9f2c4e1a7b3d5f60, name: Order to invoice, steps: 4 }
+            steps: 4
+            screens: [Inbox, New message]
+            controls: [Send button, To field]
+            suggestions:
+              - { app_id: 2, name: CaseDesk, status: known, status_label: Replicate, score: 2, reasons: [similar program file], can_merge: true }
+
+    HomeOwner:
+      value:
+        role: owner
+        user: ana
+        can_create_apps: true
+        published: []
+        ready_to_build:
+          - app_id: 1
+            name: Billing Desk
+            rev: 1
+            approved_at: "2026-11-20T10:00:00+00:00"
+            build: { id: 3, state: ready_for_verification, state_label: Ready for verification, outstanding: 0, head_sha: 7c41e9b2d05f3a68c1e4b97a20d6f58e3b9c1a74 }
+            release: null
+        waiting: []
+        workboards:
+          - { id: 9f2c4e1a7b3d5f60, name: Order to invoice, received_at: "2026-11-20T09:05:00+00:00", apps: 3, needs_decision: 1 }
+        triage_count: 1
+        is_admin: false
+    HomeBuilder:
+      value:
+        role: builder
+        user: ben
+        can_create_apps: false
+        published: []
+        ready_to_build:
+          - app_id: 1
+            name: Billing Desk
+            rev: 1
+            approved_at: "2026-11-20T10:00:00+00:00"
+            build: { id: 3, state: waiting_for_answer, state_label: Waiting for your answer, outstanding: 1, head_sha: null }
+            release: null
+        waiting:
+          - { build_id: 3, app_id: 1, name: Billing Desk, questions: 1 }
+        workboards: []
+        triage_count: 0
+        is_admin: false
+    HomeViewer:
+      value:
+        role: viewer
+        user: vic
+        can_create_apps: false
+        published:
+          - { app_id: 1, name: Billing Desk, purpose: Invoice from saved orders, release_id: 7, version: 1.4.0, url: "https://billing-demo.example.test", verified: true }
+        ready_to_build: []
+        waiting: []
+        workboards: []
+        triage_count: 0
+        is_admin: false
+    HomeAdmin:
+      value:
+        role: admin
+        user: root
+        can_create_apps: true
+        published: []
+        ready_to_build: []
+        waiting: []
+        workboards: []
+        triage_count: 0
+        is_admin: true
 
     Catalog:
       value:
         page: { total: 3, limit: 50, offset: 0, next_offset: null }
         filters: { owners: [ana, ben], stages: [Choose application, Verify] }
-        journey_titles: [Choose application, Add examples, Review required behaviour, Build, Verify, Open or download]
+        journey_titles: [Choose application, Add examples, Review required behaviour, Connect repository, Build, Verification settings, Verify, Open or download]
         recordings:
           - { id: 9f2c4e1a7b3d5f60, name: Order to invoice }
         apps:
           - id: 1
             name: Billing Desk
             status: known
-            status_label: Confirmed application
+            status_label: Replicate
             owner: ana
             purpose: Invoice from saved orders
             my_role: owner
@@ -4047,7 +4686,7 @@ components:
           - id: 2
             name: CaseDesk
             status: known
-            status_label: Confirmed application
+            status_label: Replicate
             owner: ana
             purpose: Case handling desktop client
             my_role: owner
@@ -4067,7 +4706,7 @@ components:
           - id: 3
             name: Outlook
             status: discovered
-            status_label: "Discovered: decide scope"
+            status_label: Needs a scope decision
             owner: ana
             purpose: ""
             my_role: owner
@@ -4091,7 +4730,7 @@ components:
         revision: 3
         name: Billing Desk
         status: known
-        status_label: Confirmed application
+        status_label: Replicate
         owner: ana
         purpose: Invoice from saved orders
         my_role: owner
@@ -4117,16 +4756,15 @@ components:
           - { rev: 2, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, sha256: 1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c, size: 18432, approved_by: ana, approved_at: "2026-11-18T09:30:00+00:00" }
           - { rev: 1, revision: 4c0d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c, sha256: 0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b, size: 16210, approved_by: ana, approved_at: "2026-11-10T14:00:00+00:00" }
         statuses:
-          - { value: known, label: Confirmed application }
-          - { value: discovered, label: "Discovered: decide scope" }
-          - { value: not_replicated, label: Not replicated }
+          - { value: known, label: Replicate }
+          - { value: not_replicated, label: Not replicated (used only) }
     AppDetailViewer:
       value:
         id: 1
         revision: 3
         name: Billing Desk
         status: known
-        status_label: Confirmed application
+        status_label: Replicate
         owner: ana
         purpose: Invoice from saved orders
         my_role: viewer
@@ -4150,9 +4788,8 @@ components:
           - { id: 5, version: 1.0.0, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
         packages: []
         statuses:
-          - { value: known, label: Confirmed application }
-          - { value: discovered, label: "Discovered: decide scope" }
-          - { value: not_replicated, label: Not replicated }
+          - { value: known, label: Replicate }
+          - { value: not_replicated, label: Not replicated (used only) }
 
     Roles:
       value:
@@ -4545,7 +5182,7 @@ components:
             - app_id: 1
               name: Billing Desk
               status: known
-              status_label: Confirmed application
+              status_label: Replicate
               level: full
               key: "web:https://billing.example.test/desk"
               my_role: owner
@@ -4556,7 +5193,7 @@ components:
             - app_id: 2
               name: CaseDesk
               status: known
-              status_label: Confirmed application
+              status_label: Replicate
               level: steps
               key: "exe:CaseDesk.exe"
               my_role: owner

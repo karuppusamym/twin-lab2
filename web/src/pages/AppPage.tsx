@@ -46,9 +46,12 @@ function AppView({ item, evidence, scenarios, evidenceError }: {
   const builder = can("builder", item.id);
   const manageRoles = reviewer || can("admin");
   const j = item.journey;
+  // the sections this role sees, numbered in the order shown (a builder sees no 2 and 3)
+  const shown = ["choose", ...(reviewer && evidence ? ["examples"] : []), ...(reviewer && scenarios ? ["behaviour"] : []), "build", "verify"];
+  const n = (id: string) => shown.indexOf(id) + 1;
   return (
     <>
-      <Crumbs><Link to="/">Applications</Link></Crumbs>
+      <Crumbs><Link to="/apps">Applications</Link></Crumbs>
       <h1>{item.name} <Badge kind={item.status}>{item.status_label}</Badge></h1>
       <dl className="about">
         <dt>Owner</dt><dd>{item.owner || "not set"}</dd>
@@ -57,7 +60,7 @@ function AppView({ item, evidence, scenarios, evidenceError }: {
         {j.missing.length > 0 && <><dt>Missing</dt><dd>{j.missing.join(", ")}</dd></>}
       </dl>
       <JourneyNav journey={j} name={item.name} />
-      {reviewer && <p className="muted">Identities, Git repository and deployment settings: <Link to={`/apps/${item.id}/setup`}>Setup / Advanced</Link>.</p>}
+      {reviewer && <p className="muted">Identities, the demo repository, verification and deployment settings: <Link to={`/apps/${item.id}/setup`}>this application&apos;s setup</Link>.</p>}
       {manageRoles && <p className="muted"><Link to={`/apps/${item.id}/history`}>Audit history</Link>: who reviewed evidence, froze packages, started builds, published releases and changed roles.</p>}
       {!reviewer && (
         <p className="muted" id="read-only">You have read-only access to this application. Recordings and uploaded evidence are restricted to its owners{builder ? "; you can open its builder-approved packages below" : ""}.</p>
@@ -65,9 +68,10 @@ function AppView({ item, evidence, scenarios, evidenceError }: {
       <ErrorText error={evidenceError} />
 
       <section id="choose" aria-labelledby="choose-h">
-        <h2 id="choose-h">1. Choose application</h2>
+        <h2 id="choose-h">{n("choose")}. Choose application</h2>
         {item.status === "discovered" && reviewer && (
-          <p>A recording found this application. Confirm it to replicate it, rename it, merge it into an application it is the same as, or mark it as not replicated: later recordings then note it only as having been used.</p>
+          <p className="nextcard">A recording found this application and nobody decided yet what happens to it. <Link className="button" to={`/triage#app-${item.id}`}>Decide scope</Link>{" "}
+            <span className="muted">The triage shows what it looks like and lets you replicate it, say it is the same as another application, or record it as not replicated (used only).</span></p>
         )}
         <div className="columns">
           <Roles appId={item.id} manage={manageRoles} />
@@ -79,7 +83,7 @@ function AppView({ item, evidence, scenarios, evidenceError }: {
 
       {reviewer && scenarios && (
         <section id="behaviour" aria-labelledby="behaviour-h">
-          <h2 id="behaviour-h">3. Review required behaviour</h2>
+          <h2 id="behaviour-h">{n("behaviour")}. Review required behaviour</h2>
           <div id="scenarios">
             <p className="muted">One business scenario per outcome the copy must reproduce. Use made-up example values only: the build pack must contain no real customer data.</p>
             {scenarios.scenarios.map((sc) => <ScenarioForm key={sc.id} appId={item.id} list={scenarios} scenario={sc} />)}
@@ -89,7 +93,7 @@ function AppView({ item, evidence, scenarios, evidenceError }: {
       )}
 
       <section id="build" aria-labelledby="build-h">
-        <h2 id="build-h">4. Build</h2>
+        <h2 id="build-h">{n("build")}. Build</h2>
         {reviewer && (scenarios?.scenarios.length
           ? <p><Link className="button" to={`/apps/${item.id}/build-pack/preview`}>Preview and approve a builder package</Link></p>
           : <p className="muted">Add a business scenario to prepare a builder package.</p>)}
@@ -101,7 +105,7 @@ function AppView({ item, evidence, scenarios, evidenceError }: {
               <p key={p.rev}>
                 <Link to={`/apps/${item.id}/packages/${p.rev}`}>Revision {p.rev}</Link>{" "}
                 <span className="muted">approved by {p.approved_by} · {when(p.approved_at)} · <code>{short(p.sha256)}</code></span>
-                {" · "}<a href={`/api/v1/apps/${item.id}/packages/${p.rev}/download`}>Download</a>
+                {" · "}<a href={`/api/v1/apps/${item.id}/packages/${p.rev}/download`} aria-label={`Download revision ${p.rev} of ${item.name}`}>Download</a>
               </p>
             )) : <p>No package is approved for the builder yet.</p>}
           </>
@@ -109,11 +113,11 @@ function AppView({ item, evidence, scenarios, evidenceError }: {
         <h3>Releases</h3>
         {item.releases.length ? item.releases.map((r) => (
           <p key={r.id}><Link to={`/releases/${r.id}`}>{r.version}</Link> <code>{short(r.commit_sha)}</code> <Badge kind={r.state}>{r.state.charAt(0).toUpperCase() + r.state.slice(1)}</Badge></p>
-        )) : <p>Register a committed demo with the release command in the project README.</p>}
+        )) : <p>No release yet. {builder ? <>A release comes from a build: <Link to={`/apps/${item.id}/build#register`}>verify a build session&apos;s commit, or register a commit</Link>.</> : "It appears here once a build is registered."}</p>}
       </section>
 
       <section id="verify" aria-labelledby="verify-h">
-        <h2 id="verify-h">5. Verify · 6. Open or download</h2>
+        <h2 id="verify-h">{n("verify")}. Verify, then open or download</h2>
         {item.releases[0]
           ? <p>Verify and open each release from its page: <Link to={`/releases/${item.releases[0].id}`}>{item.releases[0].version}</Link> is the latest.</p>
           : <p>A release appears here once it is built and registered.</p>}
@@ -143,7 +147,7 @@ function Roles({ appId, manage }: { appId: number; manage: boolean }) {
                 {list.roles.length ? list.roles.map((r) => (
                   <tr key={r.user_name}>
                     <td>{r.user_name}</td><td>{r.role}</td>
-                    <td>{manage && <ActionButton secondary label="Remove" run={async () => {
+                    <td>{manage && <ActionButton secondary label="Remove" name={`Remove ${r.user_name} (${r.role})`} run={async () => {
                       data(await api.DELETE("/api/v1/apps/{app_id}/roles/{user_name}", { params: { path: { app_id: appId, user_name: r.user_name } } }));
                       await refresh();
                     }} />}</td>
@@ -200,6 +204,7 @@ function OwnerForms({ item, others }: { item: Schemas["AppDetail"]; others: Sche
         <label>Name <DirtyNote dirty={scope.dirty} /> <input maxLength={120} value={scope.value.name} onChange={(e) => { const name = e.target.value; scope.set((v) => ({ ...v, name })); }} /></label>
         <label>Scope decision
           <select value={scope.value.status} onChange={(e) => { const status = e.target.value as Schemas["AppStatus"]; scope.set((v) => ({ ...v, status })); }}>
+            {item.status === "discovered" && <option value="discovered" disabled>Needs a scope decision: choose one</option>}
             {item.statuses.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
         </label>
@@ -282,7 +287,7 @@ function AttachmentRow({ appId, file, states }: { appId: number; file: Schemas["
         </select>{" "}
         <button className="secondary" disabled={save.isPending}>Save review</button>
       </form>{" "}
-      <ActionButton secondary label="Remove" run={async () => {
+      <ActionButton secondary label="Remove" name={`Remove ${file.title}`} run={async () => {
         await api.DELETE("/api/v1/apps/{app_id}/attachments/{attachment_id}", { params: { path: { app_id: appId, attachment_id: file.id } } });
       }} />
       <ErrorText error={save.error} />

@@ -22,6 +22,11 @@ function BuildView({ page }: { page: Schemas["BuildPage"] }) {
   const can = useCan();
   const owner = can("owner", page.app.id);
   const { app, pack } = page;
+  const detail = useQuery({
+    queryKey: ["app", app.id],
+    queryFn: async () => data(await api.GET("/api/v1/apps/{app_id}", { params: { path: { app_id: app.id } } })),
+  });
+  const gitUrl = detail.data?.git_url ?? null;
   return (
     <>
       <Crumbs><Link to={`/apps/${app.id}`}>{app.name}</Link> · Build</Crumbs>
@@ -49,15 +54,27 @@ function BuildView({ page }: { page: Schemas["BuildPage"] }) {
             <p><a href={`/api/v1/apps/${app.id}/briefs/${pack.revision}/download`}>Download this build pack</a></p>
             <PackageFiles files={pack.files} full />
           </section>
-          <StartSession page={page} pack={pack} />
+          <StartSession page={page} pack={pack} gitUrl={gitUrl} />
         </>
       )}
       {page.sessions.length > 0 && <Sessions page={page} />}
+      {pack && page.frozen && <RegisterRelease page={page} gitUrl={gitUrl} />}
     </>
   );
 }
 
-function StartSession({ page, pack }: { page: Schemas["BuildPage"]; pack: Schemas["ApprovedPack"] }) {
+/** Why a session cannot start yet, with where to fix it ("" = it can). */
+function startBlocked(page: Schemas["BuildPage"], gitUrl: string | null, owner: boolean, admin: boolean) {
+  if (!page.frozen) return { reason: "Freeze the pack first.", href: `/apps/${page.app.id}/build-pack/preview#approve`, fix: owner ? "Preview and approve it" : "" };
+  if (gitUrl === "") return { reason: "No demo repository is set for this application.", href: `/apps/${page.app.id}/setup#git`, fix: owner ? "Connect one" : "" };
+  if (page.repos.length === 0) return { reason: "No GitHub repository is connected for build sessions.", href: "/setup/builds#repos", fix: admin ? "Connect one" : "" };
+  if (page.providers.length === 0) return { reason: "No build provider is ready.", href: "/setup/builds", fix: admin ? "Set one up" : "" };
+  return null;
+}
+
+function StartSession({ page, pack, gitUrl }: { page: Schemas["BuildPage"]; pack: Schemas["ApprovedPack"]; gitUrl: string | null }) {
+  const can = useCan();
+  const blocked = startBlocked(page, gitUrl, can("owner", page.app.id), can("admin"));
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const parent = Number(params.get("parent")) || null;
@@ -84,8 +101,9 @@ function StartSession({ page, pack }: { page: Schemas["BuildPage"]; pack: Schema
   return (
     <section id="start" aria-labelledby="start-h">
       <h2 id="start-h">2. New build session</h2>
-      {page.repos.length === 0 && (
-        <p className="error">No GitHub repository is connected yet: an admin connects one under <Link to="/setup/builds#repos">Setup, Build sessions</Link>.</p>
+      {blocked && (
+        <p className="blocked" id="start-blocked" role="note"><b>Cannot start yet:</b> {blocked.reason}{" "}
+          {blocked.fix ? <Link to={blocked.href}>{blocked.fix} →</Link> : <span className="muted">({blocked.href.startsWith("/setup") ? "a portal admin" : "an owner"} does this)</span>}</p>
       )}
       {changedPack && page.previous && (
         <>
@@ -98,7 +116,7 @@ function StartSession({ page, pack }: { page: Schemas["BuildPage"]; pack: Schema
       <form id="build-form" aria-label="New build session" onSubmit={submit}>
         <label>Provider
           <select value={provider} onChange={(e) => { setProvider(e.target.value); const p = page.providers.find((x) => x.name === e.target.value); if (p) setBudget(amount(p.budget)); }}>
-            {page.providers.map((p) => <option key={p.name} value={p.name}>{p.label}{p.ready ? " (not ready)" : ""}</option>)}
+            {page.providers.map((p) => <option key={p.name} value={p.name} disabled={Boolean(p.ready)}>{p.label}{p.ready ? " (not ready: admins only see this)" : ""}</option>)}
           </select>
         </label>
         <ul className="muted" id="provider-notes">
@@ -136,8 +154,40 @@ function StartSession({ page, pack }: { page: Schemas["BuildPage"]; pack: Schema
         <p className="muted">In the provider's own unit (Devin: ACUs; Claude: US dollars; Copilot: premium requests).</p>
         {chosen?.ready && <Notice>{chosen.ready}</Notice>}
         <ErrorText error={begin.error} />
-        <button disabled={!page.frozen || page.repos.length === 0 || begin.isPending}>Start build session</button>
-        {!page.frozen && <span className="muted">Freeze the pack first.</span>}
+        <button disabled={Boolean(blocked) || Boolean(chosen?.ready) || begin.isPending} aria-describedby={blocked ? "start-blocked" : undefined}>Start build session</button>
+        {blocked && <span className="muted">{blocked.reason}</span>}
+      </form>
+    </section>
+  );
+}
+
+/** A release of a commit built outside a session, or of a session's head (replaces the README's release command). */
+function RegisterRelease({ page, gitUrl }: { page: Schemas["BuildPage"]; gitUrl: string | null }) {
+  const navigate = useNavigate();
+  const [sha, setSha] = useState("");
+  const [repo, setRepo] = useState("");
+  const ready = page.sessions.filter((b) => b.head_sha);
+  const register = useAction(async (body: Schemas["ReleaseInput"]) => data(await api.POST("/api/v1/apps/{app_id}/releases", {
+    params: { path: { app_id: page.app.id } }, body,
+  })), (r) => navigate(r.href, { state: { notice: r.created ? `Registered release ${r.release.version}. ${r.next}` : `Commit ${r.release.version} is already release ${r.release.id}. ${r.next}` } }),
+  [["app", page.app.id], ["apps"], ["home"]]);
+  return (
+    <section id="register" aria-labelledby="register-h">
+      <h2 id="register-h">Register a release</h2>
+      <p className="muted">A release is the commit to verify and publish. A build session&apos;s commit is registered when you verify it from the session&apos;s page; here you can register it without verifying, or register a commit built elsewhere.</p>
+      {ready.length > 0 && (
+        <ul className="list">{ready.map((b) => (
+          <li key={b.id}>Session #{b.id} ({b.provider_label}): <code>{short(b.head_sha)}</code>{" "}
+            <button type="button" className="secondary" disabled={register.isPending} onClick={() => register.mutate({ build_id: b.id })}
+              aria-label={`Register the commit of session ${b.id} as a release`}>Register as a release</button>{" "}
+            <Link to={`/builds/${b.id}`}>Verify this build</Link></li>
+        ))}</ul>
+      )}
+      <form aria-label="Register a commit" onSubmit={(e) => { e.preventDefault(); register.mutate({ sha: sha.trim(), repo: repo.trim() || undefined }); }}>
+        <label>Commit SHA (40 characters) <input required pattern="[0-9a-fA-F]{40}" value={sha} onChange={(e) => setSha(e.target.value)} /></label>
+        <label>Repository <input value={repo} placeholder={gitUrl ? "the demo repository" : "owner/name"} onChange={(e) => setRepo(e.target.value)} /></label>
+        <ErrorText error={register.error} />
+        <button className="secondary" disabled={register.isPending}>Register the commit</button>
       </form>
     </section>
   );

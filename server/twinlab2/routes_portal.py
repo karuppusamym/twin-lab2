@@ -148,7 +148,8 @@ def app_detail(app_id):
     return dict(app_summary(item), revision=item["revision"], git_url=item["git_url"] or "", url_match=item["url_match"] or "path",
                 surface=item["surface"] or "", releases=[shapes.release_summary(r) for r in releases(app_id)],
                 packages=[shapes.package_summary(r) for r in packages.revisions(db(), app_id)] if builder else [],
-                statuses=[shapes.choice(s, shapes.status_label(s)) for s in registry.STATUSES])
+                # what an owner may choose: "discovered" is the state before a decision, never a choice
+                statuses=[shapes.choice(s, shapes.status_label(s)) for s in journey.OWNER_CHOICES])
 
 # -- session -------------------------------------------------------------------------------
 
@@ -163,7 +164,9 @@ def session_view():
     return {"signed_in": user is not None, "user": user, "is_admin": user is not None and bool(admin),
             "auth_mode": auth.auth_mode(), "access_mode": auth.access_mode(),
             "login_available": auth.login_available(),
-            "csrf_token": form_token(), "roles": roles}
+            "csrf_token": form_token(), "roles": roles,
+            "can_create_apps": user is not None and auth.may_create_apps(user, bool(admin)),
+            "home_role": auth.home_role(user, bool(admin)) if user is not None else "none"}
 
 
 @routes.get(V1 + "/session", auth.public, response_model=m.Session)
@@ -286,6 +289,10 @@ def change_app(app_id, data, current=None):
 @routes.post(V1 + "/apps", auth.signed_in, response_model=m.AppRef, status_code=201,
              idempotent="stored")
 def create_app_(body: m.NewApp):
+    if not auth.may_create_apps():
+        fail(403, {"owners": "Adding an application needs the owner role on an application, or a portal admin.",
+                   "admins": "Only a portal admin can add an application here."}.get(
+                       g.settings.app_creators, "You cannot add an application."), "role")
     data = payload(body)
     name = text(data, "name", 200)
     owner = text(data, "owner", 120)
@@ -487,8 +494,9 @@ def get_app_setup(app_id: int):
 @routes.get(V1 + "/setup", auth.signed_in, response_model=m.SetupPage)
 def setup():
     rows = visible(db().execute("SELECT id, name FROM apps ORDER BY name").fetchall())
+    # where the artifacts are kept (a local path, an S3 bucket and prefix) is for portal admins only
     return {"apps": [shapes.ref(r) for r in rows if auth.can("owner", app_id=r["id"])],
-            "storage": artifacts.store().describe()}
+            "storage": artifacts.store().describe() if g.is_admin else None}
 
 # -- restricted evidence: an application's recorded flows, links, attachments, scenarios ----
 
