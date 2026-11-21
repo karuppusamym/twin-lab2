@@ -146,7 +146,7 @@ def clean_control(c) -> tuple[dict | None, int]:
     if not (isinstance(kind, str) and IDENT.match(kind) and len(kind) <= 24):
         return None, 1
     out, dropped = {"kind": kind}, 0
-    for k in ("tag", "type", "id", "name"):
+    for k in ("tag", "type", "id", "name", "in"):
         v = c.get(k)
         if v is None:
             continue
@@ -207,6 +207,8 @@ def clean_state(s) -> dict | None:
             item["classes"] = classes
         if isinstance(r.get("visible"), bool):
             item["visible"] = r["visible"]
+        if ident(r.get("in")):  # 1.6: the region it is in
+            item["in"] = r["in"]
         regions.append(item)
     grids = []
     for g in (s.get("grids") or [])[: LIMITS["grids"]]:
@@ -228,6 +230,8 @@ def clean_state(s) -> dict | None:
             item["columns"] = columns
         if isinstance(g.get("visible"), bool):
             item["visible"] = g["visible"]
+        if ident(g.get("in")):
+            item["in"] = g["in"]
         grids.append(item)
     texts = []
     for t in (s.get("texts") or [])[: LIMITS["texts"]] if isinstance(s.get("texts"), list) else []:

@@ -171,3 +171,60 @@ class CaptureOfAGoneWindow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Nesting(unittest.TestCase):
+    """Contract 1.6 `in`: each control and region names the region it is inside (L6)."""
+
+    def test_controls_name_their_container_not_the_window(self):
+        from twinlab2_recorder.workstation import structure
+
+        tree = {"type": "Window", "aid": "Main", "name": "Calculator", "children": [
+            {"type": "Custom", "aid": "NavView", "children": [
+                {"type": "Group", "name": "", "children": [  # an unnamed layer in between
+                    {"type": "Group", "aid": "NumberPad", "children": [
+                        {"type": "Button", "aid": "num1Button", "name": "One", "name_is": "structure"}]}]},
+                {"type": "Button", "aid": "TogglePaneButton", "name": "Open Navigation", "name_is": "structure"}]},
+            {"type": "Button", "aid": "Top", "name": "Top", "name_is": "structure"}]}
+        state = structure.desktop_state(tree)
+        where = {c["id"]: c.get("in") for c in state["controls"]}
+        self.assertEqual(where, {"num1Button": "NumberPad", "TogglePaneButton": "NavView", "Top": None})
+        regions = {r["id"]: r.get("in") for r in state["regions"]}
+        self.assertEqual(regions, {"Main": None, "NavView": None, "NumberPad": "NavView"})
+
+    def test_the_contract_keeps_in(self):
+        from twinlab2_contract import structure as st
+
+        state = st.clean_state({"controls": [{"kind": "Button", "id": "num1Button", "in": "NumberPad"}],
+                                "regions": [{"kind": "Group", "id": "NumberPad", "in": "NavView"}],
+                                "grids": [{"kind": "List", "rows": "few", "in": "DockPanel"}]})
+        self.assertEqual(state["controls"][0]["in"], "NumberPad")
+        self.assertEqual(state["regions"][0]["in"], "NavView")
+        self.assertEqual(state["grids"][0]["in"], "DockPanel")
+        bad = st.clean_state({"controls": [{"kind": "Button", "id": "b", "in": "C-1001 Ada Example"}]})
+        self.assertNotIn("in", bad["controls"][0])
+
+
+class RecorderWindowDpi(unittest.TestCase):
+    def test_not_windows_is_scale_one(self):
+        from unittest import mock
+
+        from twinlab2_recorder import main as agent_main
+
+        with mock.patch.object(agent_main.sys, "platform", "linux"):
+            self.assertEqual(agent_main.dpi_aware(), 1.0)
+
+    def test_windows_declares_per_monitor_awareness_and_reads_the_scale(self):
+        import ctypes
+        from unittest import mock
+
+        from twinlab2_recorder import main as agent_main
+
+        calls = []
+        fake = mock.Mock()
+        fake.shcore.SetProcessDpiAwareness.side_effect = lambda v: calls.append(v)
+        fake.user32.GetDpiForSystem.return_value = 144
+        with mock.patch.object(agent_main.sys, "platform", "win32"), \
+                mock.patch.object(ctypes, "windll", fake, create=True):
+            self.assertEqual(agent_main.dpi_aware(), 1.5)
+        self.assertEqual(calls, [2])
