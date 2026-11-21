@@ -792,6 +792,75 @@ class LocalSignInTest(unittest.TestCase):
             self.assertEqual(client.get("/api/v1/apps").status_code, 401)
 
 
+class BundleApiTest(unittest.TestCase):
+    """The package bundle's operations over HTTP (twinlab2.baselines, twinlab2.interfaces,
+    confirmations), on the ten-application recording: Orders and Billing."""
+
+    def test_baselines_interfaces_and_confirmations(self):
+        import json as jsonlib
+        from pathlib import Path
+
+        from twinlab2 import scenarios as store
+        from test_package_bundle import events_of, png, typed_event
+        from test_ten_apps import RECORDING, TenAppRecordingTest
+
+        helper = TenAppRecordingTest("test_ten_applications_get_ten_separate_packages")
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        by_tag = helper.record()
+        orders, billing, db = by_tag["orders"], by_tag["billing"], helper.db
+        for app_id, name in ((orders, "Create an order"), (billing, "Invoice an order")):
+            refs = [store.event_ref(RECORDING, e) for e in events_of(db, app_id)]
+            store.save(db, app_id, {"name": name, "starting": "Signed in.", "actions": "Do it", "expected": "Done.",
+                                    "failures": "", "examples": "Order number: 1001", "questions": "", "notes": "",
+                                    "events": jsonlib.dumps(refs)})
+        folder = Path(helper.work.name) / "recordings" / RECORDING / "web"
+        folder.mkdir(parents=True)
+        (folder / "1.png").write_bytes(png())
+        first = events_of(db, billing)[0]
+        (folder / "steps.jsonl").write_text(jsonlib.dumps({"seq": 1, "event_id": first, "screenshot": "1.png"}) + "\n",
+                                            encoding="utf-8")
+        env = mock.patch.dict(os.environ, {"TWINLAB2_RECORDINGS": str(folder.parent.parent)})
+        env.start()
+        self.addCleanup(env.stop)
+        with db:  # the machine's own user, signed in on this portal, owns Billing too
+            auth.assign(db, billing, "local", "owner", "test", "2026-11-21T10:00:00+00:00")
+        client = Client(helper.app)
+
+        def ok(response, status=200):
+            self.assertEqual(response.status_code, status, response.text[:800])
+            return response.json() if response.content and "json" in response.headers.get("content-type", "") else None
+
+        listed = ok(client.get(f"/api/v1/apps/{billing}/baselines"))
+        candidate = next(c for c in listed["candidates"] if c["event_id"] == first)
+        picture = client.get(f"/api/v1/apps/{billing}/baselines/picture",
+                             params={"recording_id": RECORDING, "event_id": first})
+        self.assertEqual((picture.status_code, picture.headers["content-type"]), (200, "image/png"))
+        approved = ok(client.post(f"/api/v1/apps/{billing}/baselines", json={
+            "screen": candidate["screen"], "state": candidate["state"], "viewport": "1280x720", "theme": "light",
+            "scale": "1", "source": {"recording_id": RECORDING, "event_id": first}}), 201)
+        self.assertEqual(approved["approved_by"], "local")
+        ok(client.delete(f"/api/v1/apps/{billing}/baselines/{approved['id']}"), 204)
+
+        contract = ok(client.get(f"/api/v1/apps/{billing}/interfaces"))["contracts"][0]
+        doc = contract["doc"]
+        ident = next(i for i in doc["identifiers"] if i["name"] == "order-number")
+        ident.update(producer=orders, consumers=[billing])
+        saved = ok(client.put(f"/api/v1/apps/{billing}/interfaces/{RECORDING}",
+                              json={"doc": doc, "expected_revision": 0}))
+        self.assertTrue(saved["edited"])
+        stale = client.put(f"/api/v1/apps/{billing}/interfaces/{RECORDING}", json={"doc": doc, "expected_revision": 0})
+        self.assertEqual(stale.status_code, 409)
+        ok(client.delete(f"/api/v1/apps/{billing}/interfaces/{RECORDING}"), 204)
+
+        ok(client.put(f"/api/v1/apps/{billing}/confirmations/scenario.expected", json={"note": "Checked."}))
+        draft = ok(client.get(f"/api/v1/apps/{billing}/package-draft"))
+        level = next(i["level"] for i in draft["completeness"]["items"] if i["item"] == "scenario.expected")
+        self.assertEqual(level, "owner-confirmed")
+        ok(client.delete(f"/api/v1/apps/{billing}/confirmations/scenario.expected"), 204)
+        self.assertEqual(client.put(f"/api/v1/apps/{billing}/confirmations/no.such", json={}).status_code, 400)
+
+
 class ZzCoverage(unittest.TestCase):
     def test_every_operation_is_covered(self):
         """Every /api/v1 operation was answered with a success status by a test above (this

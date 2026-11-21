@@ -227,9 +227,20 @@ def _surfaces_of(runner, recording_id):
     return finder(recording_id) if finder is not None else ["web"]
 
 
+def _accepts(method, name):
+    """The runner's replay takes this keyword (a test fake or an older runner may not)."""
+    import inspect
+
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 def _replay(runner, recording_id, surface, base_url, plan):
     origins = ((plan.get("web") or {}).get("origins") or None) if surface == "web" else None
-    label = {"twin_label": True} if plan.get("twin_label") else {}
+    label = {"twin_label": True} if plan.get("twin_label") and _accepts(runner.replay, "twin_label") else {}
     if surface == "web" and not origins:
         return runner.replay(recording_id, base_url, **label)
     target = plan.get(surface) if surface != "web" else None
