@@ -220,8 +220,11 @@ def manifest(db, app_id, version_path=".twinlab/version"):
     target, deploy_files = demo_target.plan(db, app_row, version_path, {a["path"]: files[a["path"]] for a in attachments})
     target["data_model"]["tables"] = [redact.redact_text(t) for t in target["data_model"]["tables"]]
     files.update(deploy_files)
+    app = dict(app)
+    if "://" in (app.get("git_url") or ""):  # never a credential in the address: `https://bot:token@host/...`
+        app["git_url"] = demo_target.public_git_url(app["git_url"])
     data = {
-        "format": FORMAT, "app": dict(app), "scenarios": items, "evidence": linked, "attachments": attachments,
+        "format": FORMAT, "app": app, "scenarios": items, "evidence": linked, "attachments": attachments,
         "target": target,
         "unresolved_questions": [f"Selected event {ref} is not part of any scenario." for ref in unlinked],
     }

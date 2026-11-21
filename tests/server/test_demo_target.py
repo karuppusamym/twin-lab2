@@ -100,6 +100,8 @@ class PackTargetTest(unittest.TestCase):
         self.assertEqual(container["readinessProbe"]["httpGet"]["path"], "/" + VERSION_PATH)
         database = next(e for e in container["env"] if e["name"] == "DATABASE_URL")
         self.assertEqual(database, {"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": f"{name}-db", "key": "url"}}})
+        text = b"".join(draft.files.values()).decode("utf-8")
+        self.assertNotIn("ghp_secret", text)
         task = draft.files["BUILD_TASK.md"].decode("utf-8")
         self.assertIn("## Data", task)
         self.assertIn("Backend: **SQL Server** (predicted", task)
