@@ -69,8 +69,41 @@ def brief_scenarios(manifest):
     return unique
 
 
+def verified_scope(commit, platform, user, role, method, rows, deployment_url, tested_at):
+    """What a release's evidence covers, so "Verified" / "Tested" never says more than was
+    checked: the commit, the platform, who ran it with which role, how (by hand, or Twin Lab's
+    replay), the scenarios run and passed, and the deployment they ran against."""
+    total = len(rows)
+    run = sum(1 for row in rows if row["result"] != "not-run")
+    passed = sum(1 for row in rows if row["result"] == "pass")
+    how = "Twin Lab's replay" if method == "twinlab" else "recorded by hand"
+    label = (f"Commit {commit[:12]} on {platform or 'an unnamed platform'}: {passed} of {total} scenario"
+             f"{'s' if total != 1 else ''} passed ({run} run), {how} by {user}"
+             f"{f' ({role})' if role else ''}, " +
+             (f"against {deployment_url}." if deployment_url else "with no verified deployment."))
+    return {"commit_sha": commit, "platform": platform, "tested_by": user, "role": role, "method": method,
+            "scenarios_total": total, "scenarios_run": run, "scenarios_passed": passed,
+            "scenarios": [{"id": row.get("id"), "name": row["name"], "result": row["result"]} for row in rows],
+            "deployment_url": deployment_url or None, "tested_at": tested_at, "label": label}
+
+
+def verified_deployment(connection, release_id):
+    row = connection.execute("SELECT url FROM deployments WHERE release_id = ? AND verification = 'verified' "
+                             "ORDER BY environment", (release_id,)).fetchone()
+    return row["url"] if row else None
+
+
+def tester_role(connection, app_id, user):
+    """The tester's role on the application (owner, builder, viewer), else `admin` for a portal
+    admin, else None (`verification`, the automated run, has none)."""
+    role = auth.role_of(connection, app_id, user)
+    if role is None and user and auth.is_admin_name(auth.Settings.from_env(), connection, user):
+        return auth.ADMIN
+    return role
+
+
 def record_test(connection, release_id, commit, platform, launch, reset_result, reset_notes, results, user,
-                gate=None, github=None, tested=True):
+                gate=None, github=None, tested=True, method="manual", deployment_url=None):
     """Store a release's acceptance evidence and make it Tested. ValueError when the evidence is
     incomplete, is for another commit, the release is already Published, or the commit's required
     checks (and Windows validation) are not green (`verification`). `gate` is a verification
@@ -106,16 +139,20 @@ def record_test(connection, release_id, commit, platform, launch, reset_result, 
     gate = gate or commit_checks.refresh(connection, release_id, github)
     if not gate["ok"]:
         raise ValueError("Not Tested: " + " ".join(gate["reasons"]))
+    stamp = registry.now()
+    scope = verified_scope(release["commit_sha"], platform[:500], user, tester_role(connection, release["app_id"], user),
+                           method, rows, deployment_url or verified_deployment(connection, release_id), stamp)
     connection.execute("""
         INSERT INTO release_tests(release_id, commit_sha, platform, launch, reset_result, reset_notes,
-                                  results, tested_by, tested_at) VALUES (?,?,?,?,?,?,?,?,?)
+                                  results, tested_by, tested_at, scope) VALUES (?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(release_id) DO UPDATE SET commit_sha = excluded.commit_sha,
         platform = excluded.platform, launch = excluded.launch, reset_result = excluded.reset_result,
         reset_notes = excluded.reset_notes, results = excluded.results, tested_by = excluded.tested_by,
-        tested_at = excluded.tested_at
+        tested_at = excluded.tested_at, scope = excluded.scope
     """, (release_id, release["commit_sha"], platform[:500], launch[:8000], reset_result,
-          (reset_notes or "").strip()[:2000], json.dumps(rows), user, registry.now()))
+          (reset_notes or "").strip()[:2000], json.dumps(rows), user, stamp, json.dumps(scope)))
     connection.execute("UPDATE releases SET state = ? WHERE id = ?", ("tested" if tested else "packaged", release_id))
+    return scope
 
 
 def store_brief(connection, app_id, revision, contents, package):
@@ -181,7 +218,13 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
             twin = independent.run(runner or independent.TwinLabChecks(), brief_scenarios(manifest), manifest,
                                    base_url, app["lab_url"] or "")
             reasons += twin.get("problems") or []
-    tested = False
+    tested, scope = False, None
+    if twin is not None:  # what the replay covered, Tested or not
+        role = tester_role(connection, release["app_id"], user)
+        platform = commit_checks.PLATFORMS[app["target_platform"]] if app["target_platform"] else ""
+        scope = verified_scope(sha, platform, user, role, "twinlab",
+                               [{"id": s["id"], "name": s["name"], "result": s["result"]} for s in twin["scenarios"]],
+                               base_url, registry.now())
     if twin is not None and not twin.get("problems"):
         reset = twin["reset"] or {}
         platform = commit_checks.PLATFORMS[app["target_platform"]] if app["target_platform"] else ""
@@ -192,9 +235,9 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
         if reset.get("result") == "fail":
             held.append("The reset check failed: " + (reset.get("notes") or "no notes") + ".")
         try:
-            record_test(connection, release_id, sha, platform, app["launch"], reset.get("result"),
-                        reset.get("notes"), {s["id"]: s["result"] for s in twin["scenarios"]}, user, gate=gate,
-                        tested=not held)
+            scope = record_test(connection, release_id, sha, platform, app["launch"], reset.get("result"),
+                                reset.get("notes"), {s["id"]: s["result"] for s in twin["scenarios"]}, user,
+                                gate=gate, tested=not held, method="twinlab", deployment_url=base_url)
             tested = not held
             reasons += [f"Not Tested: {item}" for item in held]
         except ValueError as error:
@@ -208,6 +251,8 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
                    if gate["repository"] else [],
                    "required": gate["required"], "windows": gate["windows"], "green": gate["ok"]},
         "twinlab": twin, "tested": tested, "reasons": reasons,
+        # what "Tested" covers: scenarios run and passed, platform, role, commit, deployment URL
+        "scope": scope,
     }
     digest = commit_checks.put_report(connection, release_id, report)
     return {"release_id": release_id, "tested": tested, "reasons": reasons, "report": report, "report_sha": digest}

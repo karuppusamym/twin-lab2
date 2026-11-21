@@ -38,6 +38,17 @@ describe("every page", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("says what a Tested release's evidence covers, and links the pinned release manifest", async () => {
+    renderApp("/releases/5", "owner");
+    expect(await screen.findByTestId("verified-scope")).toHaveTextContent(/2 of 2 scenarios passed .* \(owner\), against https:\/\/billing-demo/);
+    expect(screen.getByRole("link", { name: "OpenShift manifest (release)" })).toHaveAttribute("href", "/api/v1/releases/5/openshift.yaml");
+  });
+
+  it("shows the portal's auth mode on the Users page", async () => {
+    renderApp("/admin/users", "admin");
+    expect(await screen.findByTestId("auth-mode")).toHaveTextContent(/Auth mode: (local-dev|individual|trusted-proxy)/);
+  });
+
   it("shows a server refusal as the problem's detail", async () => {
     server.use(on("getApp", () => HttpResponse.json(
       { type: "about:blank", title: "Forbidden", status: 403, detail: "This needs the viewer role on this application.", code: "role" },

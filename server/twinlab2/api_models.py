@@ -86,6 +86,7 @@ class Session(Model):
     user: str | None
     is_admin: bool
     auth_mode: Literal['local', 'proxy', 'open']
+    access_mode: Literal['local-dev', 'individual', 'trusted-proxy']
     login_available: bool
     csrf_token: str
     roles: list[AppRole]
@@ -1087,6 +1088,28 @@ class ReleaseTest_ResultsItem(Model):
     result: TestResult
 
 
+class VerifiedScope_ScenariosItem(Model):
+    id: str | None
+    name: str
+    result: TestResult
+
+
+class VerifiedScope(Model):
+    """What the release's evidence covers, so "Tested" never says more than was checked. Also in"""
+    commit_sha: str
+    platform: str
+    tested_by: str
+    role: str | None
+    method: Literal['manual', 'twinlab']
+    scenarios_total: int
+    scenarios_run: int
+    scenarios_passed: int
+    scenarios: list[VerifiedScope_ScenariosItem]
+    deployment_url: str | None
+    tested_at: Timestamp
+    label: str
+
+
 class ReleaseTest(Model):
     commit_sha: str
     platform: str
@@ -1096,6 +1119,7 @@ class ReleaseTest(Model):
     tested_by: str
     tested_at: Timestamp
     results: list[ReleaseTest_ResultsItem]
+    scope: VerifiedScope
 
 
 class CheckSummary_RequiredItem(Model):
@@ -1396,6 +1420,7 @@ UrlMatchInput.model_rebuild()
 UserInput.model_rebuild()
 UserList.model_rebuild()
 VerificationSettings.model_rebuild()
+VerifiedScope.model_rebuild()
 VerifyCommitInput.model_rebuild()
 VerifyOutcome.model_rebuild()
 Worker.model_rebuild()

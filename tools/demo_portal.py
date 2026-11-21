@@ -10,6 +10,9 @@ sign in as one of:
 - `bob` / `bob-demo`: builder of Billing (sees its frozen packages and builds, no evidence);
 - `vera` / `vera-demo`: viewer of Billing (its page and published releases only).
 
+The portal runs in the `individual` auth mode: each of them signs in with their own password,
+even on this machine (no loopback admin, no shared password).
+
 What is seeded, all through the portal's own APIs (the agent API for the recorder's part):
 
 - Seven catalog applications with their web addresses: Billing and Billing Admin on one host
@@ -222,8 +225,9 @@ def build(state, scale=False):
         "TWINLAB2_GITHUB_TOKEN": builds_github.token, "TWINLAB2_GITHUB_API": builds_github.url,
         "TWINLAB2_WORKSPACES": str(state / "workspaces"), "TWINLAB2_STATE": str(state),
         "TWINLAB2_DEV_WORKER": "0", "TWINLAB2_SECRET_KEY": "demo-only", "TWINLAB2_HOSTS": "localhost,127.0.0.1",
-        "TWINLAB2_PASSWORD": "shared-demo"})  # sign-in is part of the demo, even on this machine
-    for name in ("TWINLAB2_TRUST_PROXY_USER", "DATABASE_URL"):
+        # everyone signs in with their own password (alice, bob, vera), even on this machine
+        "TWINLAB2_AUTH_MODE": "individual"})
+    for name in ("TWINLAB2_TRUST_PROXY_USER", "TWINLAB2_PASSWORD", "DATABASE_URL"):
         os.environ.pop(name, None)
     world = fake_provider.reset()
 

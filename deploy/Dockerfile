@@ -26,9 +26,13 @@ RUN npm run build
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
-    TWINLAB2_DATABASE=/data/catalog.db TWINLAB2_STATE=/data TWINLAB2_TRUST_PROXY_USER=1 TWINLAB2_SECURE_COOKIES=1 \
+    TWINLAB2_DATABASE=/data/catalog.db TWINLAB2_STATE=/data TWINLAB2_AUTH_MODE=trusted-proxy TWINLAB2_SECURE_COOKIES=1 \
     TWINLAB2_WEB_DIST=/app/web/dist \
-    GUNICORN_CMD_ARGS="--workers 2 --worker-class uvicorn_worker.UvicornWorker --timeout 120"
+    GUNICORN_CMD_ARGS="--workers 2 --worker-class uvicorn_worker.UvicornWorker --timeout 120 --forwarded-allow-ips=0.0.0.0"
+# trusted-proxy: the user comes only from the OAuth proxy's headers, and only on requests whose peer
+# is in TWINLAB2_TRUSTED_PROXIES (default loopback: the sidecar). `--forwarded-allow-ips=0.0.0.0`
+# (an address no peer has) keeps uvicorn from replacing that peer with the proxy's X-Forwarded-For.
+# TWINLAB2_SECRET_KEY is required: the portal refuses to start without it.
 
 WORKDIR /app
 # the two packages the portal is made of: what it shares with the recorder, and the portal itself

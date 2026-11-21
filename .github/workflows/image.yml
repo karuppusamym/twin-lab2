@@ -20,6 +20,7 @@ jobs:
         run: |
           docker run -d --name portal --user 123456:0 -p 127.0.0.1:8080:8080 \
             -e TWINLAB2_HOSTS=localhost,127.0.0.1 -e TWINLAB2_SECRET_KEY=ci-only \
+            -e TWINLAB2_TRUSTED_PROXIES=0.0.0.0/0 \
             twinlab2-portal:ci gunicorn --bind 0.0.0.0:8080 "twinlab2.app:asgi()"
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
       - name: The OAuth proxy's user, the API and the web app
@@ -28,6 +29,9 @@ jobs:
           curl -fsS -H "X-Forwarded-User: ci-user" http://127.0.0.1:8080/api/v1/session | tee session.json
           grep -q '"user":"ci-user"' session.json
           grep -q '"auth_mode":"proxy"' session.json
+          grep -q '"access_mode":"trusted-proxy"' session.json
+          # a sign-in form does not exist behind the proxy
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/api/v1/session)" != 200
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/apps)" = 401
           curl -fsS -H "X-Forwarded-User: ci-user" http://127.0.0.1:8080/api/v1/apps | grep -q '"apps":\[\]'
           curl -fsS http://127.0.0.1:8080/apps/1 | grep -q '<div id="root">'

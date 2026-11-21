@@ -18,7 +18,7 @@ import uuid
 from urllib.parse import quote, urlsplit
 
 from fastapi import File, Form, Response, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from starlette.datastructures import MultiDict
 
 from twinlab2 import api_models as m
@@ -33,6 +33,7 @@ from twinlab2 import event_ids
 from twinlab2 import journey
 from twinlab2 import pack_validator
 from twinlab2 import packages
+from twinlab2 import portal
 from twinlab2 import recording_export
 from twinlab2 import redact
 from twinlab2 import registry
@@ -160,7 +161,8 @@ def session_view():
             "SELECT app_roles.app_id, apps.name, app_roles.role FROM app_roles JOIN apps ON apps.id = app_roles.app_id "
             "WHERE app_roles.user_name = ? ORDER BY apps.name, apps.id", (user,))]
     return {"signed_in": user is not None, "user": user, "is_admin": user is not None and bool(admin),
-            "auth_mode": auth.auth_mode(), "login_available": auth.login_available(),
+            "auth_mode": auth.auth_mode(), "access_mode": auth.access_mode(),
+            "login_available": auth.login_available(),
             "csrf_token": form_token(), "roles": roles}
 
 
@@ -175,11 +177,16 @@ def sign_in(body: m.SignIn):
         fail(404, "There is no local sign-in here.")
     data = payload(body)
     name = text(data, "user", 80)
-    if not name or not auth.login_user(name, data.get("password") if isinstance(data.get("password"), str) else ""):
+    via = auth.login_user(name, data.get("password") if isinstance(data.get("password"), str) else "") if name else None
+    if via is None:
         fail(401, "Wrong name or password.", "wrong_credentials")
     session, token = g.session, g.session.get("form_token")
+    with db():
+        if session.get("sid"):
+            auth.revoke_session(db(), session["sid"])
+        sid = auth.start_session(db(), name, via, g.settings.session_hours)
     session.clear()
-    session["user"] = name
+    session["user"], session["sid"] = name, sid
     if token:
         session["form_token"] = token
     return session_view()
@@ -188,6 +195,9 @@ def sign_in(body: m.SignIn):
 @routes.delete(V1 + "/session", auth.public, status_code=204)
 def sign_out():
     session, token = g.session, g.session.get("form_token")
+    if session.get("sid"):  # revoked on the server: a copy of the cookie no longer signs in
+        with db():
+            auth.revoke_session(db(), session["sid"])
     session.clear()
     if token:
         session["form_token"] = token
@@ -1069,7 +1079,10 @@ def send_stored(row, column, filename):
     ref = artifacts.ref_of(db(), row)
     if ref is not None and ref.backend == "s3":
         return RedirectResponse(artifacts.presign_get(ref, 300, filename), status_code=302)
-    return download(artifacts.content(db(), row, column), "application/zip", filename)
+    if ref is not None:  # streamed in chunks, checked as they pass (artifacts.stream)
+        return StreamingResponse(artifacts.stream(ref), media_type="application/zip", headers={
+            "Content-Disposition": disposition(filename), "Cache-Control": "no-store", "Content-Length": str(ref.size)})
+    return download(bytes(row[column]), "application/zip", filename)  # an old blob, already in the row
 
 
 def pack_view(app_id):
@@ -1125,6 +1138,16 @@ def check_summary(release_id):
     }
 
 
+def test_scope(test):
+    """The stored scope of a release's evidence; evidence stored before scopes existed gets one
+    from its own columns (the role it was recorded with is not known)."""
+    scope = json.loads(test["scope"] or "{}") if "scope" in test.keys() else {}
+    if scope:
+        return scope
+    return portal.verified_scope(test["commit_sha"], test["platform"], test["tested_by"], None, "manual",
+                                 json.loads(test["results"]), None, test["tested_at"])
+
+
 def release_detail(release_id, notice=None):
     item = get_release(release_id)
     app_id = item["app_id"]
@@ -1143,7 +1166,7 @@ def release_detail(release_id, notice=None):
         "test": {"commit_sha": test["commit_sha"], "platform": test["platform"], "launch": test["launch"],
                  "reset_result": test["reset_result"], "reset_notes": test["reset_notes"] or "",
                  "tested_by": test["tested_by"], "tested_at": test["tested_at"],
-                 "results": json.loads(test["results"])} if test else None,
+                 "results": json.loads(test["results"]), "scope": test_scope(test)} if test else None,
         "scenarios": brief_scenarios(json.loads(brief["manifest"])) if brief else [],
         "results": list(RESULTS), "checks": check_summary(release_id), "version_path": VERSION_PATH,
         "notice": notice,
@@ -1330,6 +1353,30 @@ def publish_release(release_id: int):
     finally:
         release_publish(db(), item["app_id"], holder)
     return release_detail(release_id, notice=f"Published {item['version']}.")
+
+
+@routes.get(V1 + "/releases/{release_id:int}/openshift.yaml", require_role("viewer", resolve=release_app))
+def release_openshift(release_id: int, image_digest: str = ""):
+    """The release manifest: pinned to the release's commit (the BuildConfig's git ref) and,
+    given `image_digest`, to the built image by digest (demo_target.release_manifest). Viewers
+    for a published release; builders and owners before."""
+    item = db().execute("SELECT * FROM releases WHERE id = ?", (release_id,)).fetchone()
+    if item is None:
+        fail(404, "There is no such release.")
+    if item["state"] != "published":
+        auth.ensure("builder", app_id=item["app_id"])
+    app = get_app(item["app_id"])
+    if demo_target.kind(db(), app) == "desktop":
+        fail(404, "A desktop demo has no OpenShift deployment.")
+    git_url = app["git_url"] or (f"https://github.com/{item['repository']}.git" if item["repository"] else "")
+    try:
+        text_ = demo_target.release_manifest(app, demo_target.backend(db(), app)["engine"], VERSION_PATH,
+                                             {"commit": item["commit_sha"], "version": item["version"],
+                                              "image_digest": image_digest.strip()}, git_url)
+    except ValueError as error:
+        fail(400, str(error))
+    return download(text_.encode("utf-8"), "application/yaml",
+                    f"{demo_target.resource_name(app)}-release.yaml")
 
 
 @routes.get(V1 + "/releases/{release_id:int}/download", require_role("viewer", resolve=release_app))

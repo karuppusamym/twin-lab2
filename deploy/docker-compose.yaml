@@ -1,9 +1,11 @@
 # The portal on PostgreSQL in Docker, to try the shared-deployment setup on one machine:
 #
 #   docker compose -f deploy/docker-compose.yaml up --build
-#   open http://127.0.0.1:8766 and sign in with any name and TWINLAB2_PASSWORD below
-#   (the image has the web app; to try the OAuth-proxy mode, set TWINLAB2_TRUST_PROXY_USER: "1" and
-#   send X-Forwarded-User: the port is then for testing only, never exposed further)
+#   docker compose -f deploy/docker-compose.yaml exec portal python -m twinlab2.portal user alice --admin --password
+#   open http://127.0.0.1:8766 and sign in as alice (individual mode: everyone has their own password;
+#   TWINLAB2_PASSWORD below signs in only as the demo identity `demo`, never an admin).
+#   To try the OAuth-proxy mode, set TWINLAB2_AUTH_MODE: trusted-proxy and TWINLAB2_TRUSTED_PROXIES
+#   to the address you send X-Forwarded-User from: the port is then for testing only.
 #
 # Change both passwords before anyone else can reach it. To bring an existing catalog in, start
 # only the database, copy, then start the portal:
@@ -36,8 +38,8 @@ services:
       DATABASE_URL: postgresql://twinlab2:twinlab2@postgres:5432/twinlab2
       TWINLAB2_ARTIFACT_DIR: /artifacts
       TWINLAB2_SECRET_KEY: change-me-to-a-long-random-value
-      TWINLAB2_PASSWORD: change-me
-      TWINLAB2_TRUST_PROXY_USER: "0"
+      TWINLAB2_AUTH_MODE: individual
+      TWINLAB2_PASSWORD: change-me  # signs in only as TWINLAB2_SHARED_USER (default `demo`)
       TWINLAB2_SECURE_COOKIES: "0"
       TWINLAB2_HOSTS: 127.0.0.1,localhost
     # no OAuth proxy here: listen on the container's interface and sign in with the password

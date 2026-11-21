@@ -153,11 +153,28 @@ def public_git_url(url):
     return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 
-def openshift(app, engine, version_path, git_url=None):
-    """The OpenShift resources of a web demo, built in the cluster from its repository."""
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+DIGEST_PLACEHOLDER = "sha256:REPLACE-WITH-THE-BUILT-IMAGE-DIGEST"
+MANIFEST = "twinlab2.io/manifest"
+
+
+def openshift(app, engine, version_path, git_url=None, release=None):
+    """The OpenShift resources of a web demo, built in the cluster from its repository.
+
+    Without `release`: the *development* manifest of the builder package, which builds branch
+    `main` and follows `:latest` (a deployment may then run newer code than any verified commit).
+    With `release` = {"commit": SHA, "version", "image_digest" (optional)}: the *release*
+    manifest, pinned to what was verified: the BuildConfig builds exactly that commit into the
+    tag `<name>:<commit>`, nothing follows a tag, and the Deployment runs the built image by
+    digest (`<name>@sha256:…`, resolved through the ImageStream's local lookup)."""
     name = resource_name(app)
     repo = public_git_url(app["git_url"] if git_url is None else git_url)
     labels = {"app.kubernetes.io/name": name, "app.kubernetes.io/part-of": "twinlab2-demos"}
+    if release is not None:
+        if not re.fullmatch(r"[0-9a-f]{40}", str(release.get("commit") or "")):
+            raise ValueError("A release manifest needs the release's 40-hex commit SHA.")
+        if release.get("image_digest") and not DIGEST.fullmatch(release["image_digest"]):
+            raise ValueError("Give the built image's digest as sha256: and 64 hex digits.")
     env = [{"name": "PORT", "value": str(PORT)}, {"name": "DATA_BACKEND", "value": engine}]
     volumes, mounts = [], []
     if engine == "sqlite":
@@ -168,13 +185,16 @@ def openshift(app, engine, version_path, git_url=None):
     else:
         # the database server and its Secret are set up by hand; no credential is in the pack
         env.append({"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": f"{name}-db", "key": "url"}}})
-    container = {"name": name, "image": f"{name}:latest", "ports": [{"name": "http", "containerPort": PORT}],
+    image = f"{name}@{release.get('image_digest') or DIGEST_PLACEHOLDER}" if release else f"{name}:latest"
+    container = {"name": name, "image": image, "ports": [{"name": "http", "containerPort": PORT}],
                  "env": env, "readinessProbe": {"httpGet": {"path": "/" + version_path.lstrip("/"), "port": "http"}}}
     if mounts:
         container["volumeMounts"] = mounts
     pod = {"containers": [container]}
     if volumes:
         pod["volumes"] = volumes
+    if release is not None:
+        return _release_resources(name, labels, repo, release, pod)
     trigger = [{"from": {"kind": "ImageStreamTag", "name": f"{name}:latest"},
                 "fieldPath": f'spec.template.spec.containers[?(@.name=="{name}")].image'}]
     return {"apiVersion": "v1", "kind": "List", "items": [
@@ -199,6 +219,53 @@ def openshift(app, engine, version_path, git_url=None):
     ]}
 
 
+def _release_resources(name, labels, repo, release, pod):
+    commit = release["commit"]
+    tag = f"{name}:{commit}"
+    notes = {MANIFEST: "release", "twinlab2.io/commit": commit, "twinlab2.io/version": str(release.get("version") or "")}
+    return {"apiVersion": "v1", "kind": "List", "items": [
+        # local lookup: a Deployment in this project may name the image as <name>@sha256:…
+        {"apiVersion": "image.openshift.io/v1", "kind": "ImageStream", "metadata": {"name": name, "labels": labels},
+         "spec": {"lookupPolicy": {"local": True}}},
+        {"apiVersion": "build.openshift.io/v1", "kind": "BuildConfig",
+         "metadata": {"name": f"{name}-release", "labels": labels, "annotations": notes},
+         "spec": {"source": {"type": "Git", "git": {"uri": repo or "REPLACE-WITH-THE-DEMO-REPOSITORY", "ref": commit}},
+                  "strategy": {"type": "Docker", "dockerStrategy": {"dockerfilePath": "Dockerfile"}},
+                  "output": {"to": {"kind": "ImageStreamTag", "name": tag}},
+                  "triggers": []}},
+        {"apiVersion": "apps/v1", "kind": "Deployment",
+         "metadata": {"name": name, "labels": labels,
+                      "annotations": dict(notes, **{"alpha.image.policy.openshift.io/resolve-names": "*"})},
+         "spec": {"replicas": 1, "selector": {"matchLabels": {"app.kubernetes.io/name": name}},
+                  "template": {"metadata": {"labels": labels, "annotations": notes}, "spec": pod}}},
+        {"apiVersion": "v1", "kind": "Service", "metadata": {"name": name, "labels": labels},
+         "spec": {"selector": {"app.kubernetes.io/name": name},
+                  "ports": [{"name": "http", "port": PORT, "targetPort": "http"}]}},
+        {"apiVersion": "route.openshift.io/v1", "kind": "Route", "metadata": {"name": name, "labels": labels},
+         "spec": {"to": {"kind": "Service", "name": name}, "port": {"targetPort": "http"},
+                  "tls": {"termination": "edge", "insecureEdgeTerminationPolicy": "Redirect"}}},
+    ]}
+
+
+def release_manifest(app, engine, version_path, release, git_url=None):
+    """The release manifest as YAML text, headed by what it is pinned to."""
+    resources = openshift(app, engine, version_path, git_url, release)
+    name, commit, digest = resource_name(app), release["commit"], release.get("image_digest")
+    head = [f"# Release manifest of {name} {release.get('version') or ''}".rstrip(),
+            f"# Pinned to the verified commit {commit}: the BuildConfig {name}-release builds exactly",
+            f"# that commit into {name}:{commit}, and the Deployment runs the built image by digest.",
+            "# Nothing here follows a branch or :latest.", "#"]
+    if digest:
+        head += [f"# Image digest: {digest}", "#", f"#   oc apply -f {name}-release.yaml"]
+    else:
+        head += ["# The image digest is not known yet: build first, then download this file again with it.", "#",
+                 f"#   oc apply -f {name}-release.yaml   (the pod waits: its image digest is a placeholder)",
+                 f"#   oc start-build {name}-release --follow",
+                 f"#   oc get istag {name}:{commit} -o jsonpath=" + "'{.image.metadata.name}'",
+                 "#   download it again with ?image_digest=<that sha256:...> and oc apply it"]
+    return "\n".join(head) + "\n" + yaml.dump(resources, Dumper=_Plain, sort_keys=False, allow_unicode=True)
+
+
 def openshift_readme(app, engine, repo):
     name = resource_name(app)
     lines = [f"# Deploying {name} on OpenShift", "",
@@ -208,7 +275,11 @@ def openshift_readme(app, engine, repo):
              f"oc rollout status deployment/{name}", f"oc get route {name}", "```", "",
              f"The BuildConfig builds `Dockerfile` at the root of {('`' + repo + '`') if repo else 'the demo repository'}"
              " (branch `main`) inside the cluster; the Deployment follows the image it builds. The container listens "
-             f"on port {PORT} (`PORT`) and answers the readiness probe at the version endpoint.", ""]
+             f"on port {PORT} (`PORT`) and answers the readiness probe at the version endpoint.", "",
+             "**This is the development manifest**: it builds `main` and follows `:latest`, so the pod can run "
+             "newer code than any verified commit. For a release, use the release manifest on the portal's "
+             "release page (`GET /api/v1/releases/<id>/openshift.yaml`): it builds exactly the verified commit "
+             "and runs the built image by digest.", ""]
     if engine == "sqlite":
         lines += ["Data: SQLite at `/data/demo.sqlite` on the pod's own disk, created and seeded at start: "
                   "restarting the pod resets the demo.", ""]
