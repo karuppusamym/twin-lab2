@@ -172,6 +172,14 @@ the portal could never put a step on `/finance/billing`. From 1.2:
 The prefix is the target's own text, given by the portal, never read from the URL: a segment in
 that place that no target names is still `{id}`, and no query, fragment or typed value is kept.
 
+Deny keys (`deny_keys` in `GET /api/agent/sessions` and `/api/agent/apps`) now include path
+identities of applications marked not replicated (`web:https://erp.example.test/finance/payroll`).
+A 1.2 recorder sends a web step as presence when the longest prefix it is under is a denied one
+rather than a target's. An older recorder compares whole identity keys, so a path key never
+denies the applications sharing its host. Whatever the recorder sends, the portal stores no flow
+and links no evidence for an application marked not replicated. A session whose targets are
+known by path opens the browser at the first target's page, not at the host's `/`.
+
 The portal assigns a web step to the identity with the longest path prefix its screen is under
 (`url_match: path`), whatever the version: a 1.1 screen such as `/finance/{id}/{id}` is under
 `/finance` and under no deeper prefix, so a 1.1 recording is assigned exactly as before.

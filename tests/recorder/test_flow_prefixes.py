@@ -2,6 +2,7 @@
 prefix keeps it whole; everything else follows the 1.1 rules, so no record segment, query,
 fragment or typed value is ever kept."""
 
+import json
 import unittest
 
 from twinlab2_recorder.workstation import flow, levels, timeline
@@ -94,6 +95,48 @@ class TargetPathTest(unittest.TestCase):
         self.assertEqual(box["flows"]["web:https://h"][0]["screen"], "https://h/finance/billing/{id}")
         self.assertEqual(box["flows"]["web:https://k"][0]["screen"], "https://k/finance/{id}/{id}")
         self.assertEqual([t.get("path") for t in box["session"]["targets"]], ["/finance/billing", "/x"])
+
+
+class DeniedPathTest(unittest.TestCase):
+    """A not-replicated application known by path on a host shared with targets (deny key
+    `web:<origin>/<path>`): its steps leave the PC as presence only."""
+
+    def rows(self, *urls):
+        return [{"app": "web:https://h", "surface": "web", "level": "full", "global_seq": n, "ts": f"t{n}",
+                 "_step": {"surface": "web", "url": u, "action": "click", "selector": f"button#step{chr(96 + n)}"}}
+                for n, u in enumerate(urls, 1)]
+
+    def test_steps_under_a_denied_prefix_are_presence(self):
+        meta = {"id": "20261121T030000Z-0a0b0c0d",
+                "targets": [{"origin": "https://h", "path": "/finance/billing"}, {"origin": "https://h", "path": "/finance"}],
+                "deny_keys": ["web:https://h/finance/payroll", "web:https://other/finance/billing"],
+                "apps": {"web:https://h": {"key": "web:https://h", "surface": "web", "level": "full"}}}
+        box = timeline.outbox(meta, self.rows("https://h/finance/billing/1", "https://h/finance/payroll/7",
+                                              "https://h/finance/payroll", "https://h/finance/ledger"))
+        self.assertEqual([s["label"] for s in box["flows"]["web:https://h"]], ["stepa", "stepd"])
+        self.assertEqual(box["timeline"], [{"app": "web:https://h", "steps": 1}, {"app": "presence", "steps": 2},
+                                           {"app": "web:https://h", "steps": 1}])
+        self.assertNotIn("payroll", json.dumps(box["flows"]))
+
+    def test_a_longer_target_prefix_under_a_denied_one_is_recorded(self):
+        meta = {"id": "20261121T030000Z-0a0b0c0d", "targets": [{"origin": "https://h", "path": "/finance/billing"}],
+                "deny_keys": ["web:https://h/finance"]}
+        box = timeline.outbox(meta, self.rows("https://h/finance/billing/1", "https://h/finance/payroll/7"))
+        self.assertEqual([s["label"] for s in box["flows"]["web:https://h"]], ["stepa"])
+
+    def test_a_whole_origin_deny_key_is_not_a_prefix(self):
+        self.assertEqual(levels.denied_prefixes(["web:https://h", "desktop:Acme/X", "web:https://h/a/b/"], "https://h"),
+                         ["/a/b"])
+        self.assertTrue(timeline.under_denied_path("https://h/a/b/c", [], ["/a/b"]))
+        self.assertFalse(timeline.under_denied_path("https://h/a/bc", [], ["/a/b"]))
+        self.assertFalse(timeline.under_denied_path("https://h/a/b", ["/a/b"], ["/a/b"]))  # a target allows it
+
+    def test_a_target_known_by_path_starts_at_its_page(self):
+        targets = levels.Targets.from_list([{"origin": "https://h", "path": "/finance/billing"}])
+        self.assertEqual(targets.web_start(), "https://h/finance/billing")
+        self.assertEqual(levels.Targets.from_list([{"origin": "https://h"}]).web_start(), "https://h/")
+        self.assertEqual(levels.Targets.from_list([{"origin": "https://h", "path": "/a", "start": "https://h/x"}])
+                         .web_start(), "https://h/x")
 
 
 if __name__ == "__main__":

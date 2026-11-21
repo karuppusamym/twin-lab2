@@ -168,12 +168,15 @@ def identities(app_id):
 
 
 def deny_keys():
-    """Keys the recorder must not record in full. The recorder knows origins, not paths, so a
-    path identity is not sent: denying it would deny the applications sharing its host."""
+    """Keys the recorder must not record in full. A path identity (`web:https://host/finance/payroll`)
+    is sent too: a recorder of contract 1.2 sends the steps under it as presence when no target's
+    longer prefix claims them; an older recorder compares whole identity keys, so a path key
+    never denies the applications sharing its host. A `host` application's path key is left out:
+    it claims what no path claims, which a recorder cannot tell from its key."""
     return [r["key"] for r in db().execute("""
-        SELECT key FROM app_identities JOIN apps ON apps.id = app_identities.app_id
-        WHERE apps.status = 'not_replicated' AND key NOT LIKE 'exe:%'
-    """) if not r["key"].startswith("web:") or not web_parts(r["key"])[1]]  # fmt: skip
+        SELECT key, apps.url_match FROM app_identities JOIN apps ON apps.id = app_identities.app_id
+        WHERE apps.status = 'not_replicated' AND key NOT LIKE 'exe:%' ORDER BY key
+    """) if not (r["key"].startswith("web:") and web_parts(r["key"])[1] and r["url_match"] == "host")]  # fmt: skip
 
 
 def web_identities(origin):
@@ -473,8 +476,13 @@ def agent_references(request: Request, doc=Depends(json_body)):
             seen.setdefault(row["app_id"], set()).update(st["event_id"] for st in json.loads(row["flow"]))
         db().execute("DELETE FROM recording_apps WHERE recording_id = ?", (recording_id,))
         received = {}  # app_id -> event ids in this send
+        denied = {r[0] for r in db().execute("SELECT id FROM apps WHERE status = 'not_replicated'")}
         for item in refs["apps"]:
             for app_id, key, steps, created in assign_steps(item, refs["flows"].get(item["key"], [])):
+                if app_id in denied and not created:
+                    # marked not replicated: no flow or evidence link for it (an older recorder, or a
+                    # path application on a shared host, may still send them)
+                    continue
                 old = db().execute("SELECT flow FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",
                                    (recording_id, app_id, key)).fetchone()  # fmt: skip
                 if old is not None:  # two references resolved to one identity
