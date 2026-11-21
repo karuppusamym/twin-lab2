@@ -2159,6 +2159,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agent/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The newest recorder version this portal offers, for a recorder to update itself
+         * @description Any scope (every paired machine may update itself). The release an administrator put in the portal's releases folder (`TWINLAB2_RECORDER_RELEASES`, docs/recorder-deployment.md). `update_available` compares it with the recorder's `version`. The recorder downloads `latest.url`, checks `size` and `sha256`, then the file's Authenticode signature against its machine policy, and installs only while nothing is being recorded.
+         */
+        get: operations["agentUpdate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent/update/{file}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file: string;
+            };
+            cookie?: never;
+        };
+        /** Download the offered recorder release (the MSI) */
+        get: operations["agentUpdateFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agent/references": {
         parameters: {
             query?: never;
@@ -4049,6 +4088,33 @@ export interface components {
             /** @description Empty or omitted keeps the saved password. */
             password?: string;
             is_admin: boolean;
+        };
+        /** @description One recorder release (an MSI) the portal serves. */
+        RecorderRelease: {
+            /** @example 0.3.0 */
+            version: string;
+            /** @example TwinLabRecorder-0.3.0-x64.msi */
+            file: string;
+            /**
+             * @description Where to download it
+             * @example /api/agent/update/TwinLabRecorder-0.3.0-x64.msi
+             */
+            url: string;
+            /** @description Bytes. */
+            size: number;
+            sha256: string;
+            /** @description What changed */
+            notes?: string;
+            /** Format: date-time */
+            published_at?: string | null;
+        };
+        /** @description The answer to a recorder asking for a newer version of itself. */
+        RecorderUpdate: {
+            /** @description The version the recorder said it is. */
+            current?: string | null;
+            /** @description `latest` is newer than `current`. */
+            update_available: boolean;
+            latest: components["schemas"]["RecorderRelease"] | null;
         };
         /** @description A recorder message as RECORDER-CONTRACT.md defines it (with `contract_version`). */
         AgentMessage: {
@@ -7346,6 +7412,56 @@ export interface operations {
             200: components["responses"]["AgentJson"];
             401: components["responses"]["AgentError"];
             403: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
+        };
+    };
+    agentUpdate: {
+        parameters: {
+            query?: {
+                /** @description The recorder's version. */
+                version?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The newest release, or none. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecorderUpdate"];
+                };
+            };
+            401: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
+        };
+    };
+    agentUpdateFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                file: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The MSI. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            401: components["responses"]["AgentError"];
+            404: components["responses"]["AgentError"];
             429: components["responses"]["AgentError"];
         };
     };

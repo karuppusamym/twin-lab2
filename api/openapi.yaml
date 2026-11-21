@@ -2789,6 +2789,47 @@ paths:
         "401": { $ref: "#/components/responses/AgentError" }
         "403": { $ref: "#/components/responses/AgentError" }
         "429": { $ref: "#/components/responses/AgentError" }
+  /api/agent/update:
+    get:
+      tags: [agent]
+      operationId: agentUpdate
+      summary: The newest recorder version this portal offers, for a recorder to update itself
+      description: >-
+        Any scope (every paired machine may update itself).
+        The release an administrator put in the portal's releases folder (`TWINLAB2_RECORDER_RELEASES`,
+        docs/recorder-deployment.md). `update_available` compares it with the recorder's `version`.
+        The recorder downloads `latest.url`, checks `size` and `sha256`, then the file's Authenticode
+        signature against its machine policy, and installs only while nothing is being recorded.
+      x-twinlab-role: agent-token
+      security: [{ agentToken: [] }]
+      parameters:
+        - { name: version, in: query, required: false, schema: { type: string }, description: The recorder's version. }
+      responses:
+        "200":
+          description: The newest release, or none.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecorderUpdate" }
+        "401": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
+  /api/agent/update/{file}:
+    parameters:
+      - { name: file, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [agent]
+      operationId: agentUpdateFile
+      summary: Download the offered recorder release (the MSI)
+      x-twinlab-role: agent-token
+      security: [{ agentToken: [] }]
+      responses:
+        "200":
+          description: The MSI.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/AgentError" }
+        "404": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
   /api/agent/references:
     post:
       tags: [agent]
@@ -5195,6 +5236,26 @@ components:
         password: { type: string, description: "Empty or omitted keeps the saved password." }
         is_admin: { type: boolean }
 
+    RecorderRelease:
+      type: object
+      description: One recorder release (an MSI) the portal serves.
+      required: [version, file, url, size, sha256]
+      properties:
+        version: { type: string, pattern: '^\d+\.\d+\.\d+$', example: "0.3.0" }
+        file: { type: string, example: TwinLabRecorder-0.3.0-x64.msi }
+        url: { type: string, description: Where to download it, on this portal., example: /api/agent/update/TwinLabRecorder-0.3.0-x64.msi }
+        size: { type: integer, description: Bytes. }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        notes: { type: string, description: What changed, in words. }
+        published_at: { type: [string, "null"], format: date-time }
+    RecorderUpdate:
+      type: object
+      description: The answer to a recorder asking for a newer version of itself.
+      required: [update_available, latest]
+      properties:
+        current: { type: [string, "null"], description: The version the recorder said it is. }
+        update_available: { type: boolean, description: "`latest` is newer than `current`." }
+        latest: { oneOf: [{ $ref: "#/components/schemas/RecorderRelease" }, { type: "null" }] }
     AgentMessage:
       type: object
       description: A recorder message as RECORDER-CONTRACT.md defines it (with `contract_version`).
