@@ -431,16 +431,26 @@ class ApiTest(unittest.TestCase):
             "commit": SHA, "platform": "Web", "launch": "python run.py", "reset_result": "pass",
             "results": {scenario: "pass"}}))
         self.assertEqual(tested["test"]["results"][0]["result"], "pass")
+        scope = tested["test"]["scope"]
+        self.assertEqual((scope["commit_sha"], scope["tested_by"], scope["role"], scope["method"],
+                          scope["scenarios_passed"]), (SHA, "alice", "owner", "manual", 1))
+        self.assertIn(SHA[:12], scope["label"])
         wrong = alice.post(f"/api/v1/releases/{self.release}/tests", json={
             "commit": "f" * 40, "platform": "Web", "launch": "x", "reset_result": "pass", "results": {}})
         self.assertEqual(wrong.status_code, 400)
         report = detail["checks"]["reports"][0]["id"]
         downloaded = bob.get(f"/api/v1/releases/{self.release}/reports/{report}")
         self.assertEqual(json.loads(downloaded.content)["commit"], SHA)
+        self.assertIn("scope", json.loads(downloaded.content))  # the verification report states its scope
+        manifest = bob.get(f"/api/v1/releases/{self.release}/openshift.yaml")
+        self.assertEqual(manifest.status_code, 200, manifest.text)
+        self.assertIn(f"ref: {SHA}", manifest.text)
+        self.assertEqual(vera.get(f"/api/v1/releases/{self.release}/openshift.yaml").status_code, 403)
         published = self.ok(alice.post(f"/api/v1/releases/{self.release}/publish"))
         self.assertEqual(published["release"]["state"], "published")
         self.assertEqual(alice.post(f"/api/v1/releases/{self.release}/publish").status_code, 400)
         self.assertEqual(vera.get(f"/api/v1/releases/{self.release}/download").status_code, 200)
+        self.assertEqual(vera.get(f"/api/v1/releases/{self.release}/openshift.yaml").status_code, 200)
         self.assertTrue(self.ok(vera.get(f"/api/v1/releases/{self.release}"))["can_download"])
         catalog = self.ok(vera.get("/api/v1/apps"))
         self.assertEqual(catalog["apps"][0]["tested_release"]["state"], "published")

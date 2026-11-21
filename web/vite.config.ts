@@ -1,6 +1,5 @@
-/// <reference types="vitest" />
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 // The app uses relative /api/v1 URLs: in development Vite forwards them to the Flask portal.
 export default defineConfig({

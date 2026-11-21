@@ -3,7 +3,7 @@
     python tools/e2e_portal.py --port 8781 [--state DIR]
 
 - The portal (app.create_app) on a fresh SQLite catalog, serving web/dist (build it first).
-- Sign-in required (TWINLAB2_PASSWORD is set): alice / alice-e2e (owner and portal admin), bob / bob-e2e.
+- Sign-in required (TWINLAB2_AUTH_MODE=individual): alice / alice-e2e (owner and portal admin), bob / bob-e2e.
 - Fakes on 127.0.0.1, never a real service: the build provider `fake` (tests/server/fake_provider.py:
   no network, no money), a GitHub for repositories and check runs, and a deployment answering
   /.twinlab/version with the commit the fake provider builds. A worker thread works the job queue,
@@ -54,9 +54,9 @@ def main():
         "TWINLAB2_GITHUB_TOKEN": builds_github.token, "TWINLAB2_GITHUB_API": builds_github.url,
         "TWINLAB2_WORKSPACES": str(state / "workspaces"), "TWINLAB2_STATE": str(state),
         "TWINLAB2_DEV_WORKER": "0", "TWINLAB2_SECRET_KEY": "e2e-only", "TWINLAB2_HOSTS": "localhost,127.0.0.1",
-        # a shared password makes even this machine sign in (the sign-in page is part of the check)
-        "TWINLAB2_PASSWORD": "shared-e2e"})
-    for name in ("TWINLAB2_TRUST_PROXY_USER", "DATABASE_URL"):
+        # individual mode: even this machine signs in (the sign-in page is part of the check)
+        "TWINLAB2_AUTH_MODE": "individual"})
+    for name in ("TWINLAB2_TRUST_PROXY_USER", "TWINLAB2_PASSWORD", "DATABASE_URL"):
         os.environ.pop(name, None)
     world = fake_provider.reset()
 

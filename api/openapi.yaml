@@ -15,8 +15,11 @@ info:
       session is the portal's cookie (`cookieSession`), so the app works unchanged when Flask serves
       it and when it sits behind the OpenShift OAuth proxy.
     * `GET /api/v1/session` says who is signed in, how (`auth_mode`), whether a local sign-in form
-      exists, and the caller's role on each application.
-    * Local users sign in with `POST /api/v1/session` and out with `DELETE /api/v1/session`.
+      exists, the portal's auth mode (`access_mode`: `local-dev`, `individual`, `trusted-proxy`)
+      and the caller's role on each application.
+    * Local users sign in with `POST /api/v1/session` and out with `DELETE /api/v1/session`. A
+      sign-in is a server-side session that expires (`TWINLAB2_SESSION_HOURS`, default 12) and is
+      revoked at sign-out and when the user's password changes.
       Behind the OAuth proxy (`auth_mode: proxy`) the user comes from `X-Forwarded-User` and there
       is no local sign-in or sign-out.
 
@@ -1688,6 +1691,36 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/releases/{release_id}/openshift.yaml:
+    parameters: [{ $ref: "#/components/parameters/ReleaseId" }]
+    get:
+      tags: [releases]
+      operationId: getReleaseManifest
+      summary: Download the release's OpenShift manifest
+      description: |
+        Pinned to what was verified: the BuildConfig builds exactly the release's commit (git ref =
+        the commit SHA) into the tag `<name>:<commit>`, nothing follows a branch or `:latest`, and
+        the Deployment runs the built image by digest (`<name>@sha256:...`). Without `image_digest`
+        the digest is a placeholder and the file's header says how to read it after the build. The
+        builder package's `deploy/ocp/<name>/openshift.yaml` is the development manifest (builds
+        `main`, follows `:latest`). 404 for a desktop demo.
+      x-twinlab-role: viewer (builder before publishing)
+      parameters:
+        - name: image_digest
+          in: query
+          required: false
+          schema: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+          description: The built image's digest (`oc get istag <name>:<commit>`).
+      responses:
+        "200":
+          description: The release manifest (a Kubernetes List).
+          content:
+            application/yaml:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   # ---------------------------------------------------------------------------------------------
   # setup
   # ---------------------------------------------------------------------------------------------
@@ -2210,7 +2243,7 @@ components:
     # -- session ----------------------------------------------------------------------------------
     Session:
       type: object
-      required: [signed_in, user, is_admin, auth_mode, login_available, csrf_token, roles]
+      required: [signed_in, user, is_admin, auth_mode, access_mode, login_available, csrf_token, roles]
       properties:
         signed_in: { type: boolean }
         user: { type: [string, "null"], description: "The sign-in name." }
@@ -2221,6 +2254,14 @@ components:
           description: |
             `local`: local user store (sign-in form); `proxy`: the OAuth proxy's `X-Forwarded-User`
             (no sign-in form, no sign-out); `open`: a single-user development portal (user `local`).
+        access_mode:
+          type: string
+          enum: [local-dev, individual, trusted-proxy]
+          description: |
+            The portal's auth mode (`TWINLAB2_AUTH_MODE`, or derived): `local-dev` only this machine as
+            the admin `local`; `individual` everyone signs in with their own password (a shared demo
+            password signs in only as the one demo identity, never an admin); `trusted-proxy` identity
+            only from the SSO proxy's headers, only on requests that come through the proxy.
         login_available: { type: boolean, description: "Whether the sign-in form applies." }
         csrf_token: { type: string, description: "Send as `X-CSRF-Token` on every non-GET request." }
         roles:
@@ -3352,7 +3393,7 @@ components:
         checked_at: { type: [string, "null"] }
     ReleaseTest:
       type: object
-      required: [commit_sha, platform, launch, reset_result, reset_notes, tested_by, tested_at, results]
+      required: [commit_sha, platform, launch, reset_result, reset_notes, tested_by, tested_at, results, scope]
       properties:
         commit_sha: { type: string }
         platform: { type: string }
@@ -3370,6 +3411,40 @@ components:
               id: { type: string }
               name: { type: string }
               result: { $ref: "#/components/schemas/TestResult" }
+        scope: { $ref: "#/components/schemas/VerifiedScope" }
+    VerifiedScope:
+      type: object
+      description: |
+        What the release's evidence covers, so "Tested" never says more than was checked. Also in
+        the verification report (`scope`).
+      required: [commit_sha, platform, tested_by, role, method, scenarios_total, scenarios_run, scenarios_passed,
+                 scenarios, deployment_url, tested_at, label]
+      properties:
+        commit_sha: { type: string }
+        platform: { type: string, description: "The supported platform the scenarios ran on." }
+        tested_by: { type: string }
+        role:
+          type: [string, "null"]
+          description: The tester's role on the application (`owner`, `builder`, `viewer`, or `admin`); null when unknown.
+        method:
+          type: string
+          enum: [manual, twinlab]
+          description: "`manual`: results recorded by hand; `twinlab`: Twin Lab's own replay."
+        scenarios_total: { type: integer }
+        scenarios_run: { type: integer, description: "Scenarios with a pass or fail result." }
+        scenarios_passed: { type: integer }
+        scenarios:
+          type: array
+          items:
+            type: object
+            required: [id, name, result]
+            properties:
+              id: { type: [string, "null"] }
+              name: { type: string }
+              result: { $ref: "#/components/schemas/TestResult" }
+        deployment_url: { type: [string, "null"], description: "The deployment the scenarios ran against (verified to report the commit)." }
+        tested_at: { $ref: "#/components/schemas/Timestamp" }
+        label: { type: string, description: "The one-line summary the release page shows." }
     CheckSummary:
       type: object
       required: [repository, pr_number, source_ref, platform, required, windows, checked_at, checks, reasons, reports]
@@ -3613,6 +3688,7 @@ components:
         user: ana
         is_admin: false
         auth_mode: local
+        access_mode: individual
         login_available: true
         csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
         roles:
@@ -3624,6 +3700,7 @@ components:
         user: ben
         is_admin: false
         auth_mode: local
+        access_mode: individual
         login_available: true
         csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
         roles:
@@ -3634,6 +3711,7 @@ components:
         user: vic
         is_admin: false
         auth_mode: proxy
+        access_mode: trusted-proxy
         login_available: false
         csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
         roles:
@@ -3644,6 +3722,7 @@ components:
         user: root
         is_admin: true
         auth_mode: local
+        access_mode: individual
         login_available: true
         csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
         roles: []
@@ -3653,6 +3732,7 @@ components:
         user: null
         is_admin: false
         auth_mode: local
+        access_mode: individual
         login_available: true
         csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
         roles: []
@@ -4312,6 +4392,21 @@ components:
           results:
             - { id: s1, name: Create an invoice from a saved order, result: pass }
             - { id: s2, name: Unknown order number, result: pass }
+          scope:
+            commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b
+            platform: Web
+            tested_by: ana
+            role: owner
+            method: manual
+            scenarios_total: 2
+            scenarios_run: 2
+            scenarios_passed: 2
+            scenarios:
+              - { id: s1, name: Create an invoice from a saved order, result: pass }
+              - { id: s2, name: Unknown order number, result: pass }
+            deployment_url: https://billing-demo.apps.example.test
+            tested_at: "2026-11-19T16:00:00+00:00"
+            label: "Commit 3f9a1c2d4e5b on Web: 2 of 2 scenarios passed (2 run), recorded by hand by ana (owner), against https://billing-demo.apps.example.test."
         scenarios:
           - { id: s1, name: Create an invoice from a saved order }
           - { id: s2, name: Unknown order number }

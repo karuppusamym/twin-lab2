@@ -125,19 +125,58 @@ class RequestState:
             _state.reset(token)
 
 
+TOO_LARGE = "The request is too large."
+
+
+class BodyTooLarge(StarletteHTTPException):
+    """Raised from `receive` once a request body passes the limit. An HTTPException, so FastAPI
+    passes it on as it is (it turns other errors while reading a body into 400)."""
+
+    def __init__(self):
+        super().__init__(413, TOO_LARGE)
+
+
 class BodyLimit:
-    """ASGI middleware: 413 for a request whose Content-Length is over `limit` bytes."""
+    """ASGI middleware: 413 for a request body over `limit` bytes. A Content-Length over the
+    limit is refused before the app runs; otherwise the bytes actually received are counted
+    (a chunked body, or one whose Content-Length understates it), and the first chunk past the
+    limit ends the request with 413: the app never gets more than `limit` bytes."""
 
     def __init__(self, app, limit):
         self.app, self.limit = app, limit
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http":
-            for name, value in scope.get("headers", []):
-                if name == b"content-length" and value.isdigit() and int(value) > self.limit:
-                    response = error_response(scope.get("path", ""), 413, "The request is too large.")
-                    return await response(scope, receive, send)
-        return await self.app(scope, receive, send)
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+        for name, value in scope.get("headers", []):
+            if name == b"content-length" and (not value.isdigit() or int(value) > self.limit):
+                status, detail = (413, TOO_LARGE) if value.isdigit() else (400, "The Content-Length is not a number.")
+                return await error_response(path, status, detail)(scope, receive, send)
+        received, started = 0, False
+
+        async def counted():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.limit:
+                    raise BodyTooLarge()
+            return message
+
+        async def watched(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counted, watched)
+        except BodyTooLarge:
+            if started:  # the app already answered: the request just ends here
+                raise
+            log.warning("request body over %d bytes refused: %s %s", self.limit, scope.get("method"), path)
+            await error_response(path, 413, TOO_LARGE)(scope, receive, send)
 
 
 # -- errors -------------------------------------------------------------------------------------

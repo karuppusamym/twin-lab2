@@ -25,7 +25,7 @@ from pathlib import Path
 import secrets
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -73,14 +73,13 @@ def web_routes(secret):
             fail(403, str(error))
         except LookupError:
             fail(404)
-        with artifacts.open(ref) as stream:
-            content = stream.read()
-        headers = {"Cache-Control": "no-store"}
+        headers = {"Cache-Control": "no-store", "Content-Length": str(ref.size)}
         if name:
             from twinlab2.routes_portal import disposition
 
             headers["Content-Disposition"] = disposition(name)
-        return Response(content, media_type=ref.content_type, headers=headers)
+        # streamed in chunks (never the whole object in memory), checked against the ref's SHA-256
+        return StreamingResponse(artifacts.stream(ref), media_type=ref.content_type, headers=headers)
 
     @routes.get("/assets/{name:path}", auth.public)
     def web_asset(name: str):
@@ -127,7 +126,10 @@ def prepare(target, store):
         from twinlab2.portal import migrate_owners
 
         with connection:  # data: the owner text of catalogs from before roles becomes an owner role
-            migrate_owners(connection, None if settings.trust_proxy or settings.password else auth.LOCAL_USER)
+            local_dev = auth.mode_of(settings, connection) == auth.LOCAL_DEV
+            migrate_owners(connection, auth.LOCAL_USER if local_dev else None)
+        # refuses unsafe settings (ConfigError) before the portal serves anything
+        log.info(auth.check_settings(settings, connection, bool(os.environ.get("TWINLAB2_SECRET_KEY"))))
     finally:
         connection.close()
         artifacts.unbind(token)
@@ -145,11 +147,13 @@ def create_app(target, store=None):
     store = store or artifacts.from_env(target)
     prepare(target, store)
     settings = auth.Settings.from_env()
+    # local-dev only (prepare refused every other mode without it): a per-process key, so
+    # sessions and download links end when the portal restarts
     secret = os.environ.get("TWINLAB2_SECRET_KEY") or secrets.token_hex(32)
 
     app = FastAPI(title="TwinLab2 portal", version="1.0.0", docs_url=None, redoc_url=None, openapi_url=None)
     # test hooks and settings the routes read (views.config): GITHUB, TWINLAB_RUNNER, DEV_WORKER
-    app.config = {"DEV_WORKER": not settings.trust_proxy and os.environ.get("TWINLAB2_DEV_WORKER", "1") != "0",
+    app.config = {"DEV_WORKER": not settings.proxy and os.environ.get("TWINLAB2_DEV_WORKER", "1") != "0",
                   "SECRET_KEY": secret, "DATABASE": target}
     app.state.artifacts = store
     app.state.target = target
@@ -170,7 +174,9 @@ def create_app(target, store=None):
     hosts = [h.strip() for h in os.environ.get("TWINLAB2_HOSTS", "").split(",") if h.strip()]
     # outermost first: hosts, body size, the session cookie, then the request's state
     app.add_middleware(rest.RequestState, target=target, settings=settings, around=around)
-    app.add_middleware(SessionMiddleware, secret_key=secret, session_cookie="session", max_age=None,
+    # the cookie ends with the server-side session (auth.start_session), not with the browser
+    app.add_middleware(SessionMiddleware, secret_key=secret, session_cookie="session",
+                       max_age=int(settings.session_hours * 3600),
                        same_site="lax", https_only=os.environ.get("TWINLAB2_SECURE_COOKIES") == "1")
     app.add_middleware(rest.BodyLimit, limit=MAX_BODY)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "::1", *hosts])

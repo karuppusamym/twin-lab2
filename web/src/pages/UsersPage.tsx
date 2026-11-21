@@ -2,9 +2,17 @@ import { useQuery } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { api, data } from "../api/client";
 import { ErrorText, QueryView, useAction, useTitle } from "../components/ui";
+import { useSession } from "../session";
+
+const MODES: Record<string, string> = {
+  "local-dev": "only this machine, as the admin user local; no sign-in form.",
+  individual: "everyone signs in with their own password. A shared demo password, when set, signs in only as the one demo identity, never an admin.",
+  "trusted-proxy": "people are named by the SSO / OAuth proxy, and only requests that come through it are accepted. Passwords here are not used.",
+};
 
 export function UsersPage() {
   useTitle("Users");
+  const session = useSession();
   const users = useQuery({ queryKey: ["users"], queryFn: async () => data(await api.GET("/api/v1/admin/users")) });
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
@@ -16,6 +24,7 @@ export function UsersPage() {
   return (
     <>
       <h1>Users and portal admins</h1>
+      <p data-testid="auth-mode">Auth mode: <strong>{session.access_mode}</strong>: {MODES[session.access_mode]}</p>
       <p className="muted">The local user store for development sign-in. Behind an SSO proxy, people sign in there and need no password here; mark admins here or with <code>TWINLAB2_ADMINS</code>. Roles per application are assigned on each application's page.</p>
       <QueryView query={users}>
         {(u) => (

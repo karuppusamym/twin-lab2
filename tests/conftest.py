@@ -13,6 +13,12 @@ for path in (ROOT / "contract", ROOT / "recorder", ROOT / "server", TESTS / "rec
 
 import support  # noqa: E402
 
+# Outside local-dev the portal refuses to start without a secret key (auth.check_settings); the
+# tests that check that refusal remove it.
+import os  # noqa: E402
+
+os.environ.setdefault("TWINLAB2_SECRET_KEY", "tests-only-secret")
+
 
 def _no_console_windows():
     """On Windows, a test process without a console (started by an IDE, an agent or a service) opens

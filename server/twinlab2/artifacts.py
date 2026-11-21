@@ -34,11 +34,13 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import Callable
+from contextlib import closing
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import io
+import logging
 import mimetypes
 import os
 from pathlib import Path
@@ -50,6 +52,8 @@ import tempfile
 import time
 
 from twinlab2.db import state_dir  # where local files go for a database
+
+log = logging.getLogger("twinlab2.artifacts")
 
 KINDS = ("restricted_evidence", "builder_package", "verification_report", "release_download")
 CHUNK = 1024 * 1024
@@ -421,6 +425,31 @@ def read(ref: ArtifactRef, verify=True, target=None) -> bytes:
         if digest != ref.sha256 or len(data) != ref.size:
             raise ChecksumMismatch(ref.sha256, digest)
     return data
+
+
+def stream(ref: ArtifactRef, target=None, chunk=CHUNK):
+    """The object's bytes in chunks of at most `chunk` (local file or S3 body, never read
+    whole), checked against the ref's SHA-256 and size as they pass: on a mismatch the last
+    chunk is withheld and ChecksumMismatch ends the download (the client sees it cut short).
+    The object is opened now (in the request's binding), read as the response is sent."""
+    body = open(ref, target)
+    return _chunks(ref, body, chunk)
+
+
+def _chunks(ref, body, chunk):
+    digest, size, pending = hashlib.sha256(), 0, b""
+    with closing(body):
+        while data := body.read(chunk):
+            if pending:
+                yield pending
+            digest.update(data)
+            size += len(data)
+            pending = data
+    if digest.hexdigest() != ref.sha256 or size != ref.size:
+        log.error("artifact %s/%s does not match its SHA-256: download stopped", ref.key, ref.version_id)
+        raise ChecksumMismatch(ref.sha256, digest.hexdigest())
+    if pending:
+        yield pending
 
 
 def verify(ref: ArtifactRef, target=None) -> bool:

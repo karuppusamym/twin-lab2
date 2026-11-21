@@ -24,27 +24,50 @@ given when the route is added (`rest.Routes`), and runs as its FastAPI dependenc
 without one answers 403 (`rest.PolicyRoute`), so a route added later without a decision is
 closed rather than open, and a test lists every route's policy.
 
-Sign-in
--------
-`identify()` decides who the request is, in this order:
+Sign-in: the auth mode
+---------------------
+`TWINLAB2_AUTH_MODE` says how people sign in; the portal logs the mode at start and
+`GET /api/v1/session` reports it (`access_mode`, shown on the Users page):
 
-1. `TWINLAB2_TRUST_PROXY_USER=1`: the user the reverse proxy (OpenShift OAuth proxy, or any SSO
-   gateway) puts in `X-Forwarded-User` / `X-Forwarded-Preferred-Username`. This is the hook for a
-   real SSO: put the portal behind the gateway, set the variable, and name admins in
-   `TWINLAB2_ADMINS` or with `python portal.py user NAME --admin`. Groups are read from
-   `X-Forwarded-Groups` (comma separated); members of `TWINLAB2_ADMIN_GROUP` are admins. To
-   take identity from somewhere else (a signed JWT, mTLS), replace `proxy_identity`.
-2. The signed session cookie made by `POST /api/v1/session` (the web app's sign-in page): a
-   user of the local user store (`users`, password hashed with PBKDF2-SHA256) signs in with their own password; with `TWINLAB2_PASSWORD` set, any other
-   name signs in with that shared portal password, as before.
-3. Otherwise only this machine: the user `local`, a portal admin.
+- `local-dev`: only this machine. Requests from loopback are the admin user `local`; any other
+  request is refused (403), and there is no sign-in form. Refused (at start, and per request)
+  when local users with passwords exist, unless `TWINLAB2_LOCAL_DEV_FORCE=1`: once people have
+  their own passwords, the loopback admin would bypass them.
+- `individual`: everyone signs in with their own password (the local user store: `users`,
+  PBKDF2-SHA256; the web app's sign-in page, `POST /api/v1/session`). No loopback admin, and
+  proxy headers are ignored. `TWINLAB2_PASSWORD` (the shared demo password) signs in only as
+  the one demo identity `TWINLAB2_SHARED_USER` (default `demo`): never an admin (that session
+  is never admin, and a start with the demo identity named an admin is refused), never a name
+  with its own password. The demo identity holds only the roles an owner assigns to it.
+  Named owners, builders and admins use their own credentials (or the SSO proxy).
+- `trusted-proxy`: identity only from the SSO / OAuth proxy's headers (`X-Forwarded-User` /
+  `X-Forwarded-Preferred-Username`, groups from `X-Forwarded-Groups`; members of
+  `TWINLAB2_ADMIN_GROUP` are admins), and only for requests that come from the proxy: the
+  peer address must be in `TWINLAB2_TRUSTED_PROXIES` (comma-separated addresses or networks,
+  default loopback: the sidecar proxy in the same pod). Requests from anywhere else are 403.
+  No sign-in form and no loopback admin. To take identity from somewhere else (a signed JWT,
+  mTLS), replace `proxy_identity`.
+
+Without `TWINLAB2_AUTH_MODE` the mode is derived: `trusted-proxy` with the older
+`TWINLAB2_TRUST_PROXY_USER=1`; `individual` when `TWINLAB2_PASSWORD` is set or a local user has
+a password; else `local-dev`. Outside `local-dev` the portal refuses to start without
+`TWINLAB2_SECRET_KEY` (app.py).
+
+Admins come from `TWINLAB2_ADMINS` (comma separated), `users.is_admin` (`python -m
+twinlab2.portal user NAME --admin`) or the proxy's admin group.
+
+Sessions (individual mode) are server-side rows (`auth_sessions`): each sign-in makes one,
+the signed cookie carries its id, and it ends after `TWINLAB2_SESSION_HOURS` (default 12), at
+sign-out, or when the user's password changes.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import ipaddress
 import os
 import secrets
 
@@ -99,6 +122,7 @@ def save_user(db, name, *, password=None, is_admin=None, by="cli", now=""):
         if password is not None:
             db.execute("UPDATE users SET password_hash = ? WHERE name = ?",
                        (hash_password(password) if password else "", name))
+            revoke_user_sessions(db, name)  # a new (or removed) password ends the user's sessions
         if is_admin is not None:
             db.execute("UPDATE users SET is_admin = ? WHERE name = ?", (1 if is_admin else 0, name))
 
@@ -167,22 +191,110 @@ def visible_app_ids(db, user, admin):
 
 # -- identity -----------------------------------------------------------------------------------
 
+LOCAL_DEV, INDIVIDUAL, TRUSTED_PROXY = "local-dev", "individual", "trusted-proxy"
+MODES = (LOCAL_DEV, INDIVIDUAL, TRUSTED_PROXY)
+SHARED_USER = "demo"
+SESSION_HOURS = 12.0
+
+
+class ConfigError(RuntimeError):
+    """The portal's auth settings are unsafe or contradictory: it does not start."""
+
+
+def _networks(text):
+    found = []
+    for item in (x.strip() for x in text.split(",")):
+        if item:
+            try:
+                found.append(ipaddress.ip_network(item, strict=False))
+            except ValueError:
+                raise ConfigError(f"TWINLAB2_TRUSTED_PROXIES: {item!r} is not an address or network.") from None
+    return found
+
 
 @dataclass
 class Settings:
-    trust_proxy: bool = False
+    mode: str = ""  # TWINLAB2_AUTH_MODE as given ("" = derived, see `mode_of`)
+    trust_proxy: bool = False  # the older TWINLAB2_TRUST_PROXY_USER=1 (derives trusted-proxy)
     password: str = ""
+    shared_user: str = SHARED_USER
     admins: set = field(default_factory=set)
     admin_group: str = ""
+    trusted_proxies: list = field(default_factory=lambda: _networks("127.0.0.1,::1"))
+    force_local_dev: bool = False
+    session_hours: float = SESSION_HOURS
 
     @classmethod
     def from_env(cls):
+        env = os.environ.get
+        mode = env("TWINLAB2_AUTH_MODE", "").strip().lower()
+        if mode and mode not in MODES:
+            raise ConfigError(f"TWINLAB2_AUTH_MODE must be one of {', '.join(MODES)}, not {mode!r}.")
+        try:
+            hours = float(env("TWINLAB2_SESSION_HOURS", "") or SESSION_HOURS)
+        except ValueError:
+            raise ConfigError("TWINLAB2_SESSION_HOURS must be a number of hours.") from None
+        if not 0 < hours <= 24 * 30:
+            raise ConfigError("TWINLAB2_SESSION_HOURS must be more than 0 and at most 720.")
         return cls(
-            trust_proxy=os.environ.get("TWINLAB2_TRUST_PROXY_USER") == "1",
-            password=os.environ.get("TWINLAB2_PASSWORD", ""),
-            admins={n.strip() for n in os.environ.get("TWINLAB2_ADMINS", "").split(",") if n.strip()},
-            admin_group=os.environ.get("TWINLAB2_ADMIN_GROUP", "").strip(),
+            mode=mode,
+            trust_proxy=env("TWINLAB2_TRUST_PROXY_USER") == "1",
+            password=env("TWINLAB2_PASSWORD", ""),
+            shared_user=(env("TWINLAB2_SHARED_USER", "") or SHARED_USER).strip(),
+            admins={n.strip() for n in env("TWINLAB2_ADMINS", "").split(",") if n.strip()},
+            admin_group=env("TWINLAB2_ADMIN_GROUP", "").strip(),
+            trusted_proxies=_networks(env("TWINLAB2_TRUSTED_PROXIES", "") or "127.0.0.1,::1"),
+            force_local_dev=env("TWINLAB2_LOCAL_DEV_FORCE") == "1",
+            session_hours=hours,
         )
+
+    @property
+    def proxy(self):
+        """Whether identity comes from the proxy (fixed for the process: never derived from data)."""
+        return self.mode == TRUSTED_PROXY or (not self.mode and self.trust_proxy)
+
+
+def mode_of(settings, connection):
+    """The auth mode in force: the configured one, else derived (see the module's docstring)."""
+    if settings.mode:
+        return settings.mode
+    if settings.trust_proxy:
+        return TRUSTED_PROXY
+    if settings.password or has_local_users(connection):
+        return INDIVIDUAL
+    return LOCAL_DEV
+
+
+def is_admin_name(settings, connection, user):
+    if user in settings.admins:
+        return True
+    row = connection.execute("SELECT is_admin FROM users WHERE name = ?", (user,)).fetchone()
+    return row is not None and bool(row[0])
+
+
+def check_settings(settings, connection, secret_set):
+    """ConfigError when the portal must not start with these settings; else the mode's log line."""
+    mode = mode_of(settings, connection)
+    if settings.mode == LOCAL_DEV and has_local_users(connection) and not settings.force_local_dev:
+        raise ConfigError("TWINLAB2_AUTH_MODE=local-dev, but local users with passwords exist: this machine's "
+                          "admin `local` would bypass them. Use TWINLAB2_AUTH_MODE=individual, or set "
+                          "TWINLAB2_LOCAL_DEV_FORCE=1 to serve this machine anyway.")
+    if mode != LOCAL_DEV and not secret_set:
+        raise ConfigError(f"The {mode} auth mode needs TWINLAB2_SECRET_KEY (a long random value, the same "
+                          "for every replica): sessions and download links are signed with it.")
+    if settings.password:
+        if not valid_name(settings.shared_user):
+            raise ConfigError("TWINLAB2_SHARED_USER must be a user name of 1 to 120 printable characters.")
+        if is_admin_name(settings, connection, settings.shared_user):
+            raise ConfigError(f"TWINLAB2_SHARED_USER {settings.shared_user!r} is a portal admin: the shared "
+                              "password must never sign in as an admin. Name a separate demo identity.")
+    how = {LOCAL_DEV: "only this machine, as the admin user `local`" + (" (forced)" if settings.force_local_dev else ""),
+           INDIVIDUAL: "everyone signs in with their own password" + (
+               f"; the shared password signs in only as {settings.shared_user!r}" if settings.password else ""),
+           TRUSTED_PROXY: "identity from the SSO proxy's headers, accepted from "
+                          + ", ".join(str(n) for n in settings.trusted_proxies)}[mode]
+    derived = "" if settings.mode else " (derived: set TWINLAB2_AUTH_MODE to fix it)"
+    return f"auth mode {mode}{derived}: {how}"
 
 
 def proxy_identity(req):
@@ -204,67 +316,130 @@ def client_host(req):
     return req.client.host if req.client else ""
 
 
-ONLY_THIS_MACHINE = ("This portal serves only this machine: set TWINLAB2_PASSWORD, add local users, "
-                     "or run it behind the SSO proxy.")
+def _address_in(host, networks):
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(address in network for network in networks)
+
+
+def from_proxy(req, settings):
+    """Whether the request's peer is one of the trusted proxies."""
+    return _address_in(client_host(req), settings.trusted_proxies)
+
+
+ONLY_THIS_MACHINE = ("This portal serves only this machine (auth mode local-dev): set TWINLAB2_AUTH_MODE=individual "
+                     "and add users, or run it behind the SSO proxy.")
+LOCAL_DEV_REFUSED = ("Local users with passwords exist, so this machine's admin is not signed in automatically: "
+                     "set TWINLAB2_AUTH_MODE=individual and sign in.")
+NOT_FROM_PROXY = "Requests must come through the SSO / OAuth proxy."
+REFUSALS = (ONLY_THIS_MACHINE, LOCAL_DEV_REFUSED, NOT_FROM_PROXY)
+
+
+# -- server-side sessions (individual mode) ------------------------------------------------------
+
+
+def _stamp(when=None):
+    when = when or datetime.now(timezone.utc)
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def start_session(connection, user, via, hours):
+    """A new session row for `user` (via "password" or "shared"); returns its id. No commit."""
+    sid = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    connection.execute("INSERT INTO auth_sessions(id, user_name, via, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+                       (sid, user, via, _stamp(now), _stamp(now + timedelta(hours=hours))))
+    return sid
+
+
+def session_row(connection, sid, user):
+    """The live session `sid` of `user`, or None (unknown, expired, revoked, another user)."""
+    if not sid or not isinstance(sid, str):
+        return None
+    row = connection.execute("SELECT * FROM auth_sessions WHERE id = ?", (sid,)).fetchone()
+    if row is None or row["user_name"] != user or row["revoked_at"] or row["expires_at"] <= _stamp():
+        return None
+    return row
+
+
+def revoke_session(connection, sid):
+    connection.execute("UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", (_stamp(), sid))
+
+
+def revoke_user_sessions(connection, user):
+    """End every session of `user` (a password change, or an admin's reset). No commit."""
+    connection.execute("UPDATE auth_sessions SET revoked_at = ? WHERE user_name = ? AND revoked_at IS NULL",
+                       (_stamp(), user))
 
 
 def resolve(req=None):
     """(user, is_admin) of the request, or (None, the reason nobody is signed in). Never raises."""
     req = req or g.request
     settings, connection = _settings(), _db()
+    mode = mode_of(settings, connection)
     admin = False
-    if settings.trust_proxy:
+    if mode == TRUSTED_PROXY:
+        if not from_proxy(req, settings):
+            return None, NOT_FROM_PROXY
         user, groups = proxy_identity(req)
         if not user:
             return None, "Sign in through the SSO / OAuth proxy."
         admin = bool(settings.admin_group and settings.admin_group in groups)
-    elif req.session.get("user"):
-        user = req.session["user"]
-    elif settings.password or client_host(req) not in LOCAL:
-        if settings.password or has_local_users(connection):
+    elif mode == INDIVIDUAL:
+        user = req.session.get("user")
+        row = session_row(connection, req.session.get("sid"), user) if user else None
+        if row is None:
             return None, "Sign in first."
-        return None, ONLY_THIS_MACHINE
-    else:
-        user, admin = LOCAL_USER, True  # the machine's own user, when the portal serves only this machine
-    if user in settings.admins:
-        admin = True
-    row = connection.execute("SELECT is_admin FROM users WHERE name = ?", (user,)).fetchone()
-    if row is not None and row[0]:
-        admin = True
-    return user, admin
+        if row["via"] == "shared":
+            return user, False  # the shared demo identity is never an admin
+    else:  # local-dev
+        if client_host(req) not in LOCAL:
+            return None, ONLY_THIS_MACHINE
+        if has_local_users(connection) and not settings.force_local_dev:
+            return None, LOCAL_DEV_REFUSED
+        return LOCAL_USER, True  # the machine's own user
+    return user, admin or is_admin_name(settings, connection, user)
 
 
 def identify():
-    """Set g.user and g.is_admin for the request, or answer 401 `signed_out` (403 when the portal
-    serves only this machine and the request comes from another)."""
+    """Set g.user and g.is_admin for the request, or answer 401 `signed_out` (403 when the
+    request may not sign in here at all: not this machine, or not through the proxy)."""
     user, admin = resolve()
     if user is None:
-        if admin == ONLY_THIS_MACHINE:
+        if admin in REFUSALS:
             fail(403, admin)
         fail(401, admin, "signed_out")
     g.user, g.is_admin = user, admin
 
 
 def login_user(name, password):
-    """True when `name` may sign in with `password`: a local user with their own password, or
-    (with TWINLAB2_PASSWORD) any other name with the shared password."""
+    """How `name` signs in with `password`: "password" (a local user with their own password),
+    "shared" (the shared demo password, only as the demo identity), or None."""
     settings, connection = _settings(), _db()
     row = connection.execute("SELECT password_hash FROM users WHERE name = ?", (name,)).fetchone()
     if row is not None and row[0]:
-        return check_password(row[0], password)
-    return bool(settings.password) and secrets.compare_digest(password, settings.password)
+        return "password" if check_password(row[0], password) else None
+    if (settings.password and name == settings.shared_user and password
+            and secrets.compare_digest(password.encode("utf-8"), settings.password.encode("utf-8"))
+            and not is_admin_name(settings, connection, name)):
+        return "shared"
+    return None
+
+
+def access_mode():
+    """local-dev, individual or trusted-proxy: the mode in force for this request."""
+    return mode_of(_settings(), _db())
 
 
 def login_available():
-    settings = _settings()
-    return not settings.trust_proxy and (bool(settings.password) or has_local_users(_db()))
+    return access_mode() == INDIVIDUAL
 
 
 def auth_mode():
     """proxy (the OAuth proxy names the user), local (a sign-in form), or open (this machine)."""
-    if _settings().trust_proxy:
-        return "proxy"
-    return "local" if login_available() else "open"
+    return {TRUSTED_PROXY: "proxy", INDIVIDUAL: "local", LOCAL_DEV: "open"}[access_mode()]
 
 
 # -- policies -----------------------------------------------------------------------------------

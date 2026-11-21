@@ -43,8 +43,12 @@ items:
             - name: portal
               image: REGISTRY/twinlab2-portal:TAG
               env:
-                - name: TWINLAB2_SECRET_KEY
+                - name: TWINLAB2_SECRET_KEY  # required: the portal refuses to start without it
                   valueFrom: {secretKeyRef: {name: twinlab2, key: secret-key}}
+                - name: TWINLAB2_AUTH_MODE  # identity only from the OAuth proxy sidecar's headers
+                  value: trusted-proxy
+                - name: TWINLAB2_TRUSTED_PROXIES  # the sidecar reaches the portal on the pod's loopback
+                  value: 127.0.0.1,::1
                 - name: DATABASE_URL
                   valueFrom: {secretKeyRef: {name: twinlab2, key: database-url}}
                 - name: TWINLAB2_ARTIFACT_BACKEND  # files go to S3; the database keeps refs

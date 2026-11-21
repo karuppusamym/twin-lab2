@@ -539,10 +539,13 @@ class SignInTest(unittest.TestCase):
 
     def test_local_users_sign_in_with_their_own_password(self):
         client = self.client()
-        # the machine user is the portal admin when the portal serves only this machine
+        # the machine user is the portal admin when the portal serves only this machine (local-dev)
+        self.assertEqual(client.post("/api/v1/apps", json={"name": "Orders"}).status_code, 201)
         made = client.put("/api/v1/admin/users/erin", json={"is_admin": False, "password": "s3cret-pass"})
         self.assertEqual(made.status_code, 200, made.text)
-        self.assertEqual(client.post("/api/v1/apps", json={"name": "Orders"}).status_code, 201)
+        # once a user has a password the mode is individual: this machine is no longer the admin
+        self.assertEqual(client.get("/api/v1/session").json()["access_mode"], "individual")
+        self.assertEqual(client.post("/api/v1/apps", json={"name": "Other"}).status_code, 401)
         wrong = client.post("/api/v1/session", json={"user": "erin", "password": "nope"})
         self.assertEqual((wrong.status_code, wrong.json()["code"]), (401, "wrong_credentials"))
         signed = client.post("/api/v1/session", json={"user": "erin", "password": "s3cret-pass"})

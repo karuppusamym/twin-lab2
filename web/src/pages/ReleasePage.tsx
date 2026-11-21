@@ -100,7 +100,9 @@ function ReleaseView({ detail }: { detail: Schemas["ReleaseDetail"] }) {
               <dt>Supported platform</dt><dd>{detail.test.platform}</dd>
               <dt>Launch instructions</dt><dd className="notes">{detail.test.launch}</dd>
               <dt>Reset check</dt><dd><Badge kind={detail.test.reset_result}>{detail.test.reset_result}</Badge>{detail.test.reset_notes && ` ${detail.test.reset_notes}`}</dd>
-              <dt>Tested by</dt><dd>{detail.test.tested_by}, {detail.test.tested_at}</dd>
+              <dt>Tested by</dt><dd>{detail.test.tested_by}{detail.test.scope.role && ` (${detail.test.scope.role})`}, {detail.test.tested_at}</dd>
+              <dt>What was verified</dt><dd data-testid="verified-scope">{detail.test.scope.label}</dd>
+              <dt>Deployment</dt><dd>{detail.test.scope.deployment_url ?? "No verified deployment"}</dd>
             </dl>
             <table className="flow">
               <thead><tr><th scope="col">Scenario</th><th scope="col">Result</th></tr></thead>
@@ -118,7 +120,8 @@ function ReleaseView({ detail }: { detail: Schemas["ReleaseDetail"] }) {
 
       <section aria-labelledby="deployments-h">
         <h2 id="deployments-h">Deployments</h2>
-        <p className="muted">A deployment is Verified when <code>GET &lt;URL&gt;/{detail.version_path}</code> reports this release's commit.</p>
+        <p className="muted">A deployment is Verified when <code>GET &lt;URL&gt;/{detail.version_path}</code> reports this release's commit: it serves that commit, nothing more. What was tested is under Test results.</p>
+        {detail.can_download && <p><a href={`/api/v1/releases/${release.id}/openshift.yaml`}>OpenShift manifest (release)</a> <span className="muted">builds exactly commit <code>{short(release.commit_sha)}</code> and runs the built image by digest; its header says how to add the digest.</span></p>}
         {detail.deployments.map((d) => (
           <div key={d.environment}>
             <h3>{d.environment} <DeploymentBadge deployment={d} /></h3>
