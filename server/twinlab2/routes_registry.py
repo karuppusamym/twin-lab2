@@ -28,7 +28,7 @@ from twinlab2.registry import (CODE_ALPHABET, CODE_LENGTH, CODE_MINUTES, FAILURE
                                clean_references, contract_refusal, discovered_name, merge_references,
                                normalise_key, now, path_matches,
                                recorder_of, recording_status, sha, target_of, web_parts)
-from twinlab2.rest import Routes, db, fail, g, json_body
+from twinlab2.rest import Routes, current, db, fail, g, json_body
 from twinlab2.views import ensure_reviewer, get_app, get_recording, record, reviewer_of_recording
 from twinlab2_contract import recorder_contract as contract
 from twinlab2_contract import structure
@@ -93,7 +93,8 @@ def list_machines():
     return {"machines": [shapes.machine(r) for r in machine_rows()], "code_minutes": CODE_MINUTES}
 
 
-@routes.post(V1 + "/machines/pairing-codes", auth.signed_in, response_model=m.PairingCode, status_code=201)
+@routes.post(V1 + "/machines/pairing-codes", auth.signed_in, response_model=m.PairingCode, status_code=201,
+             idempotent="stored")
 def make_code():
     """A one-time pairing code, returned once (only its SHA-256 is stored)."""
     code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
@@ -249,7 +250,8 @@ def list_capture_sessions():
             "automations": [shapes.ref(r) for r in db().execute("SELECT * FROM automations ORDER BY name").fetchall()]}
 
 
-@routes.post(V1 + "/capture-sessions", auth.signed_in, response_model=m.CaptureSession, status_code=201)
+@routes.post(V1 + "/capture-sessions", auth.signed_in, response_model=m.CaptureSession, status_code=201,
+             idempotent="stored")
 def request_recording(data: m.NewCaptureSession):
     name = data.name.strip()[:120]
     machine_id, automation_id = data.machine_id, data.automation_id or None
@@ -644,10 +646,19 @@ def recordings():
     words = (g.request.query_params.get("q") or "").casefold().split()
     mine = [r for r in rows if all(w in r["name"].casefold() for w in words) and reviewer_of_recording(r["id"])]
     page, where = paged(mine, limit, offset)
+    # `apps` (one text) is deprecated for `apps_list` (api/openapi.yaml: Deprecations)
+    current().response_headers["Deprecation"] = "true"
     return {"page": where,
             "recordings": [{"id": r["id"], "name": r["name"], "machine": r["machine"], "received_at": r["received_at"],
-                            "automation": r["automation"], "apps": r["apps"],
+                            "automation": r["automation"], "apps": r["apps"], "apps_list": recorded_apps(r["id"]),
                             "status": shapes.recording_status(recording_status(db(), r["id"]))} for r in page]}
+
+
+def recorded_apps(recording_id):
+    """[{app_id, name, mode}] of the applications a recording has, by name."""
+    return [{"app_id": a["id"], "name": a["name"], "mode": a["level"]} for a in db().execute(
+        "SELECT apps.id, apps.name, recording_apps.level FROM recording_apps JOIN apps ON apps.id = recording_apps.app_id "
+        "WHERE recording_apps.recording_id = ? ORDER BY apps.name, apps.id", (recording_id,)).fetchall()]
 
 
 @routes.post(V1 + "/recordings/{recording_id}/completeness/accept", auth.signed_in, response_model=m.RecordingDetail)
@@ -677,7 +688,8 @@ def accept_recording(recording_id: str):
 # -- an application's identities --------------------------------------------------------------------
 
 
-@routes.post(V1 + "/apps/{app_id:int}/identities", require_role("owner"), response_model=m.AppSetup, status_code=201)
+@routes.post(V1 + "/apps/{app_id:int}/identities", require_role("owner"), response_model=m.AppSetup, status_code=201,
+             idempotent="stored")
 def add_identity(app_id: int, data: m.IdentityInput):
     from twinlab2.routes_portal import app_setup
 
@@ -925,7 +937,8 @@ def automation_detail(automation_id):
                            for r in recs if reviewer_of_recording(r["id"])]}
 
 
-@routes.post(V1 + "/automations", auth.signed_in, response_model=m.AutomationDetail, status_code=201)
+@routes.post(V1 + "/automations", auth.signed_in, response_model=m.AutomationDetail, status_code=201,
+             idempotent="stored")
 def add_automation(data: m.NewAutomation):
     name = data.name.strip()[:120]
     if not name:

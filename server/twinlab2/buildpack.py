@@ -84,6 +84,10 @@ def event_entry(event, step):
                 entry[field] = step[field]
         if isinstance(step.get("key"), str) and NAMED_KEY.match(step["key"]):
             entry["key"] = step["key"]
+        elif step.get("action") == "aid" and step.get("control") == "key" and isinstance(step.get("label"), str) \
+                and NAMED_KEY.match(step["label"]):
+            # a recorder that keeps only Enter and F1-F12 as `key` still names a PF, PA or Clear AID by its label
+            entry["key"] = step["label"]
     return entry
 
 
@@ -304,6 +308,9 @@ def task_markdown(data, revision, version_path, completeness=None):
             out += ["**Notes**", "", s["notes"], ""]
     if data.get("screens"):
         out += screens_markdown(data)
+    elif surface_of(data) == "mainframe":
+        out += host_screens_markdown(data)
+    out += unrecorded_markdown(data)
     if data.get("target"):
         out += demo_target.markdown(data["target"])
     if completeness is not None:
@@ -323,19 +330,69 @@ REPLAY_NOTE = (
     "interactive elements (tag, id and classes) and how many there are of each, whether each element with an "
     "id (or a control with a name) is shown, which controls are enabled, the option lists of selects, and the "
     "value format of fields. Build each state below with exactly these controls, identifiers, classes and "
-    "states, and no other interactive elements. Text and data are not compared; rows are given as a shape "
+    "states, and no other interactive elements. Text and data are not compared (on a 3270 screen, except its "
+    "title line); rows are given as a shape "
     "(0, 1, few = 2 to 9, many = 10 or more). Words that could be data were left out (counted as withheld).")
+
+REPLAY_NOTE_3270 = (
+    "On a 3270 screen the replay names the screen by its title line, all the protected text of its first non-empty "
+    "row, and compares it exactly: put only the title given below on that row (no user id, date or other text "
+    "beside it). After every step it also compares every input field by its row, column, length and attributes "
+    "(numeric, non-display, intensified). Other protected text, typed data and the message line are not compared; "
+    "where a layout table is given, put them where it says. Text that could be data is given as a shape "
+    "(X a letter, 9 a digit).")
+
+TITLE_ID = re.compile(r"^scr:[0-9a-f]+$")
+
+
+def surface_of(data):
+    """web, desktop or mainframe: the pack's target kind, else the application's surface."""
+    return (data.get("target") or {}).get("kind") or (data.get("app") or {}).get("surface") or "web"
+
+
+def _title_line(sc):
+    """The line that tells the builder which row holds the title of a host screen."""
+    name = sc["screen"]
+    if TITLE_ID.match(name):
+        return ("- title: none recorded (this screen is known only by its layout id): put no protected text on "
+                "its first rows that a scenario does not name")
+    rows = [c["row"] for st in sc.get("states") or [] for c in st.get("controls") or []
+            if c.get("protected") and c.get("text") and not c.get("hidden") and isinstance(c.get("row"), int)]
+    row = min(rows) if rows else 1
+    return f"- title (compared exactly): row {row} holds only `{name}`; put nothing else on that row"
+
+
+def _ident(c):
+    ident = (c.get("tag") or c["kind"]) + (f"#{c['id']}" if c.get("id") else "")
+    ident += "".join(f".{x}" for x in c.get("classes") or [])
+    for k in ("name", "type"):
+        if c.get(k):
+            ident += f' {k}="{c[k]}"'
+    return ident
+
+
+def _layout_table(controls):
+    """The host screen layout: every field with a position, protected or not, in screen order."""
+    out = ["| Row | Col | Length | Attribute | Text or shape |", "|---|---|---|---|---|"]
+    placed = [c for c in controls if all(isinstance(c.get(k), int) for k in ("row", "col", "len"))]
+    for c in sorted(placed, key=lambda c: (c["row"], c["col"])):
+        attrs = ["protected" if c.get("protected") else "input"]
+        attrs += [word for k, word in (("numeric", "numeric"), ("hidden", "non-display"),
+                                       ("intensified", "intensified")) if c.get(k)]
+        if c.get("protected"):
+            what = (f"`{c['text']}`" if c.get("text") else f"shape `{c['shape']}`" if c.get("shape")
+                    else "(withheld as possible data)")
+        else:
+            what = f"(input: {c['label']})" if c.get("label") else "(input)"
+        out.append(f"| {c['row']} | {c['col']} | {c['len']} | {', '.join(attrs)} | {what} |")
+    return out
 
 
 def _control_line(c):
     if "row" in c:
         ident = f"field at row {c['row']}, column {c.get('col', '?')}, length {c.get('len', '?')}"
     else:
-        ident = (c.get("tag") or c["kind"]) + (f"#{c['id']}" if c.get("id") else "")
-        ident += "".join(f".{x}" for x in c.get("classes") or [])
-        for k in ("name", "type"):
-            if c.get(k):
-                ident += f' {k}="{c[k]}"'
+        ident = _ident(c)
     states = []
     if c.get("visible") is False:
         states.append("hidden")
@@ -375,15 +432,27 @@ def _state_name(screens, screen, state_id):
 def screens_markdown(data):
     """The "Screens and controls" section of BUILD_TASK.md."""
     seqs = {ev["event_id"]: f"{rec['recording_id']} #{ev['seq']}" for rec in data["evidence"] for ev in rec["events"]}
-    out = ["## Screens and controls", "", REPLAY_NOTE, ""]
+    surfaces = {sc.get("surface") for sc in data["screens"]}
+    out = ["## Screens and controls", ""]
+    if surfaces - {"mainframe"}:
+        out += [REPLAY_NOTE, ""]
+    if "mainframe" in surfaces:
+        out += [REPLAY_NOTE_3270, ""]
     for sc in data["screens"]:
         n = len(sc["states"])
+        host = sc.get("surface") == "mainframe"
         out += [f"### `{sc['screen']}` ({sc['surface']}, {n} state{'s' if n != 1 else ''})", ""]
+        if host:
+            out += [_title_line(sc), ""]
         for i, st in enumerate(sc["states"], 1):
             after = ", ".join(seqs.get(e, f"event `{e}`") for e in st["events"][:8])
             more = f" and {len(st['events']) - 8} more" if len(st["events"]) > 8 else ""
             out += [f"**State {i}** (`{st['id']}`), after {after}{more}", ""]
-            out += [_control_line(c) for c in st["controls"]] or ["- no controls"]
+            inputs = [c for c in st["controls"] if not c.get("protected")]
+            out += [_control_line(c) for c in inputs] or ["- no controls"]
+            if host and len(inputs) < len(st["controls"]):
+                out += ["", "Layout (every field with its position; protected text is the screen's own):", ""]
+                out += _layout_table(st["controls"])
             shown = [_region(r) for r in st["regions"] if r.get("visible", True)]
             hidden = [_region(r) for r in st["regions"] if r.get("visible") is False]
             if shown:
@@ -412,6 +481,101 @@ def screens_markdown(data):
                 times = f" ({t['count']} times)" if t.get("count", 1) > 1 else ""
                 out.append(f"- from {_state_name(data['screens'], sc['screen'], t['from_state'])}: {via} → {to}{times}")
             out.append("")
+    return out
+
+
+def _screen_names(data):
+    names = []
+    for e in [e for s in data["scenarios"] for e in s["events"]] + [e for r in data["evidence"] for e in r["events"]]:
+        if e.get("screen") and e["screen"] not in names:
+            names.append(e["screen"])
+    return names
+
+
+def host_screens_markdown(data):
+    """A host pack without screen structure: the title line of each recorded host screen."""
+    names = _screen_names(data)
+    if not names:
+        return []
+    out = ["## Host screens", "", REPLAY_NOTE_3270, "",
+           "No field layout was recorded for these screens: place the input fields the scenarios name, and record "
+           "where you put them in BUILD-NOTES.md.", ""]
+    for name in names:
+        out += [f"### `{name}`", "", _title_line({"screen": name, "states": []}), ""]
+    return out
+
+
+def _required(data):
+    """{screen: [control]} of the controls the recorded structure marks required."""
+    out = {}
+    for sc in data.get("screens") or []:
+        seen = []
+        for st in sc["states"]:
+            for c in st["controls"]:
+                if not c.get("required") or c.get("protected"):
+                    continue
+                where = (f"field at row {c['row']}, column {c.get('col', '?')}" if "row" in c else f"`{_ident(c)}`")
+                text = where + (f' "{c["label"]}"' if c.get("label") else "")
+                if text not in seen:
+                    seen.append(text)
+        if seen:
+            out[sc["screen"]] = seen
+    return out
+
+
+def _host_keys(data):
+    """{host screen: [AID keys the recording shows on it]}, in recorded order."""
+    keys = {}
+
+    def add(screen, key):
+        keys.setdefault(screen, [])
+        if key not in keys[screen]:
+            keys[screen].append(key)
+
+    for rec in data["evidence"]:
+        for e in rec["events"]:
+            if e.get("screen") and e.get("key"):
+                add(e["screen"], e["key"])
+    for sc in data.get("screens") or []:
+        for t in sc.get("transitions") or []:
+            if t.get("key"):
+                add(sc["screen"], t["key"])
+    return keys
+
+
+def unrecorded_markdown(data):
+    """The "Behaviour not recorded" section: what the builder does where the recording and the
+    owner say nothing (direct URLs, keys not listed, required fields), behind the owner's failure
+    cases."""
+    surface = surface_of(data)
+    out = ["## Behaviour not recorded", "",
+           "The recording shows one path through the application. Off that path, build this:", ""]
+    if any(s["failure_cases"] for s in data["scenarios"]):
+        out.append("- Follow the owner's failure cases (under each scenario) first, with their messages word for "
+                   "word. They win over every default below.")
+    else:
+        out.append("- The owner wrote no failure cases or precondition rules. Follow the owner's failure cases "
+                   "when a later revision adds them; until then keep to the defaults below, and list each rule you "
+                   "assumed in BUILD-NOTES.md.")
+    if surface == "web":
+        out.append("- Navigation: pages are reached only as recorded; a direct URL to a later step returns to the "
+                   "start (the scenario's first page), unless a scenario says otherwise. A form opens only after "
+                   "the step that leads to it.")
+    elif surface == "mainframe":
+        out.append("- Keys: keys not listed do nothing (the screen stays as it is, with no message), unless a "
+                   "scenario says otherwise. The keys each screen answers, as recorded:")
+        out += [f"  - `{screen}`: {', '.join(keys)}" for screen, keys in _host_keys(data).items()]
+        out.append("- Empty or wrong input: show only the messages the failure cases name; add none of your own.")
+    else:
+        out.append("- Menus, buttons and keys not recorded do nothing, and windows open only as recorded, unless a "
+                   "scenario says otherwise.")
+    required = _required(data)
+    if required:
+        out.append("- Required fields (the recorded screens mark them `required` or `aria-required`): do not go on "
+                   "while one is empty; show the message the failure cases give, else say in BUILD-NOTES.md which "
+                   "wording you chose:")
+        out += [f"  - `{screen}`: " + ", ".join(items) for screen, items in required.items()]
+    out.append("")
     return out
 
 

@@ -103,6 +103,8 @@ class Client:
         response = self.http.request(method, path, headers=headers, **kwargs)
         if path == "/api/v1/session" and response.status_code == 200 and method.upper() != "DELETE":
             self.http._twinlab_token = response.json()["csrf_token"]
+        elif path == "/api/v1/session" and method.upper() == "DELETE" and response.status_code == 204:
+            self.http._twinlab_token = None  # sign-out rotates the form token: read the session again
         contract.check(method, path, response.status_code, response.headers.get("content-type", ""), response.content)
         return response
 
