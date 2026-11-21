@@ -45,6 +45,26 @@ info:
     Every error is `application/problem+json` (RFC 9457) with the `Problem` shape: `status`,
     `title`, `detail` (the sentence to show), optionally `code` and per-field `errors`.
 
+    ## Conditional updates (revisions)
+    Owner-edited resources carry a `revision`: an assignment of a recording's events
+    (`Assignment`, 0 while none is saved), a scenario (`Scenario`) and an application's own fields
+    and setup (`AppDetail.revision`, `AppSetup.app.revision`). It is 1 when the resource is
+    created and goes up by one on every change, a resend of a recording that suggests new events
+    included. An update names the revision it was made from with `expected_revision` (in the body;
+    in the query for a DELETE) or the header `If-Match: "<revision>"`. If the resource changed
+    since, the update is refused with **409 `code: conflict`** and the problem's `current` is the
+    resource as the server has it now (the same shape the GET answers), so the page can compare
+    "yours" with "theirs". An update without a revision is applied unconditionally; the web app
+    always sends one.
+
+    ## Pagination
+    Lists that grow with use are paginated with `limit` and `offset` query parameters and answer
+    a `page` object: `total` (items matching the filters), `limit`, `offset` and `next_offset`
+    (null on the last page). `limit` is 1 to 200 (the default differs per list and is stated on
+    the operation); an `offset` past the end gives an empty page. Paginated: the catalog
+    (`GET /api/v1/apps`), the recordings list (`GET /api/v1/recordings`) and a recording's
+    events (`GET /api/v1/recordings/{recording_id}/events`).
+
     ## Downloads
     Download operations answer with the file (`application/zip`, `application/json`) or with a 302
     redirect to a short-lived presigned URL when artifact storage is S3. The web app links to them
@@ -169,7 +189,21 @@ paths:
       description: |
         The applications the caller has any role on (an admin: all), each with its journey and its
         latest Tested or Published release; and the recordings the caller may open (restricted evidence).
+        Paginated (default `limit` 50) and filtered: `q` matches the name, purpose or owner
+        (case-insensitive), `owner`, `status` and `stage` (a journey title) match exactly. `sort` is
+        `name`, `owner`, `status` or `stage`, `-` first for descending; the default is the catalog
+        order (out-of-scope applications last, then by name). `filters` lists the owners and stages
+        to choose from (of every visible application, not only this page). `recordings` is the
+        first 50 recordings the caller may open; the recordings list has them all.
       x-twinlab-role: signed-in
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Offset" }
+        - { name: q, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: owner, in: query, schema: { type: string, maxLength: 120 } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/AppStatus" } }
+        - { name: stage, in: query, schema: { type: string, maxLength: 120 } }
+        - { name: sort, in: query, schema: { type: string, enum: [name, -name, owner, -owner, status, -status, stage, -stage] } }
       responses:
         "200":
           description: The catalog.
@@ -178,6 +212,7 @@ paths:
               schema: { $ref: "#/components/schemas/Catalog" }
               examples:
                 catalog: { $ref: "#/components/examples/Catalog" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [apps]
@@ -231,7 +266,8 @@ paths:
       summary: Change name, purpose, repository or scope decision
       description: |
         Owner. Only the fields sent change. `status` is the scope decision (audited as `app.status`);
-        `owner` assigns that user the owner role.
+        `owner` assigns that user the owner role. With `expected_revision` (or `If-Match`) a stale
+        change is refused with 409 `conflict` and the current application (see Conditional updates).
       x-twinlab-role: owner
       requestBody:
         required: true
@@ -239,7 +275,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/AppUpdate" }
             examples:
-              purpose: { value: { purpose: Invoice from saved orders } }
+              purpose: { value: { purpose: Invoice from saved orders, expected_revision: 3 } }
       responses:
         "200":
           description: The changed application.
@@ -251,6 +287,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /api/v1/apps/{app_id}/roles:
     parameters: [{ $ref: "#/components/parameters/AppId" }]
@@ -421,7 +458,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/DataBackendInput" }
             examples:
-              sqlserver: { value: { data_backend: sqlserver } }
+              sqlserver: { value: { data_backend: sqlserver, expected_revision: 3 } }
       responses:
         "200":
           description: The setup after the change.
@@ -432,6 +469,7 @@ paths:
                 setup: { $ref: "#/components/examples/AppSetup" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /api/v1/apps/{app_id}/verification-settings:
     parameters: [{ $ref: "#/components/parameters/AppId" }]
@@ -676,6 +714,9 @@ paths:
       tags: [evidence]
       operationId: updateScenario
       summary: Save a scenario
+      description: |
+        Owner. With `expected_revision` (or `If-Match`) a stale save is refused with 409 `conflict`
+        and the current scenario (see Conditional updates).
       x-twinlab-role: owner
       requestBody:
         required: true
@@ -695,14 +736,18 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
     delete:
       tags: [evidence]
       operationId: removeScenario
       summary: Remove a scenario
+      description: Owner. With `expected_revision` (or `If-Match`) a scenario changed since it was loaded is not removed (409 `conflict`).
       x-twinlab-role: owner
+      parameters: [{ $ref: "#/components/parameters/ExpectedRevision" }]
       responses:
         "204": { description: "Removed." }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   # ---------------------------------------------------------------------------------------------
   # packages
@@ -1103,8 +1148,14 @@ paths:
       tags: [recordings]
       operationId: listRecordings
       summary: Recordings the caller may open
-      description: Restricted evidence. Only recordings the caller added, or that are linked to an application the caller owns.
+      description: |
+        Restricted evidence. Only recordings the caller added, or that are linked to an application
+        the caller owns; newest first. Paginated (default `limit` 50); `q` matches the name.
       x-twinlab-role: signed-in (filtered to the recording's reviewers)
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Offset" }
+        - { name: q, in: query, schema: { type: string, maxLength: 200 } }
       responses:
         "200":
           description: The recordings.
@@ -1149,6 +1200,8 @@ paths:
         403). Completeness, preflight, upload progress, evidence preview per application, and the
         applications the recording holds, **each with its own steps and its own latest
         builder-approved package** (null when there is none or the caller is not a builder of it).
+        `events` is the first 200 events (`events_total` counts them all); the events operation
+        pages through them all with search.
       x-twinlab-role: recording reviewer
       responses:
         "200":
@@ -1158,6 +1211,37 @@ paths:
               schema: { $ref: "#/components/schemas/RecordingDetail" }
               examples:
                 twoApps: { $ref: "#/components/examples/RecordingDetail" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/recordings/{recording_id}/events:
+    parameters: [{ $ref: "#/components/parameters/RecordingId" }]
+    get:
+      tags: [recordings]
+      operationId: listRecordingEvents
+      summary: A recording's events, paginated and searchable
+      description: |
+        A reviewer of the recording. In recording order (`seq`). Paginated (default `limit` 100).
+        `q` matches the action, key, control, label, screen, source and time (case-insensitive,
+        every word must match); `source` is one application (an event's `source`). `sources` counts
+        the events per source of the whole recording. With `ids=true` the answer also lists the
+        `event_id` of every matching event (all pages), for "select every match".
+      x-twinlab-role: recording reviewer
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - { $ref: "#/components/parameters/Offset" }
+        - { name: q, in: query, schema: { type: string, maxLength: 200 } }
+        - { name: source, in: query, schema: { type: string, maxLength: 500 } }
+        - { name: ids, in: query, schema: { type: boolean, default: false } }
+      responses:
+        "200":
+          description: One page of events.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecordingEvents" }
+              examples:
+                events: { $ref: "#/components/examples/RecordingEvents" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -1207,6 +1291,9 @@ paths:
       description: |
         Owner. Events are chosen by `event_id` (their `seq` is a display order and may change).
         Saving marks the link reviewed and clears the suggestions. Audited as `evidence.review`.
+        With `expected_revision` (or `If-Match`) a stale save is refused with 409 `conflict` and
+        the current assignment (see Conditional updates). Saving after a removal assigns the
+        recording again. To assign no events, remove the assignment (DELETE).
       x-twinlab-role: owner
       requestBody:
         required: true
@@ -1214,7 +1301,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/AssignmentInput" }
             examples:
-              save: { value: { events: [0b1c2d3e-0000-4000-8000-000000000001, 0b1c2d3e-0000-4000-8000-000000000002], notes: Invoice is created from the saved order. } }
+              save: { value: { events: [0b1c2d3e-0000-4000-8000-000000000001, 0b1c2d3e-0000-4000-8000-000000000002], notes: Invoice is created from the saved order., expected_revision: 2 } }
       responses:
         "200":
           description: Saved.
@@ -1225,6 +1312,31 @@ paths:
                 assignment: { $ref: "#/components/examples/Assignment" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [recordings]
+      operationId: removeAssignment
+      summary: Remove this application's assignment from the recording
+      description: |
+        Owner. The application no longer uses any event or note of this recording: its next draft
+        package leaves the recording out, and frozen packages are unchanged. A later send of the
+        same recording does not select its events again; saving an assignment again does.
+        Answers the assignment with `removed: true`. Audited as `evidence.remove` with the event_ids
+        that were selected. With `expected_revision` (query) or `If-Match`, a stale removal is
+        refused with 409 `conflict`.
+      x-twinlab-role: owner
+      parameters: [{ $ref: "#/components/parameters/ExpectedRevision" }]
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Assignment" }
+              examples:
+                removed: { $ref: "#/components/examples/AssignmentRemoved" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /api/v1/recordings/{recording_id}/completeness/accept:
     parameters: [{ $ref: "#/components/parameters/RecordingId" }]
@@ -1949,6 +2061,9 @@ components:
     BuildId: { name: build_id, in: path, required: true, schema: { type: integer } }
     ReleaseId: { name: release_id, in: path, required: true, schema: { type: integer } }
     RecordingId: { name: recording_id, in: path, required: true, schema: { type: string } }
+    Limit: { name: limit, in: query, description: "Page size (see Pagination).", schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+    Offset: { name: offset, in: query, description: "Items to skip (see Pagination).", schema: { type: integer, minimum: 0, default: 0 } }
+    ExpectedRevision: { name: expected_revision, in: query, description: "The revision the change was made from (see Conditional updates).", schema: { type: integer, minimum: 0 } }
 
   responses:
     BadRequest:
@@ -1991,6 +2106,15 @@ components:
           examples:
             conflict:
               value: { type: about:blank, title: Conflict, status: 409, detail: "Another application already has this identity: merge them instead." }
+            stale:
+              summary: A stale update (code conflict) with the current version
+              value:
+                type: about:blank
+                title: Conflict
+                status: 409
+                code: conflict
+                detail: "Someone else changed this assignment since you opened it (now revision 3). Compare your changes with theirs, then keep yours or take theirs."
+                current: { app_id: 1, recording_id: 9f2c4e1a7b3d5f60, saved: true, reviewed: true, removed: false, revision: 3, selected: [0b1c2d3e-0000-4000-8000-000000000001], suggested: [], notes: Theirs. }
     Zip:
       description: The ZIP file.
       content:
@@ -2045,7 +2169,7 @@ components:
           description: |
             A stable machine-readable reason where the web app acts on it: `signed_out`,
             `wrong_credentials`, `csrf`, `role`, `restricted`, `draft_changed`, `unchanged`,
-            `incomplete_package`, `plan_changed`, `publish_locked`.
+            `incomplete_package`, `plan_changed`, `publish_locked`, `conflict` (a stale conditional update).
         errors:
           type: array
           description: Per-field problems of a request body.
@@ -2055,6 +2179,23 @@ components:
             properties:
               field: { type: string }
               message: { type: string }
+        current:
+          type: object
+          additionalProperties: true
+          description: "With `code: conflict`: the resource as the server has it now (the shape its GET answers)."
+    Page:
+      type: object
+      description: Where a page of a paginated list is (see Pagination).
+      required: [total, limit, offset, next_offset]
+      properties:
+        total: { type: integer, minimum: 0, description: "Items matching the filters, on every page." }
+        limit: { type: integer, minimum: 1 }
+        offset: { type: integer, minimum: 0 }
+        next_offset: { type: [integer, "null"], description: "The offset of the next page; null on the last page." }
+    Revision:
+      type: integer
+      minimum: 0
+      description: The resource's revision (see Conditional updates).
     Role:
       type: string
       enum: [viewer, builder, owner]
@@ -2182,9 +2323,17 @@ components:
         tested_release: { oneOf: [{ $ref: "#/components/schemas/TestedRelease" }, { type: "null" }] }
     Catalog:
       type: object
-      required: [apps, recordings, journey_titles]
+      required: [apps, page, filters, recordings, journey_titles]
       properties:
-        apps: { type: array, items: { $ref: "#/components/schemas/AppSummary" } }
+        apps: { type: array, items: { $ref: "#/components/schemas/AppSummary" }, description: "One page of the matching applications." }
+        page: { $ref: "#/components/schemas/Page" }
+        filters:
+          type: object
+          description: The values to filter by, from every application the caller sees.
+          required: [owners, stages]
+          properties:
+            owners: { type: array, items: { type: string } }
+            stages: { type: array, items: { type: string } }
         recordings:
           type: array
           description: Recordings the caller may open (restricted evidence).
@@ -2201,8 +2350,9 @@ components:
       allOf:
         - { $ref: "#/components/schemas/AppSummary" }
         - type: object
-          required: [git_url, url_match, surface, releases, packages, statuses]
+          required: [revision, git_url, url_match, surface, releases, packages, statuses]
           properties:
+            revision: { $ref: "#/components/schemas/Revision" }
             git_url: { type: string }
             url_match: { type: string, enum: [path, host] }
             surface: { type: string, description: "web, desktop, mainframe or empty" }
@@ -2220,6 +2370,7 @@ components:
         git_url: { type: string, maxLength: 500 }
         status: { $ref: "#/components/schemas/AppStatus" }
         owner: { type: string, maxLength: 120, description: "Assigns this user the owner role." }
+        expected_revision: { $ref: "#/components/schemas/Revision" }
     RoleAssignment:
       type: object
       required: [user_name, role]
@@ -2269,10 +2420,11 @@ components:
       properties:
         app:
           type: object
-          required: [id, name, git_url, url_match, required_checks, target_platform, windows_check_pattern, lab_url, launch,
+          required: [id, revision, name, git_url, url_match, required_checks, target_platform, windows_check_pattern, lab_url, launch,
                      data_backend]
           properties:
             id: { type: integer }
+            revision: { $ref: "#/components/schemas/Revision" }
             name: { type: string }
             git_url: { type: string }
             url_match: { type: string, enum: [path, host] }
@@ -2311,6 +2463,7 @@ components:
       required: [data_backend]
       properties:
         data_backend: { type: string, enum: ["", sqlite, postgresql, sqlserver] }
+        expected_revision: { $ref: "#/components/schemas/Revision" }
     IdentityInput:
       type: object
       required: [key]
@@ -2321,6 +2474,7 @@ components:
       required: [url_match]
       properties:
         url_match: { type: string, enum: [path, host] }
+        expected_revision: { $ref: "#/components/schemas/Revision" }
     VerificationSettings:
       type: object
       required: [required_checks, target_platform]
@@ -2330,6 +2484,7 @@ components:
         windows_check_pattern: { type: string, maxLength: 200 }
         lab_url: { type: string, maxLength: 500 }
         launch: { type: string, maxLength: 8000 }
+        expected_revision: { $ref: "#/components/schemas/Revision" }
     VerifyCommitInput:
       type: object
       required: [sha]
@@ -2512,13 +2667,15 @@ components:
           type: array
           description: Linked events as `recording#event_id`, from the selected events of the application.
           items: { type: string }
+        expected_revision: { $ref: "#/components/schemas/Revision" }
     Scenario:
       allOf:
         - { $ref: "#/components/schemas/ScenarioInput" }
         - type: object
-          required: [id, name, starting, actions, expected, failures, examples, questions, notes, events]
+          required: [id, revision, name, starting, actions, expected, failures, examples, questions, notes, events]
           properties:
             id: { type: integer }
+            revision: { $ref: "#/components/schemas/Revision" }
     ScenarioField:
       type: object
       required: [key, label, max_length]
@@ -2982,9 +3139,26 @@ components:
         status: { $ref: "#/components/schemas/RecordingStatus" }
     RecordingList:
       type: object
-      required: [recordings]
+      required: [recordings, page]
       properties:
         recordings: { type: array, items: { $ref: "#/components/schemas/RecordingSummary" } }
+        page: { $ref: "#/components/schemas/Page" }
+    RecordingEvents:
+      type: object
+      required: [events, page, sources]
+      properties:
+        events: { type: array, items: { $ref: "#/components/schemas/Event" } }
+        page: { $ref: "#/components/schemas/Page" }
+        sources:
+          type: array
+          description: The events per source (application) of the whole recording.
+          items:
+            type: object
+            required: [source, count]
+            properties:
+              source: { type: string }
+              count: { type: integer }
+        ids: { type: array, items: { type: string }, description: "With `ids=true`: the event_id of every matching event." }
     RecordingImport:
       type: object
       required: [name, log]
@@ -3005,6 +3179,7 @@ components:
         screen: { type: [string, "null"] }
         time: { type: [string, "null"] }
         channel: { type: [string, "null"] }
+        app: { type: [string, "null"], description: "The application whose recorded flow has the event (the events operation only)." }
         in_gap: { type: boolean, description: "Recorded in an interrupted period." }
     EvidencePreview:
       type: object
@@ -3093,7 +3268,7 @@ components:
         complete: { type: boolean }
     RecordingDetail:
       type: object
-      required: [id, name, status, upload, preview, refs, events, assignable_apps]
+      required: [id, name, status, upload, preview, refs, events, events_total, assignable_apps]
       properties:
         id: { type: string }
         name: { type: string }
@@ -3101,18 +3276,21 @@ components:
         upload: { oneOf: [{ $ref: "#/components/schemas/UploadProgress" }, { type: "null" }] }
         preview: { type: array, items: { $ref: "#/components/schemas/EvidencePreview" } }
         refs: { oneOf: [{ $ref: "#/components/schemas/RecordingRefs" }, { type: "null" }], description: "Null for an imported event log." }
-        events: { type: array, items: { $ref: "#/components/schemas/Event" } }
+        events: { type: array, items: { $ref: "#/components/schemas/Event" }, description: "The first 200 events." }
+        events_total: { type: integer, description: "Every event of the recording." }
         assignable_apps:
           type: array
           description: Applications the caller owns, to assign events to.
           items: { $ref: "#/components/schemas/AppRef" }
     Assignment:
       type: object
-      required: [app_id, recording_id, saved, reviewed, selected, suggested, notes]
+      required: [app_id, recording_id, revision, saved, removed, reviewed, selected, suggested, notes]
       properties:
         app_id: { type: integer }
         recording_id: { type: string }
-        saved: { type: boolean, description: "False when no events are assigned yet." }
+        revision: { $ref: "#/components/schemas/Revision" }
+        saved: { type: boolean, description: "False when no events are assigned (none yet, or removed)." }
+        removed: { type: boolean, description: "An owner removed this application's assignment from the recording." }
         reviewed: { type: boolean, description: "False when selected automatically from the recording." }
         selected: { type: array, items: { type: string }, description: "event_ids" }
         suggested: { type: array, items: { type: string }, description: "event_ids new in a later send, not yet reviewed" }
@@ -3123,6 +3301,7 @@ components:
       properties:
         events: { type: array, items: { type: string }, minItems: 1, description: "event_ids of this recording" }
         notes: { type: string }
+        expected_revision: { $ref: "#/components/schemas/Revision" }
 
     # -- capture ----------------------------------------------------------------------------------
     CaptureTarget:
@@ -3580,6 +3759,8 @@ components:
 
     Catalog:
       value:
+        page: { total: 3, limit: 50, offset: 0, next_offset: null }
+        filters: { owners: [ana, ben], stages: [Choose application, Verify] }
         journey_titles: [Choose application, Add examples, Review required behaviour, Build, Verify, Open or download]
         recordings:
           - { id: 9f2c4e1a7b3d5f60, name: Order to invoice }
@@ -3663,6 +3844,7 @@ components:
     AppDetailOwner:
       value:
         id: 1
+        revision: 3
         name: Billing Desk
         status: known
         status_label: Confirmed application
@@ -3697,6 +3879,7 @@ components:
     AppDetailViewer:
       value:
         id: 1
+        revision: 3
         name: Billing Desk
         status: known
         status_label: Confirmed application
@@ -3744,7 +3927,7 @@ components:
 
     AppSetup:
       value:
-        app: { id: 1, name: Billing Desk, git_url: https://github.com/example/billing-desk-demo, url_match: path, required_checks: "build\ntest (*)", target_platform: web, windows_check_pattern: "", lab_url: "", launch: Open the demo URL., data_backend: "" }
+        app: { id: 1, revision: 3, name: Billing Desk, git_url: https://github.com/example/billing-desk-demo, url_match: path, required_checks: "build\ntest (*)", target_platform: web, windows_check_pattern: "", lab_url: "", launch: Open the demo URL., data_backend: "" }
         identities:
           - { key: "web:https://billing.example.test/desk", surface: web }
         platforms:
@@ -3830,6 +4013,7 @@ components:
     Scenario:
       value:
         id: 11
+        revision: 2
         name: Create an invoice from a saved order
         starting: Signed in as a clerk; order 1001 exists and is unpaid.
         actions: "Search for the order\nOpen it and press Invoice"
@@ -3843,6 +4027,7 @@ components:
       value:
         scenarios:
           - id: 11
+            revision: 2
             name: Create an invoice from a saved order
             starting: Signed in as a clerk; order 1001 exists and is unpaid.
             actions: "Search for the order\nOpen it and press Invoice"
@@ -4077,6 +4262,7 @@ components:
           checks: [{ name: Recorder can see the target application, ok: true, detail: null }]
     RecordingList:
       value:
+        page: { total: 1, limit: 50, offset: 0, next_offset: null }
         recordings:
           - id: 9f2c4e1a7b3d5f60
             name: Order to invoice
@@ -4140,18 +4326,44 @@ components:
           - { event_id: 0b1c2d3e-0000-4000-8000-000000000003, seq: 3, action: dblclick, source: CaseDesk.exe, control: list item, label: Case 77, screen: Open cases, in_gap: false }
           - { event_id: 0b1c2d3e-0000-4000-8000-000000000004, seq: 4, action: type, source: CaseDesk.exe, control: edit, label: Note, screen: Case 77, in_gap: false }
           - { event_id: 0b1c2d3e-0000-4000-8000-000000000005, seq: 5, action: click, source: CaseDesk.exe, control: button, label: Close case, screen: Case 77, in_gap: true }
+        events_total: 5
         assignable_apps:
           - { id: 1, name: Billing Desk }
           - { id: 2, name: CaseDesk }
+    RecordingEvents:
+      value:
+        page: { total: 5, limit: 100, offset: 0, next_offset: null }
+        sources:
+          - { source: billing.example.test, count: 2 }
+          - { source: CaseDesk.exe, count: 3 }
+        events:
+          - { event_id: 0b1c2d3e-0000-4000-8000-000000000001, seq: 1, action: click, source: billing.example.test, control: button, label: Search, screen: Orders, time: "2026-11-15T10:40:01.000Z", in_gap: false }
+          - { event_id: 0b1c2d3e-0000-4000-8000-000000000002, seq: 2, action: click, source: billing.example.test, control: button, label: Invoice, screen: Order 1001, time: "2026-11-15T10:40:09.000Z", in_gap: false }
+          - { event_id: 0b1c2d3e-0000-4000-8000-000000000003, seq: 3, action: dblclick, source: CaseDesk.exe, control: list item, label: Case 77, screen: Open cases, time: "2026-11-15T10:41:00.000Z", in_gap: false }
+          - { event_id: 0b1c2d3e-0000-4000-8000-000000000004, seq: 4, action: type, source: CaseDesk.exe, control: edit, label: Note, screen: Case 77, time: "2026-11-15T10:41:20.000Z", in_gap: false }
+          - { event_id: 0b1c2d3e-0000-4000-8000-000000000005, seq: 5, action: click, source: CaseDesk.exe, control: button, label: Close case, screen: Case 77, time: "2026-11-15T10:41:40.000Z", in_gap: true }
     Assignment:
       value:
         app_id: 1
         recording_id: 9f2c4e1a7b3d5f60
+        revision: 2
         saved: true
+        removed: false
         reviewed: true
         selected: [0b1c2d3e-0000-4000-8000-000000000001, 0b1c2d3e-0000-4000-8000-000000000002]
         suggested: []
         notes: Invoice is created from the saved order.
+    AssignmentRemoved:
+      value:
+        app_id: 1
+        recording_id: 9f2c4e1a7b3d5f60
+        revision: 3
+        saved: false
+        removed: true
+        reviewed: true
+        selected: []
+        suggested: []
+        notes: ""
 
     CaptureSession:
       value:

@@ -1,9 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useDeferredValue, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
 import { FlowTable } from "../components/shared";
-import { ActionButton, Badge, ErrorText, QueryView, useAction, useTitle } from "../components/ui";
+import { ActionButton, Badge, ConflictView, DirtyNote, ErrorText, Pager, QueryView, conflictOf, useAction, useDraft, useLeaveWarning, useTitle } from "../components/ui";
 import { capitalize, plural, short, when, words } from "../lib/format";
 import { useCan } from "../session";
 
@@ -162,7 +162,7 @@ function Assignment({ rec }: { rec: Schemas["RecordingDetail"] }) {
   return (
     <section aria-labelledby="assign-h" id="assign">
       <h2 id="assign-h">Assign events</h2>
-      <p>{plural(rec.events.length, "event")}. Select the events and describe the outcome for the chosen demo app.</p>
+      <p>{plural(rec.events_total, "event")}. Select the events and describe the outcome for the chosen demo app.</p>
       {rec.assignable_apps.length ? (
         <>
           <form id="app-picker" aria-label="Choose a demo app" onSubmit={(e) => { e.preventDefault(); if (choice) setParams({ app_id: choice }); }}>
@@ -174,75 +174,145 @@ function Assignment({ rec }: { rec: Schemas["RecordingDetail"] }) {
             </label>
             <button>Open assignment</button>
           </form>
-          {appId && allowed && <AssignmentForm rec={rec} appId={appId} />}
+          {appId && allowed && <AssignmentForm key={appId} rec={rec} appId={appId} appName={rec.assignable_apps.find((a) => a.id === appId)?.name ?? ""} />}
         </>
       ) : <p>Create a demo app in the catalog to assign events.</p>}
     </section>
   );
 }
 
-function AssignmentForm({ rec, appId }: { rec: Schemas["RecordingDetail"]; appId: number }) {
-  const navigate = useNavigate();
+type AssignmentDraft = { selected: string[]; notes: string };
+const draftOf = (a: Schemas["Assignment"]): AssignmentDraft => ({ selected: [...a.selected].sort(), notes: a.notes });
+const PAGE = 100;
+
+function AssignmentForm({ rec, appId, appName }: { rec: Schemas["RecordingDetail"]; appId: number; appName: string }) {
   const saved = useQuery({
     queryKey: ["recording", rec.id, "assignment", appId],
     queryFn: async () => data(await api.GET("/api/v1/recordings/{recording_id}/assignments/{app_id}", { params: { path: { recording_id: rec.id, app_id: appId } } })),
   });
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [notes, setNotes] = useState("");
-  useEffect(() => {
-    if (saved.data) {
-      setSelected(new Set(saved.data.selected));
-      setNotes(saved.data.notes);
-    }
-  }, [saved.data]);
-  const groups = useMemo(() => {
-    const out = new Map<string, Schemas["Event"][]>();
-    for (const e of rec.events) out.set(e.source, [...(out.get(e.source) ?? []), e]);
-    return [...out.entries()];
-  }, [rec.events]);
-  const save = useAction(async () => data(await api.PUT("/api/v1/recordings/{recording_id}/assignments/{app_id}", {
-    params: { path: { recording_id: rec.id, app_id: appId } }, body: { events: [...selected], notes: notes.trim() },
-  })), () => navigate(`/apps/${appId}`));
-  const toggle = (ids: string[], on: boolean) => setSelected((s) => {
-    const next = new Set(s);
+  return <QueryView query={saved} what="Loading the assignment">{(a) => <AssignmentEditor rec={rec} appId={appId} appName={appName} server={a} />}</QueryView>;
+}
+
+function AssignmentEditor({ rec, appId, appName, server }: { rec: Schemas["RecordingDetail"]; appId: number; appName: string; server: Schemas["Assignment"] }) {
+  const navigate = useNavigate();
+  const draft = useDraft<AssignmentDraft>(draftOf(server), server.revision);
+  useLeaveWarning(draft.dirty);
+  const selected = new Set(draft.value.selected);
+  const families = [["recording", rec.id], ["recordings"], ["apps"], ["app", appId]];
+  const path = { recording_id: rec.id, app_id: appId };
+  const save = useAction(async (revision: number) => data(await api.PUT("/api/v1/recordings/{recording_id}/assignments/{app_id}", {
+    params: { path }, body: { events: draft.value.selected, notes: draft.value.notes.trim(), expected_revision: revision },
+  })), (a) => { draft.reset(draftOf(a), a.revision); navigate(`/apps/${appId}`); }, families);
+  const remove = useAction(async () => data(await api.DELETE("/api/v1/recordings/{recording_id}/assignments/{app_id}", {
+    params: { path, query: { expected_revision: draft.revision } },
+  })), (a) => draft.reset(draftOf(a), a.revision), families);
+  const theirs = conflictOf<Schemas["Assignment"]>(save.error) ?? conflictOf<Schemas["Assignment"]>(remove.error);
+  const setSelected = (ids: string[], on: boolean) => draft.set((d) => {
+    const next = new Set(d.selected);
     for (const id of ids) if (on) next.add(id); else next.delete(id);
-    return next;
+    return { ...d, selected: [...next].sort() };
   });
-  const submit = (e: FormEvent) => { e.preventDefault(); save.mutate(undefined); };
+  const submit = (e: FormEvent) => { e.preventDefault(); save.mutate(draft.revision); };
+  const suggested = new Set(server.suggested);
   return (
-    <QueryView query={saved}>
-      {(a) => {
-        const suggested = new Set(a.suggested);
-        return (
-          <form aria-label="Assignment" onSubmit={submit}>
-            {a.saved && !a.reviewed && <p className="muted">Selected automatically from the recording: not yet reviewed. Save the assignment to confirm it.</p>}
-            {suggested.size > 0 && <p className="muted">{plural(suggested.size, "event")} new in a later send of this recording, not yet reviewed: they are not in the build pack until you select them and save.</p>}
-            <label>Outcome and build notes <textarea rows={4} value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
-            {groups.map(([source, events]) => {
-              const ids = events.map((e) => e.event_id);
-              const all = ids.every((id) => selected.has(id));
-              return (
-                <fieldset key={source}>
-                  <legend>{source} ({events.length})</legend>
-                  <button type="button" className="secondary" onClick={() => toggle(ids, !all)}>{all ? "Clear all" : "Select all"}</button>
-                  <div className="events">
-                    {events.map((ev) => (
-                      <label key={ev.event_id}>
-                        <input type="checkbox" checked={selected.has(ev.event_id)} onChange={(e) => toggle([ev.event_id], e.target.checked)} />
-                        {ev.seq} · {ev.action}
-                        {suggested.has(ev.event_id) && <> <Badge kind="discovered">new, not yet reviewed</Badge></>}
-                        {ev.in_gap && <> <Badge kind="discovered">in an interrupted period</Badge></>}
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
-              );
-            })}
-            <ErrorText error={save.error} />
-            <button disabled={save.isPending || selected.size === 0}>Save assignment</button>
-          </form>
-        );
-      }}
-    </QueryView>
+    <form aria-label="Assignment" onSubmit={submit}>
+      <h3>Events of {appName} <DirtyNote dirty={draft.dirty} /></h3>
+      {server.removed && <p className="muted" id="removed-note">Removed from this recording: {appName} uses none of its events or notes. Select events and save to assign it again.</p>}
+      {server.saved && !server.reviewed && <p className="muted">Selected automatically from the recording: not yet reviewed. Save the assignment to confirm it.</p>}
+      {suggested.size > 0 && <p className="muted">{plural(suggested.size, "event")} new in a later send of this recording, not yet reviewed: they are not in the build pack until you select them and save.</p>}
+      <label>Outcome and build notes <textarea rows={4} value={draft.value.notes} onChange={(e) => { const notes = e.target.value; draft.set((d) => ({ ...d, notes })); }} /></label>
+      <EventPicker rec={rec} selected={selected} suggested={suggested} onSelect={setSelected} />
+      {theirs ? (
+        <ConflictView
+          busy={save.isPending}
+          rows={[
+            { label: "Selected events", mine: plural(draft.value.selected.length, "event"), theirs: `${plural(theirs.selected.length, "event")}${theirs.removed ? " (assignment removed)" : ""}` },
+            { label: "Events only in yours", mine: String(draft.value.selected.filter((id) => !theirs.selected.includes(id)).length), theirs: "0" },
+            { label: "Events only in theirs", mine: "0", theirs: String(theirs.selected.filter((id) => !selected.has(id)).length) },
+            { label: "Notes", mine: draft.value.notes.trim(), theirs: theirs.notes },
+          ]}
+          onKeepMine={() => { remove.reset(); save.mutate(theirs.revision); }}
+          onTakeTheirs={() => { draft.reset(draftOf(theirs), theirs.revision); save.reset(); remove.reset(); }}
+        />
+      ) : <><ErrorText error={save.error} /><ErrorText error={remove.error} /></>}
+      <div className="actions">
+        <button disabled={save.isPending || selected.size === 0}>Save assignment</button>
+        <span className="muted">{plural(selected.size, "event")} selected{selected.size === 0 && server.saved ? ": to assign none, remove the assignment below" : ""}.</span>
+      </div>
+      {server.saved && (
+        <div className="remove-assignment">
+          <p className="muted">Removing takes {appName} off this recording: the next draft package of {appName} leaves out all of this recording&apos;s events and notes, and a later send of the same recording does not select them again. Packages already frozen keep them. The removal is recorded in the application&apos;s history.</p>
+          <button type="button" className="destructive" disabled={remove.isPending}
+            onClick={() => { if (window.confirm(`Remove the assignment of ${appName} from this recording? Its next package will not use this recording.`)) remove.mutate(undefined); }}>
+            Remove this app&apos;s assignment from the recording
+          </button>
+        </div>
+      )}
+    </form>
+  );
+}
+
+/** The recording's events as searchable rows, a page at a time (the server filters and pages). */
+function EventPicker({ rec, selected, suggested, onSelect }: {
+  rec: Schemas["RecordingDetail"]; selected: Set<string>; suggested: Set<string>; onSelect: (ids: string[], on: boolean) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [source, setSource] = useState("");
+  const [offset, setOffset] = useState(0);
+  const query = useDeferredValue(q.trim());
+  const filters = { q: query || undefined, source: source || undefined };
+  const events = useQuery({
+    queryKey: ["recording", rec.id, "events", filters, offset],
+    queryFn: async () => data(await api.GET("/api/v1/recordings/{recording_id}/events", {
+      params: { path: { recording_id: rec.id }, query: { ...filters, offset, limit: PAGE } },
+    })),
+    placeholderData: keepPreviousData,
+  });
+  const matching = useAction(async (on: boolean) => {
+    const all = data(await api.GET("/api/v1/recordings/{recording_id}/events", {
+      params: { path: { recording_id: rec.id }, query: { ...filters, ids: true, limit: 1 } },
+    }));
+    onSelect(all.ids ?? [], on);
+  }, undefined, []);
+  return (
+    <fieldset className="event-picker">
+      <legend>Events</legend>
+      <div className="filters">
+        <label>Search events <input type="search" value={q} placeholder="Action, label, screen, app or time" onChange={(e) => { setQ(e.target.value); setOffset(0); }} /></label>
+        <label>Application
+          <select value={source} onChange={(e) => { setSource(e.target.value); setOffset(0); }}>
+            <option value="">All ({rec.events_total})</option>
+            {events.data?.sources.map((s) => <option key={s.source} value={s.source}>{s.source} ({s.count})</option>)}
+          </select>
+        </label>
+      </div>
+      <QueryView query={events} what="Loading events">
+        {(page) => (
+          <>
+            <div className="actions">
+              <span className="muted" role="status">{plural(page.page.total, "matching event")}</span>
+              <button type="button" className="secondary" disabled={matching.isPending || page.page.total === 0} onClick={() => matching.mutate(true)}>Select all {page.page.total} matching</button>
+              <button type="button" className="secondary" disabled={matching.isPending || page.page.total === 0} onClick={() => matching.mutate(false)}>Clear {page.page.total} matching</button>
+            </div>
+            <ErrorText error={matching.error} />
+            <div className="scroll">
+              <table className="flow events-table" aria-label="Recording events">
+                <thead><tr><th scope="col"><span className="visually-hidden">Selected</span></th><th scope="col">#</th><th scope="col">Action</th><th scope="col">Label</th><th scope="col">App</th><th scope="col">Screen</th><th scope="col">Time</th><th scope="col"><span className="visually-hidden">Notes</span></th></tr></thead>
+                <tbody>{page.events.map((ev) => (
+                  <tr key={ev.event_id} className={selected.has(ev.event_id) ? "selected" : undefined}>
+                    <td><input type="checkbox" aria-label={`${ev.seq} · ${ev.action}${ev.label ? ` ${ev.label}` : ""}`} checked={selected.has(ev.event_id)} onChange={(e) => onSelect([ev.event_id], e.target.checked)} /></td>
+                    <td>{ev.seq}</td><td>{ev.action}{ev.key && ` ${ev.key}`}</td><td>{ev.label ?? ""}</td><td>{ev.app ?? ev.source}</td><td>{ev.screen ?? ""}</td>
+                    <td>{ev.time ? <time dateTime={ev.time}>{ev.time.slice(11, 19)}</time> : ""}</td>
+                    <td>{suggested.has(ev.event_id) && <Badge kind="suggested">new, not yet reviewed</Badge>}{ev.in_gap && <> <Badge kind="interrupted">in an interrupted period</Badge></>}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            {page.events.length === 0 && <p className="muted">No event matches.</p>}
+            <Pager page={page.page} onOffset={setOffset} label="Event pages" />
+          </>
+        )}
+      </QueryView>
+    </fieldset>
   );
 }

@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, data, postForm, type Schemas } from "../api/client";
 import { ScenarioForm } from "../components/ScenarioForm";
 import { FlowTable, JourneyNav } from "../components/shared";
-import { ActionButton, Badge, Crumbs, ErrorText, QueryView, useAction, useField, useTitle } from "../components/ui";
+import { ActionButton, Badge, ConflictView, Crumbs, DirtyNote, ErrorText, QueryView, conflictOf, useAction, useDraft, useField, useLeaveWarning, useTitle } from "../components/ui";
 import { plural, short, when } from "../lib/format";
 import { useCan, useRefreshSession } from "../session";
 
@@ -173,28 +173,42 @@ function Roles({ appId, manage }: { appId: number; manage: boolean }) {
 
 function OwnerForms({ item, others }: { item: Schemas["AppDetail"]; others: Schemas["AppRef"][] }) {
   const navigate = useNavigate();
-  const [purpose, setPurpose] = useField(item.purpose);
-  const [name, setName] = useField(item.name);
-  const [status, setStatus] = useField(item.status);
+  const [purpose, setPurpose, purposeDraft] = useField(item.purpose, item.revision);
+  const scope = useDraft({ name: item.name, status: item.status }, item.revision);
+  useLeaveWarning(purposeDraft.dirty || scope.dirty);
   const [into, setInto] = useState<string>("");
-  const patch = (body: Schemas["AppUpdate"]) => async () => data(await api.PATCH("/api/v1/apps/{app_id}", { params: { path: { app_id: item.id } }, body }));
-  const savePurpose = useAction(patch({ purpose }));
-  const saveStatus = useAction(patch({ name: name.trim() || undefined, status: status as Schemas["AppStatus"] }));
+  const families = [["app", item.id], ["apps"]];
+  const patch = (body: Schemas["AppUpdate"]) => async (revision: number) => data(await api.PATCH("/api/v1/apps/{app_id}", { params: { path: { app_id: item.id } }, body: { ...body, expected_revision: revision } }));
+  const savePurpose = useAction(patch({ purpose }), (a) => purposeDraft.reset(a.purpose, a.revision), families);
+  const saveStatus = useAction(patch({ name: scope.value.name.trim() || undefined, status: scope.value.status }),
+    (a) => scope.reset({ name: a.name, status: a.status }, a.revision), families);
+  const purposeTheirs = conflictOf<Schemas["AppDetail"]>(savePurpose.error);
+  const scopeTheirs = conflictOf<Schemas["AppDetail"]>(saveStatus.error);
+  const label = (value: string) => item.statuses.find((s) => s.value === value)?.label ?? value;
   return (
     <div>
-      <form aria-label="Purpose" onSubmit={(e) => { e.preventDefault(); savePurpose.mutate(undefined); }}>
-        <label>Purpose <input maxLength={500} value={purpose} placeholder="What the demo is for" onChange={(e) => setPurpose(e.target.value)} /></label>
-        <ErrorText error={savePurpose.error} />
+      <form aria-label="Purpose" onSubmit={(e) => { e.preventDefault(); savePurpose.mutate(purposeDraft.revision); }}>
+        <label>Purpose <DirtyNote dirty={purposeDraft.dirty} /> <input maxLength={500} value={purpose} placeholder="What the demo is for" onChange={(e) => setPurpose(e.target.value)} /></label>
+        {purposeTheirs ? (
+          <ConflictView busy={savePurpose.isPending} rows={[{ label: "Purpose", mine: purpose, theirs: purposeTheirs.purpose }]}
+            onKeepMine={() => savePurpose.mutate(purposeTheirs.revision)}
+            onTakeTheirs={() => { purposeDraft.reset(purposeTheirs.purpose, purposeTheirs.revision); savePurpose.reset(); }} />
+        ) : <ErrorText error={savePurpose.error} />}
         <button disabled={savePurpose.isPending}>Save purpose</button>
       </form>
-      <form aria-label="Name and scope" onSubmit={(e) => { e.preventDefault(); saveStatus.mutate(undefined); }}>
-        <label>Name <input maxLength={120} value={name} onChange={(e) => setName(e.target.value)} /></label>
+      <form aria-label="Name and scope" onSubmit={(e) => { e.preventDefault(); saveStatus.mutate(scope.revision); }}>
+        <label>Name <DirtyNote dirty={scope.dirty} /> <input maxLength={120} value={scope.value.name} onChange={(e) => { const name = e.target.value; scope.set((v) => ({ ...v, name })); }} /></label>
         <label>Scope decision
-          <select value={status} onChange={(e) => setStatus(e.target.value as Schemas["AppStatus"])}>
+          <select value={scope.value.status} onChange={(e) => { const status = e.target.value as Schemas["AppStatus"]; scope.set((v) => ({ ...v, status })); }}>
             {item.statuses.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
         </label>
-        <ErrorText error={saveStatus.error} />
+        {scopeTheirs ? (
+          <ConflictView busy={saveStatus.isPending}
+            rows={[{ label: "Name", mine: scope.value.name, theirs: scopeTheirs.name }, { label: "Scope decision", mine: label(scope.value.status), theirs: label(scopeTheirs.status) }]}
+            onKeepMine={() => saveStatus.mutate(scopeTheirs.revision)}
+            onTakeTheirs={() => { scope.reset({ name: scopeTheirs.name, status: scopeTheirs.status }, scopeTheirs.revision); saveStatus.reset(); }} />
+        ) : <ErrorText error={saveStatus.error} />}
         <button disabled={saveStatus.isPending}>Save</button>
       </form>
       {others.length > 0 && (

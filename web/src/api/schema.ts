@@ -40,6 +40,12 @@ export interface paths {
          * The catalog (Applications page)
          * @description The applications the caller has any role on (an admin: all), each with its journey and its
          *     latest Tested or Published release; and the recordings the caller may open (restricted evidence).
+         *     Paginated (default `limit` 50) and filtered: `q` matches the name, purpose or owner
+         *     (case-insensitive), `owner`, `status` and `stage` (a journey title) match exactly. `sort` is
+         *     `name`, `owner`, `status` or `stage`, `-` first for descending; the default is the catalog
+         *     order (out-of-scope applications last, then by name). `filters` lists the owners and stages
+         *     to choose from (of every visible application, not only this page). `recordings` is the
+         *     first 50 recordings the caller may open; the recordings list has them all.
          */
         get: operations["listApps"];
         put?: never;
@@ -78,7 +84,8 @@ export interface paths {
         /**
          * Change name, purpose, repository or scope decision
          * @description Owner. Only the fields sent change. `status` is the scope decision (audited as `app.status`);
-         *     `owner` assigns that user the owner role.
+         *     `owner` assigns that user the owner role. With `expected_revision` (or `If-Match`) a stale
+         *     change is refused with 409 `conflict` and the current application (see Conditional updates).
          */
         patch: operations["updateApp"];
         trace?: never;
@@ -429,10 +436,17 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Save a scenario */
+        /**
+         * Save a scenario
+         * @description Owner. With `expected_revision` (or `If-Match`) a stale save is refused with 409 `conflict`
+         *     and the current scenario (see Conditional updates).
+         */
         put: operations["updateScenario"];
         post?: never;
-        /** Remove a scenario */
+        /**
+         * Remove a scenario
+         * @description Owner. With `expected_revision` (or `If-Match`) a scenario changed since it was loaded is not removed (409 `conflict`).
+         */
         delete: operations["removeScenario"];
         options?: never;
         head?: never;
@@ -783,7 +797,8 @@ export interface paths {
         };
         /**
          * Recordings the caller may open
-         * @description Restricted evidence. Only recordings the caller added, or that are linked to an application the caller owns.
+         * @description Restricted evidence. Only recordings the caller added, or that are linked to an application
+         *     the caller owns; newest first. Paginated (default `limit` 50); `q` matches the name.
          */
         get: operations["listRecordings"];
         put?: never;
@@ -814,8 +829,36 @@ export interface paths {
          *     403). Completeness, preflight, upload progress, evidence preview per application, and the
          *     applications the recording holds, **each with its own steps and its own latest
          *     builder-approved package** (null when there is none or the caller is not a builder of it).
+         *     `events` is the first 200 events (`events_total` counts them all); the events operation
+         *     pages through them all with search.
          */
         get: operations["getRecording"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/recordings/{recording_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                recording_id: components["parameters"]["RecordingId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * A recording's events, paginated and searchable
+         * @description A reviewer of the recording. In recording order (`seq`). Paginated (default `limit` 100).
+         *     `q` matches the action, key, control, label, screen, source and time (case-insensitive,
+         *     every word must match); `source` is one application (an event's `source`). `sources` counts
+         *     the events per source of the whole recording. With `ids=true` the answer also lists the
+         *     `event_id` of every matching event (all pages), for "select every match".
+         */
+        get: operations["listRecordingEvents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -870,10 +913,22 @@ export interface paths {
          * Save the owner's review of the assignment
          * @description Owner. Events are chosen by `event_id` (their `seq` is a display order and may change).
          *     Saving marks the link reviewed and clears the suggestions. Audited as `evidence.review`.
+         *     With `expected_revision` (or `If-Match`) a stale save is refused with 409 `conflict` and
+         *     the current assignment (see Conditional updates). Saving after a removal assigns the
+         *     recording again. To assign no events, remove the assignment (DELETE).
          */
         put: operations["saveAssignment"];
         post?: never;
-        delete?: never;
+        /**
+         * Remove this application's assignment from the recording
+         * @description Owner. The application no longer uses any event or note of this recording: its next draft
+         *     package leaves the recording out, and frozen packages are unchanged. A later send of the
+         *     same recording does not select its events again; saving an assignment again does.
+         *     Answers the assignment with `removed: true`. Audited as `evidence.remove` with the event_ids
+         *     that were selected. With `expected_revision` (query) or `If-Match`, a stale removal is
+         *     refused with 409 `conflict`.
+         */
+        delete: operations["removeAssignment"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1601,7 +1656,7 @@ export interface components {
             /**
              * @description A stable machine-readable reason where the web app acts on it: `signed_out`,
              *     `wrong_credentials`, `csrf`, `role`, `restricted`, `draft_changed`, `unchanged`,
-             *     `incomplete_package`, `plan_changed`, `publish_locked`.
+             *     `incomplete_package`, `plan_changed`, `publish_locked`, `conflict` (a stale conditional update).
              */
             code?: string;
             /** @description Per-field problems of a request body. */
@@ -1609,7 +1664,22 @@ export interface components {
                 field: string;
                 message: string;
             }[];
+            /** @description With `code: conflict`: the resource as the server has it now (the shape its GET answers). */
+            current?: {
+                [key: string]: unknown;
+            };
         };
+        /** @description Where a page of a paginated list is (see Pagination). */
+        Page: {
+            /** @description Items matching the filters, on every page. */
+            total: number;
+            limit: number;
+            offset: number;
+            /** @description The offset of the next page; null on the last page. */
+            next_offset: number | null;
+        };
+        /** @description The resource's revision (see Conditional updates). */
+        Revision: number;
         /** @enum {string} */
         Role: "viewer" | "builder" | "owner";
         /**
@@ -1711,7 +1781,14 @@ export interface components {
             tested_release: components["schemas"]["TestedRelease"] | null;
         };
         Catalog: {
+            /** @description One page of the matching applications. */
             apps: components["schemas"]["AppSummary"][];
+            page: components["schemas"]["Page"];
+            /** @description The values to filter by, from every application the caller sees. */
+            filters: {
+                owners: string[];
+                stages: string[];
+            };
             /** @description Recordings the caller may open (restricted evidence). */
             recordings: components["schemas"]["RecordingRef"][];
             journey_titles: string[];
@@ -1722,6 +1799,7 @@ export interface components {
             purpose?: string;
         };
         AppDetail: components["schemas"]["AppSummary"] & {
+            revision: components["schemas"]["Revision"];
             git_url: string;
             /** @enum {string} */
             url_match: "path" | "host";
@@ -1739,6 +1817,7 @@ export interface components {
             status?: components["schemas"]["AppStatus"];
             /** @description Assigns this user the owner role. */
             owner?: string;
+            expected_revision?: components["schemas"]["Revision"];
         };
         RoleAssignment: {
             user_name: string;
@@ -1776,6 +1855,7 @@ export interface components {
         AppSetup: {
             app: {
                 id: number;
+                revision: components["schemas"]["Revision"];
                 name: string;
                 git_url: string;
                 /** @enum {string} */
@@ -1820,6 +1900,7 @@ export interface components {
         DataBackendInput: {
             /** @enum {string} */
             data_backend: "" | "sqlite" | "postgresql" | "sqlserver";
+            expected_revision?: components["schemas"]["Revision"];
         };
         IdentityInput: {
             /** @description CaseDesk.exe, https://host/path, tn3270://host:port or desktop:Company/Product */
@@ -1828,6 +1909,7 @@ export interface components {
         UrlMatchInput: {
             /** @enum {string} */
             url_match: "path" | "host";
+            expected_revision?: components["schemas"]["Revision"];
         };
         VerificationSettings: {
             /** @description One check name or glob per line; empty means every check reported. */
@@ -1837,6 +1919,7 @@ export interface components {
             windows_check_pattern?: string;
             lab_url?: string;
             launch?: string;
+            expected_revision?: components["schemas"]["Revision"];
         };
         VerifyCommitInput: {
             /** @description owner/name; defaults to the application's GitHub repository. */
@@ -1977,9 +2060,11 @@ export interface components {
             notes?: string;
             /** @description Linked events as `recording#event_id`, from the selected events of the application. */
             events?: string[];
+            expected_revision?: components["schemas"]["Revision"];
         };
         Scenario: components["schemas"]["ScenarioInput"] & {
             id: number;
+            revision: components["schemas"]["Revision"];
         };
         ScenarioField: {
             key: string;
@@ -2376,6 +2461,18 @@ export interface components {
         };
         RecordingList: {
             recordings: components["schemas"]["RecordingSummary"][];
+            page: components["schemas"]["Page"];
+        };
+        RecordingEvents: {
+            events: components["schemas"]["Event"][];
+            page: components["schemas"]["Page"];
+            /** @description The events per source (application) of the whole recording. */
+            sources: {
+                source: string;
+                count: number;
+            }[];
+            /** @description With `ids=true`: the event_id of every matching event. */
+            ids?: string[];
         };
         RecordingImport: {
             name: string;
@@ -2393,6 +2490,8 @@ export interface components {
             screen?: string | null;
             time?: string | null;
             channel?: string | null;
+            /** @description The application whose recorded flow has the event (the events operation only). */
+            app?: string | null;
             /** @description Recorded in an interrupted period. */
             in_gap: boolean;
         };
@@ -2469,15 +2568,21 @@ export interface components {
             preview: components["schemas"]["EvidencePreview"][];
             /** @description Null for an imported event log. */
             refs: components["schemas"]["RecordingRefs"] | null;
+            /** @description The first 200 events. */
             events: components["schemas"]["Event"][];
+            /** @description Every event of the recording. */
+            events_total: number;
             /** @description Applications the caller owns, to assign events to. */
             assignable_apps: components["schemas"]["AppRef"][];
         };
         Assignment: {
             app_id: number;
             recording_id: string;
-            /** @description False when no events are assigned yet. */
+            revision: components["schemas"]["Revision"];
+            /** @description False when no events are assigned (none yet, or removed). */
             saved: boolean;
+            /** @description An owner removed this application's assignment from the recording. */
+            removed: boolean;
             /** @description False when selected automatically from the recording. */
             reviewed: boolean;
             /** @description event_ids */
@@ -2490,6 +2595,7 @@ export interface components {
             /** @description event_ids of this recording */
             events: string[];
             notes?: string;
+            expected_revision?: components["schemas"]["Revision"];
         };
         CaptureTarget: {
             app_id: number;
@@ -2904,6 +3010,12 @@ export interface components {
         BuildId: number;
         ReleaseId: number;
         RecordingId: string;
+        /** @description Page size (see Pagination). */
+        Limit: number;
+        /** @description Items to skip (see Pagination). */
+        Offset: number;
+        /** @description The revision the change was made from (see Conditional updates). */
+        ExpectedRevision: number;
     };
     requestBodies: never;
     headers: never;
@@ -2994,7 +3106,17 @@ export interface operations {
     };
     listApps: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Page size (see Pagination). */
+                limit?: components["parameters"]["Limit"];
+                /** @description Items to skip (see Pagination). */
+                offset?: components["parameters"]["Offset"];
+                q?: string;
+                owner?: string;
+                status?: components["schemas"]["AppStatus"];
+                stage?: string;
+                sort?: "name" | "-name" | "owner" | "-owner" | "status" | "-status" | "stage" | "-stage";
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3010,6 +3132,7 @@ export interface operations {
                     "application/json": components["schemas"]["Catalog"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
         };
     };
@@ -3090,6 +3213,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     listRoles: {
@@ -3302,6 +3426,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
         };
     };
     saveVerificationSettings: {
@@ -3600,11 +3725,15 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     removeScenario: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description The revision the change was made from (see Conditional updates). */
+                expected_revision?: components["parameters"]["ExpectedRevision"];
+            };
             header?: never;
             path: {
                 app_id: components["parameters"]["AppId"];
@@ -3622,6 +3751,7 @@ export interface operations {
                 content?: never;
             };
             403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
         };
     };
     listPackages: {
@@ -4035,7 +4165,13 @@ export interface operations {
     };
     listRecordings: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Page size (see Pagination). */
+                limit?: components["parameters"]["Limit"];
+                /** @description Items to skip (see Pagination). */
+                offset?: components["parameters"]["Offset"];
+                q?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4100,6 +4236,38 @@ export interface operations {
                     "application/json": components["schemas"]["RecordingDetail"];
                 };
             };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listRecordingEvents: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Items to skip (see Pagination). */
+                offset?: components["parameters"]["Offset"];
+                q?: string;
+                source?: string;
+                ids?: boolean;
+            };
+            header?: never;
+            path: {
+                recording_id: components["parameters"]["RecordingId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of events. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordingEvents"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
@@ -4172,6 +4340,36 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    removeAssignment: {
+        parameters: {
+            query?: {
+                /** @description The revision the change was made from (see Conditional updates). */
+                expected_revision?: components["parameters"]["ExpectedRevision"];
+            };
+            header?: never;
+            path: {
+                recording_id: components["parameters"]["RecordingId"];
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Assignment"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     acceptRecording: {

@@ -65,6 +65,7 @@ describe("a recording that holds several applications", () => {
       body: {
         events: ["0b1c2d3e-0000-4000-8000-000000000001", "0b1c2d3e-0000-4000-8000-000000000002", "0b1c2d3e-0000-4000-8000-000000000005"],
         notes: "Invoice is created from the saved order.",
+        expected_revision: 2,
       },
     });
   });
