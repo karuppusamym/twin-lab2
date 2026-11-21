@@ -13,7 +13,7 @@ jobs:
     name: image (build and smoke test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # the OpenShift manifest against the Kubernetes 1.30 (OpenShift 4.17) schemas, unknown fields
       # refused; Route (route.openshift.io) has no published schema: tests/server/test_deploy_manifests.py
       - name: Schema-check deploy/openshift-portal.yaml (kubeconform, pinned by digest)
