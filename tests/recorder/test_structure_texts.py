@@ -86,6 +86,19 @@ class MainframeTexts(unittest.TestCase):
         self.assertEqual(again["texts"], [{"kind": "label", "text": "ACCT 9999"}])
         self.assertEqual(again["withheld"], self.state["withheld"] + 2)
 
+    def test_the_proxy_keeps_key_names_and_masks_other_digit_tokens(self):
+        from twinlab2_recorder.workstation import tn3270
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rec = tn3270.Recorder(Path(tmp), "mainframe:h:1")
+            try:
+                rec.typed.add("PRIYA")
+                self.assertEqual(rec._clean("ENTER=SHOW  PF3=SIGN OFF  PA1  F12=CANCEL"),
+                                 "ENTER=SHOW PF3=SIGN OFF PA1 F12=CANCEL")
+                self.assertEqual(rec._clean("ACCT 10442 FOR PRIYA PF33 X1"), "ACCT 99999 FOR XXXXX XX99 X9")
+            finally:
+                rec.close()
+
     def test_a_state_without_texts_keeps_its_1_3_id(self):
         web = st.clean_state({"controls": [{"kind": "input", "id": "q"}], "events": []})
         self.assertNotIn("texts", web)

@@ -44,11 +44,29 @@ class Describe(unittest.TestCase):
         self.assertIn("app 1  (the rest of the host)  1 steps", text)
         self.assertIn("app 2  /billing  1 steps", text)
 
+    def test_targets_without_paths_are_listed_not_guessed(self):
+        bare = [dict(TARGETS[0]), dict(TARGETS[1], origin=HOST)]
+        text = agent_main.describe(box(["/orders", "/billing/lookup"]), targets=bare)
+        self.assertIn(f"2 applications on one host  [web:{HOST}]  2 steps", text)
+        self.assertIn("Orders  (no path: the portal tells its steps apart", text)
+        self.assertIn("Billing  (no path: the portal tells its steps apart", text)
+
     def test_one_target_per_host_is_one_line_as_before(self):
         b = box(["/orders"])
         b["session"]["targets"] = b["session"]["targets"][:1]
         text = agent_main.describe(b, targets=TARGETS[:1])
         self.assertIn(f"full   Billing  [web:{HOST}]  1 steps", text)
+
+    def test_an_offered_target_keeps_its_path(self):
+        # the portal sends a web target known by path with its path (contract 1.2); the recorder
+        # kept only the origin, so a shared host was one application to it
+        from twinlab2_recorder.client import clean_targets
+
+        got = clean_targets([{"origin": HOST, "path": "/billing/", "name": "Billing", "app_id": 2, "level": "full"},
+                             {"origin": HOST, "path": "/a/../b", "app_id": 3},
+                             {"origin": HOST, "path": "/x?y=1", "app_id": 4},
+                             {"exe": "x.exe", "path": "/c", "app_id": 5}])  # fmt: skip
+        self.assertEqual([t.get("path") for t in got], ["/billing", None, None, None])
 
     def test_the_session_targets_come_from_session_json(self):
         with tempfile.TemporaryDirectory() as tmp:

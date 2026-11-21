@@ -72,6 +72,9 @@ WRITE, ERASE_WRITE, ERASE_WRITE_ALT, EAU, WSF = (
 )
 MODELS = {"2": (24, 80), "3": (32, 80), "4": (43, 80), "5": (27, 132)}
 DIGIT_TOKEN = re.compile(r"\S*\d\S*")
+# A key's name on a key line (`PF3=EXIT`, `PA1`, `F12=CANCEL`) is the host's own text, not data:
+# kept when digit tokens are masked.
+KEY_TOKEN = re.compile(r"(?:(?:PF|F)(?:[1-9]|1[0-9]|2[0-4])|PA[1-3])(?:=[A-Za-z][A-Za-z/-]{0,15})?")
 
 
 def decode_addr(b1: int, b2: int) -> int:
@@ -431,7 +434,7 @@ class Recorder:
         for value in sorted(self.typed, key=len, reverse=True):
             if len(value) >= 2 and value in text:
                 text = text.replace(value, shape(value))
-        return DIGIT_TOKEN.sub(lambda m: shape(m.group(0)), text)
+        return DIGIT_TOKEN.sub(lambda m: m.group(0) if KEY_TOKEN.fullmatch(m.group(0)) else shape(m.group(0)), text)
 
     def _label(self, conn: Connection, f: dict | None) -> str | None:
         """The protected text right before an input field on the same row: its label."""

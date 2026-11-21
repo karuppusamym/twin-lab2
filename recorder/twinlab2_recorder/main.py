@@ -237,11 +237,13 @@ def send(cfg: st.Settings, session_id: str, ca_bundle: str | None = None) -> dic
 def _split_by_path(steps: list[dict], origin: str, targets: list[dict]) -> list[tuple[dict, int]]:
     """The steps of one origin per target on it, by the portal's rule: a step goes to the target
     whose path prefix is the longest one its screen starts with (whole segments), else to the
-    target without a path. -> [(target, steps)] in the targets' order."""
+    target without a path; with several targets without a path their steps are not told apart
+    here (None). -> [(target, steps or None)] in the targets' order."""
     from twinlab2_recorder.workstation.flow import prefix_segments
 
-    counts = [0] * len(targets)
-    bare = next((i for i, t in enumerate(targets) if not prefix_segments(t.get("path"))), None)
+    counts: list = [0] * len(targets)
+    bares = [i for i, t in enumerate(targets) if not prefix_segments(t.get("path"))]
+    bare = bares[0] if len(bares) == 1 else None  # several without a path: not told apart here
     for s in steps:
         screen = str(s.get("screen") or "")
         path = screen[len(origin):] if screen.startswith(origin) else ""
@@ -253,6 +255,9 @@ def _split_by_path(steps: list[dict], origin: str, targets: list[dict]) -> list[
                 best, length = i, len(pre)
         if best is not None:
             counts[best] += 1
+    if len(bares) > 1:
+        for i in bares:
+            counts[i] = None
     return list(zip(targets, counts))
 
 
@@ -274,7 +279,10 @@ def describe(box: dict, notes: list[str] | None = None, targets: list[dict] | No
         for t, n in _split_by_path(flow, origin, mine):
             name = t.get("name") or (f"app {t['app_id']}" if t.get("app_id") is not None else "?")
             where = t.get("path") or "(the rest of the host)"
-            lines.append(f"           {name}  {where}  {n} steps")
+            if n is None:
+                lines.append(f"           {name}  (no path: the portal tells its steps apart by its own address)")
+            else:
+                lines.append(f"           {name}  {where}  {n} steps")
     presence = sum(r["steps"] for r in box["timeline"] if r["app"] == "presence")
     lines.append(f"  other applications: used {presence} time(s), not named")
     rb = box.get("robot")

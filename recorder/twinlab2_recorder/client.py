@@ -168,6 +168,12 @@ def clean_targets(items) -> list[dict]:
                 item[k] = t[k]
         if isinstance(t.get("app_id"), int):
             item["app_id"] = t["app_id"]
+        if item.get("origin") and isinstance(t.get("path"), str):
+            # a web target known by path on a shared host (contract 1.2): a plain path prefix only
+            from twinlab2_recorder.workstation.flow import prefix_segments
+
+            if prefix_segments(t["path"]):
+                item["path"] = "/" + "/".join(prefix_segments(t["path"]))
         if any(k in item for k in ("key", "exe", "origin", "tn3270")):
             out.append(item)
     return out
