@@ -146,6 +146,30 @@ def _merge(ours: dict, theirs: dict | None) -> dict:
     return {"status": status, "gaps": gaps, "notes": notes}
 
 
+# The contract's limits (recorder-contract.schema.json): what the manifest holds is cut to them
+# when it is built, so `send` never refuses a recording over the length of a note.
+NOTE_MAX, NOTES_MAX, REASON_MAX, GAPS_MAX, DETAIL_MAX = 300, 50, 200, 500, 300
+
+
+def fit(text, limit: int) -> str:
+    """`text` within `limit` characters: cut at a word where it can be, ending in "..."."""
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 3]
+    if " " in cut[limit // 2 :]:
+        cut = cut[: cut.rindex(" ")]
+    return cut.rstrip(" ,;:") + "..."
+
+
+def _fit_channel(block: dict) -> dict:
+    notes = [fit(n, NOTE_MAX) for n in block.get("notes") or []]
+    if len(notes) > NOTES_MAX:
+        notes = notes[: NOTES_MAX - 1] + [f"{len(notes) - NOTES_MAX + 1} more note(s) not listed"]
+    gaps = [dict(g, reason=fit(g.get("reason"), REASON_MAX)) for g in block.get("gaps") or []]
+    return dict(block, notes=notes, gaps=gaps[:GAPS_MAX])
+
+
 def manifest(folder: Path, meta: dict) -> dict:
     """The completeness manifest of a session folder (`meta`: its session.json)."""
     folder = Path(folder)
@@ -161,7 +185,7 @@ def manifest(folder: Path, meta: dict) -> dict:
             state = from_journal(capture.read(capture.path_of(folder, ch)), ch)
         else:
             state = _legacy(folder, ch, meta)
-        channels[ch] = _merge(state, supervised.get(ch))
+        channels[ch] = _fit_channel(_merge(state, supervised.get(ch)))
     statuses = [channels[c]["status"] for c in want]
     if all(s == "complete" for s in statuses):
         overall = "complete"
@@ -194,7 +218,7 @@ def preflight(meta: dict) -> dict | None:
     if not isinstance(pre, dict) or not isinstance(pre.get("checks"), list):
         return None
     checks = [{"name": str(c.get("name") or ""), "ok": bool(c.get("ok")),
-               "detail": str(c.get("detail") or "")}
+               "detail": fit(c.get("detail"), DETAIL_MAX)}
               for c in pre["checks"] if isinstance(c, dict)]  # fmt: skip
     ready = pre.get("ready")
     return {

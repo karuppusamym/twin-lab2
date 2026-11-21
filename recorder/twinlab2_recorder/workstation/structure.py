@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 from twinlab2_contract import structure as st
 from twinlab2_contract.evidence import dom
@@ -184,10 +185,14 @@ def _rows(node: dict) -> int:
     return sum(1 for c in node.get("children") or [] if c.get("type") in DATA_ITEMS)
 
 
-def desktop_state(tree: dict) -> dict:
+def desktop_state(tree: dict, combos: dict | None = None) -> dict:
+    """`combos`: {combo box automation id: {"items": [...]} or {"item_count": n}}, what the
+    recording's expand steps saw in each drop-down's list (the tree is read while it is closed:
+    its items are not in it)."""
     controls: list[dict] = []
     regions: list[dict] = []
     grids: list[dict] = []
+    texts: list[dict] = []
     withheld = 0
 
     def walk(n: dict, in_data: bool) -> None:
@@ -230,17 +235,51 @@ def desktop_state(tree: dict) -> dict:
                 c["options"] = len(items)
                 if n.get("items_are") == "code-list":
                     c["option_texts"] = [i.get("name") or "" for i in items]
+                seen = (combos or {}).get(aid) if aid else None
+                if not items and seen:  # the list as its expand step saw it
+                    if seen.get("items"):
+                        c["options"] = len(seen["items"])
+                        c["option_texts"] = list(seen["items"])
+                    elif isinstance(seen.get("item_count"), int):
+                        c["options"] = seen["item_count"]
             if t in ("Edit", "Document", "ComboBox", "Spinner") and not n.get("password"):
                 c["value"] = "filled" if str(n.get("value") or "").strip() else "empty"
             controls.append(c)
         elif aid and t in ("Pane", "Group", "Window", "Tab", "ToolBar", "StatusBar", "Text"):
             if t != "Text" or n.get("name_is") in ("structure", "message"):
                 regions.append({"kind": t, "id": aid, "visible": bool(n.get("visible", True))})
+        if t == "Text" and n.get("name_is") == "message" and n.get("name") and not in_data:
+            # A message box's (#32770) message is the application's own text (privacy.clean
+            # keeps it, digit tokens masked); its Win32 id (65535) is no identifier.
+            texts.append({"kind": "message", "text": n["name"]})
         for child in n.get("children") or []:
             walk(child, in_data or t in DATA_ITEMS)
 
     walk(tree, False)
-    return {"controls": controls, "regions": regions, "grids": grids, "withheld": withheld}
+    out = {"controls": controls, "regions": regions, "grids": grids, "withheld": withheld}
+    if texts:
+        out["texts"] = texts
+    return out
+
+
+def combo_lists(folder: Path, rows: list[dict]) -> dict[tuple, dict]:
+    """{(application, combo box automation id): what its expand or collapse step saw in the
+    list}: `items` (a code list, kept by the desktop recorder's rule) or `item_count`."""
+    out: dict[tuple, dict] = {}
+    for row in rows:
+        step = row.get("_step") or {}
+        if row.get("surface") != "desktop" or step.get("action") not in ("expand", "collapse"):
+            continue
+        sel = str((step.get("target") or {}).get("selector") or step.get("selector") or "")
+        m = re.search(r"AutomationId=([^;]+)", sel)
+        if not m or "ComboBox" not in sel:
+            continue
+        key = (row.get("app"), m.group(1))
+        if isinstance(step.get("items"), list) and step["items"]:
+            out[key] = {"items": [str(i) for i in step["items"]]}
+        elif isinstance(step.get("item_count"), int) and key not in out:
+            out[key] = {"item_count": step["item_count"]}
+    return out
 
 
 def _descend(n: dict):
@@ -250,6 +289,56 @@ def _descend(n: dict):
 
 
 # --- mainframe ------------------------------------------------------------------------------------------
+
+
+KEY_LINE = re.compile(r"\b(?:PF|PA|F)\d{1,2}\s*=|\bENTER\s*=", re.I)
+LABEL_END = re.compile(r"(?::|=|\.\s*\.|\.{2,}|>)\s*$")
+
+
+def mainframe_texts(screen: dict) -> list[dict]:
+    """A 3270 screen's protected fields (contract 1.4 `texts`), with row, column, length and
+    attributes: the title (the protected text of the first row that has any, as the recorder
+    names the screen), labels (the protected text right before an input field on its row, or
+    one that ends as a label does: `NAME:`, `NAME . . .`), the key line (`PF3=EXIT`) and the
+    message line (protected text on the last three rows) keep their text, as the 3270 proxy
+    cleaned it (digit tokens and typed values as shapes). Any other protected text may be data
+    (an account holder's name shown in an output field): its shape only."""
+    from twinlab2_recorder.workstation.tn3270 import shape
+
+    rows = (screen.get("screen") or {}).get("rows") or 24
+    fields = sorted(screen.get("fields") or [], key=lambda f: (f.get("row", 0), f.get("col", 0)))
+    shown = [f for f in fields if f.get("protected") and (str(f.get("text") or "").strip() or f.get("hidden"))]
+    title_row = next((f.get("row") for f in shown if not f.get("hidden") and str(f.get("text") or "").strip()), None)
+    out = []
+    for i, f in enumerate(fields):
+        if f not in shown:
+            continue
+        text = " ".join(str(f.get("text") or "").split())
+        item: dict = {"row": f.get("row"), "col": f.get("col"), "len": f.get("len")}
+        if f.get("intensified"):
+            item["intensified"] = True
+        if f.get("hidden"):
+            item.update(kind="text", hidden=True)
+            out.append(item)
+            continue
+        nxt = fields[i + 1] if i + 1 < len(fields) else None
+        before_input = nxt is not None and not nxt.get("protected") and nxt.get("row") == f.get("row")
+        if f.get("row") == title_row:
+            kind = "title"
+        elif KEY_LINE.search(text):
+            kind = "keys"
+        elif before_input or LABEL_END.search(text):
+            kind = "label"
+        elif isinstance(f.get("row"), int) and f["row"] > rows - 3:
+            kind = "message"
+        else:
+            kind = "text"
+        if kind == "text":
+            item.update(kind="text", shape=shape(text))
+        else:
+            item.update(kind=kind, text=text)
+        out.append(item)
+    return out
 
 
 def mainframe_state(screen: dict) -> dict:
@@ -266,7 +355,7 @@ def mainframe_state(screen: dict) -> dict:
         if before and before.get("protected") and before.get("row") == f.get("row") and before.get("text"):
             c["label"] = before["text"]
         controls.append(c)
-    return {"controls": controls, "regions": [], "grids": []}
+    return {"controls": controls, "regions": [], "grids": [], "texts": mainframe_texts(screen)}
 
 
 # --- the session ---------------------------------------------------------------------------------------
@@ -279,8 +368,8 @@ def _read(path: Path) -> str | None:
         return None
 
 
-def state_of(folder: Path, row: dict) -> dict | None:
-    """The cleaned state a step's file shows, or None."""
+def state_of(folder: Path, row: dict, combos: dict[tuple, dict] | None = None) -> dict | None:
+    """The cleaned state a step's file shows, or None. `combos`: combo_lists()."""
     step = row.get("_step") or {}
     surface = row.get("surface")
     raw = None
@@ -294,7 +383,11 @@ def state_of(folder: Path, row: dict) -> dict | None:
         except ValueError:
             data = None
         if isinstance(data, dict):
-            raw = desktop_state(data) if surface == "desktop" else mainframe_state(data)
+            if surface == "desktop":
+                mine = {aid: v for (app, aid), v in (combos or {}).items() if app == row.get("app")}
+                raw = desktop_state(data, mine)
+            else:
+                raw = mainframe_state(data)
     if raw is None:
         return None
     raw["events"] = [row["event_id"]] if row.get("event_id") else []
@@ -309,13 +402,14 @@ def collect(folder: Path, rows: list[dict], full: set[str]) -> dict[str, list[di
     screens: dict[str, dict[str, dict]] = {}
     last: dict[str, tuple[str, str]] = {}  # app -> (screen, state id) last seen
     pending: dict[str, list[dict]] = {}  # app -> labels of the steps since that state
+    combos = combo_lists(folder, [r for r in rows if r.get("app") in full])
     for row in rows:
         app = row.get("app")
         if app not in full or row.get("_step") is None:
             continue
         label = row.get("_label") or {}
         pending.setdefault(app, []).append(label)
-        state = state_of(folder, row)
+        state = state_of(folder, row, combos)
         if state is None:
             continue
         screen = label.get("screen") or _fallback_screen(row)

@@ -42,7 +42,7 @@ from twinlab2_recorder.workstation.levels import FULL, PRESENCE, STEPS, denied_p
 
 FORMAT = "twinlab-workstation-session/1"
 # The recorder contract the references follow (twin-lab2 RECORDER-CONTRACT.md).
-CONTRACT_VERSION = "1.3.0"
+CONTRACT_VERSION = "1.4.0"
 EVENT_FIELDS = ("event_id", "channel", "captured_at")
 
 

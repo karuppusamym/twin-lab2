@@ -150,7 +150,7 @@ class TenAppRecordingTest(unittest.TestCase):
         paths = {(t.get("origin"), t.get("path")) for t in offered[0]["targets"]}
         self.assertTrue({("https://erp.example.test", "/billing"), ("https://erp.example.test", "/billing-admin")} <= paths)
         doc = references()
-        self.assertEqual(doc["contract_version"], "1.3.0")
+        self.assertEqual(doc["contract_version"], "1.4.0")
         middle = fixture.ts(len(fixture.STEPS) * 5 // 2)
         first, second = part(doc, lambda s: s["captured_at"] < middle), part(doc, lambda s: s["captured_at"] >= middle)
         self.assertTrue(first["flows"] and second["flows"])
@@ -473,13 +473,22 @@ def as_1_1(doc):
     from twinlab2_recorder.workstation import flow
     from twinlab2_recorder.workstation.levels import origin_of
 
+    from urllib.parse import urlsplit
+
+    def route_1_1(url):  # the 1.1 rule: the first segment, then route words only
+        out = []
+        for seg in [x for x in urlsplit(url).path.split("/") if x]:
+            keep = seg.lower() in flow.ROUTE_WORDS or (not out and flow.ident(seg) and len(seg) <= 24)
+            out.append(seg if keep else "{id}")
+        return "/" + "/".join(out)
+
     out = json.loads(json.dumps(doc))
     urls = fixture.urls()
     for steps in out["flows"].values():
         for s in steps:
             if s["event_id"] in urls:
                 url = urls[s["event_id"]]
-                s["screen"] = origin_of(url) + flow.route_template(url)
+                s["screen"] = origin_of(url) + route_1_1(url)
     for t in out["session"].get("targets") or []:
         t.pop("path", None)
     out["contract_version"] = "1.1.0"

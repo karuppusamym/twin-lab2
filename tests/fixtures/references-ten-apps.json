@@ -1,5 +1,5 @@
 {
- "contract_version": "1.3.0",
+ "contract_version": "1.4.0",
  "format": "twinlab-references/1",
  "session": {
   "id": "20261120T140000Z-10a9b8c7",
@@ -171,7 +171,7 @@
     "n": 3,
     "action": "goto",
     "control": "body",
-    "screen": "https://erp.example.test/billing/{id}",
+    "screen": "https://erp.example.test/billing/invoices",
     "event_id": "019aa1b0-0001-7000-8000-000000000001",
     "channel": "web",
     "captured_at": "2026-11-20T14:00:05.000Z"
@@ -181,7 +181,7 @@
     "action": "type",
     "control": "input",
     "label": "billingInvoiceSearch",
-    "screen": "https://erp.example.test/billing/{id}/{id}",
+    "screen": "https://erp.example.test/billing/invoices/{id}",
     "event_id": "019aa1b0-0002-7000-8000-000000000002",
     "channel": "web",
     "captured_at": "2026-11-20T14:00:10.000Z"
@@ -191,7 +191,7 @@
     "action": "click",
     "control": "button",
     "label": "adminRateTable",
-    "screen": "https://erp.example.test/billing-admin/{id}",
+    "screen": "https://erp.example.test/billing-admin/rates",
     "event_id": "019aa1b0-0006-7000-8000-000000000006",
     "channel": "web",
     "captured_at": "2026-11-20T14:00:30.000Z"
@@ -201,7 +201,7 @@
     "action": "click",
     "control": "button",
     "label": "billingApprove",
-    "screen": "https://erp.example.test/billing/{id}/{id}",
+    "screen": "https://erp.example.test/billing/invoices/{id}",
     "event_id": "019aa1b0-0007-7000-8000-000000000007",
     "channel": "web",
     "captured_at": "2026-11-20T14:00:35.000Z"
@@ -211,7 +211,7 @@
     "action": "type",
     "control": "input",
     "label": "adminRateValue",
-    "screen": "https://erp.example.test/billing-admin/{id}/edit",
+    "screen": "https://erp.example.test/billing-admin/rates/edit",
     "event_id": "019aa1b0-000b-7000-8000-00000000000b",
     "channel": "web",
     "captured_at": "2026-11-20T14:00:55.000Z"
@@ -221,7 +221,7 @@
     "action": "click",
     "control": "button",
     "label": "adminRatePublish",
-    "screen": "https://erp.example.test/billing-admin/{id}",
+    "screen": "https://erp.example.test/billing-admin/rates",
     "event_id": "019aa1b0-001e-7000-8000-00000000001e",
     "channel": "web",
     "captured_at": "2026-11-20T14:02:30.000Z"
@@ -231,7 +231,7 @@
     "action": "click",
     "control": "button",
     "label": "billingExport",
-    "screen": "https://erp.example.test/billing/{id}",
+    "screen": "https://erp.example.test/billing/invoices",
     "event_id": "019aa1b0-001f-7000-8000-00000000001f",
     "channel": "web",
     "captured_at": "2026-11-20T14:02:35.000Z"
@@ -252,7 +252,7 @@
     "action": "click",
     "control": "button",
     "label": "receivableInvoiceOpen",
-    "screen": "https://fin.example.test/finance/billing/{id}/{id}",
+    "screen": "https://fin.example.test/finance/billing/invoices/{id}",
     "event_id": "019aa1b0-0004-7000-8000-000000000004",
     "channel": "web",
     "captured_at": "2026-11-20T14:00:20.000Z"
@@ -262,7 +262,7 @@
     "action": "type",
     "control": "input",
     "label": "payrollRunHours",
-    "screen": "https://fin.example.test/finance/payroll/{id}/{id}",
+    "screen": "https://fin.example.test/finance/payroll/runs/{id}",
     "event_id": "019aa1b0-0008-7000-8000-000000000008",
     "channel": "web",
     "captured_at": "2026-11-20T14:00:40.000Z"
@@ -292,7 +292,7 @@
     "action": "click",
     "control": "button",
     "label": "payrollRunCreate",
-    "screen": "https://fin.example.test/finance/payroll/{id}/new",
+    "screen": "https://fin.example.test/finance/payroll/runs/new",
     "event_id": "019aa1b0-0018-7000-8000-000000000018",
     "channel": "web",
     "captured_at": "2026-11-20T14:02:00.000Z"
@@ -302,7 +302,7 @@
     "action": "type",
     "control": "input",
     "label": "ledgerJournalAmount",
-    "screen": "https://fin.example.test/finance/{id}/edit",
+    "screen": "https://fin.example.test/finance/journal/edit",
     "event_id": "019aa1b0-001d-7000-8000-00000000001d",
     "channel": "web",
     "captured_at": "2026-11-20T14:02:25.000Z"
@@ -612,7 +612,7 @@
  "screens": {
   "web:https://erp.example.test": [
    {
-    "screen": "https://erp.example.test/billing/{id}",
+    "screen": "https://erp.example.test/billing/invoices",
     "surface": "web",
     "states": [
      {
@@ -749,7 +749,7 @@
     ],
     "transitions": [
      {
-      "to": "https://erp.example.test/billing/{id}/{id}",
+      "to": "https://erp.example.test/billing/invoices/{id}",
       "from_state": "101e08fe53483e97",
       "to_state": "80f5898073747264",
       "action": "type",
@@ -760,7 +760,7 @@
     ]
    },
    {
-    "screen": "https://erp.example.test/billing/{id}/{id}",
+    "screen": "https://erp.example.test/billing/invoices/{id}",
     "surface": "web",
     "states": [
      {
@@ -909,7 +909,7 @@
     ],
     "transitions": [
      {
-      "to": "https://erp.example.test/billing-admin/{id}",
+      "to": "https://erp.example.test/billing-admin/rates",
       "from_state": "80f5898073747264",
       "to_state": "c524b7e9a06b10e5",
       "action": "click",
@@ -918,7 +918,7 @@
       "count": 1
      },
      {
-      "to": "https://erp.example.test/billing-admin/{id}/edit",
+      "to": "https://erp.example.test/billing-admin/rates/edit",
       "from_state": "f74b826b8fd8697d",
       "to_state": "4a6b11dc99b51baa",
       "action": "type",
@@ -929,7 +929,7 @@
     ]
    },
    {
-    "screen": "https://erp.example.test/billing-admin/{id}",
+    "screen": "https://erp.example.test/billing-admin/rates",
     "surface": "web",
     "states": [
      {
@@ -1075,7 +1075,7 @@
     ],
     "transitions": [
      {
-      "to": "https://erp.example.test/billing/{id}/{id}",
+      "to": "https://erp.example.test/billing/invoices/{id}",
       "from_state": "c524b7e9a06b10e5",
       "to_state": "f74b826b8fd8697d",
       "action": "click",
@@ -1084,7 +1084,7 @@
       "count": 1
      },
      {
-      "to": "https://erp.example.test/billing/{id}",
+      "to": "https://erp.example.test/billing/invoices",
       "from_state": "46accee1aa76afc6",
       "to_state": "9e69029dfe7e9a78",
       "action": "click",
@@ -1095,7 +1095,7 @@
     ]
    },
    {
-    "screen": "https://erp.example.test/billing-admin/{id}/edit",
+    "screen": "https://erp.example.test/billing-admin/rates/edit",
     "surface": "web",
     "states": [
      {
@@ -1174,7 +1174,7 @@
     ],
     "transitions": [
      {
-      "to": "https://erp.example.test/billing-admin/{id}",
+      "to": "https://erp.example.test/billing-admin/rates",
       "from_state": "4a6b11dc99b51baa",
       "to_state": "46accee1aa76afc6",
       "action": "click",
@@ -1254,7 +1254,7 @@
     ],
     "transitions": [
      {
-      "to": "https://fin.example.test/finance/billing/{id}/{id}",
+      "to": "https://fin.example.test/finance/billing/invoices/{id}",
       "from_state": "3a275997f9210607",
       "to_state": "eb17056518855a09",
       "action": "click",
@@ -1265,7 +1265,7 @@
     ]
    },
    {
-    "screen": "https://fin.example.test/finance/billing/{id}/{id}",
+    "screen": "https://fin.example.test/finance/billing/invoices/{id}",
     "surface": "web",
     "states": [
      {
@@ -1341,7 +1341,7 @@
     ],
     "transitions": [
      {
-      "to": "https://fin.example.test/finance/payroll/{id}/{id}",
+      "to": "https://fin.example.test/finance/payroll/runs/{id}",
       "from_state": "eb17056518855a09",
       "to_state": "79af6cb53188c584",
       "action": "type",
@@ -1352,7 +1352,7 @@
     ]
    },
    {
-    "screen": "https://fin.example.test/finance/payroll/{id}/{id}",
+    "screen": "https://fin.example.test/finance/payroll/runs/{id}",
     "surface": "web",
     "states": [
      {
@@ -1605,7 +1605,7 @@
     ],
     "transitions": [
      {
-      "to": "https://fin.example.test/finance/payroll/{id}/new",
+      "to": "https://fin.example.test/finance/payroll/runs/new",
       "from_state": "9a053b2f25e49f0a",
       "to_state": "5c5282ba7fe0ea46",
       "action": "click",
@@ -1616,7 +1616,7 @@
     ]
    },
    {
-    "screen": "https://fin.example.test/finance/payroll/{id}/new",
+    "screen": "https://fin.example.test/finance/payroll/runs/new",
     "surface": "web",
     "states": [
      {
@@ -1692,7 +1692,7 @@
     ],
     "transitions": [
      {
-      "to": "https://fin.example.test/finance/{id}/edit",
+      "to": "https://fin.example.test/finance/journal/edit",
       "from_state": "5c5282ba7fe0ea46",
       "to_state": "65781c35e7c35d1a",
       "action": "type",
@@ -1703,7 +1703,7 @@
     ]
    },
    {
-    "screen": "https://fin.example.test/finance/{id}/edit",
+    "screen": "https://fin.example.test/finance/journal/edit",
     "surface": "web",
     "states": [
      {
