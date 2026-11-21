@@ -35,6 +35,7 @@ from twinlab2 import packages
 from twinlab2 import recording_export
 from twinlab2 import redact
 from twinlab2 import registry
+from twinlab2 import revisions
 from twinlab2 import scenarios
 from twinlab2 import shapes
 from twinlab2 import uploads
@@ -142,7 +143,7 @@ def app_summary(row, tested=None):
 def app_detail(app_id):
     item = get_app(app_id)
     builder = auth.can("builder", app_id=app_id)
-    return dict(app_summary(item), git_url=item["git_url"] or "", url_match=item["url_match"] or "path",
+    return dict(app_summary(item), revision=item["revision"], git_url=item["git_url"] or "", url_match=item["url_match"] or "path",
                 surface=item["surface"] or "", releases=[shapes.release_summary(r) for r in releases(app_id)],
                 packages=[shapes.package_summary(r) for r in packages.revisions(db(), app_id)] if builder else [],
                 statuses=[shapes.choice(s, shapes.status_label(s)) for s in registry.STATUSES])
@@ -195,15 +196,84 @@ def sign_out():
 # -- applications --------------------------------------------------------------------------
 
 
+def page_args(default=50, maximum=200):
+    """`limit` and `offset` of a paginated list (api/openapi.yaml: Pagination), or 400."""
+    query = g.request.query_params
+    out = []
+    for name, fallback, low, high in (("limit", default, 1, maximum), ("offset", 0, 0, None)):
+        raw = query.get(name)
+        try:
+            value = fallback if raw in (None, "") else int(raw)
+        except ValueError:
+            value = None
+        if value is None or value < low or (high is not None and value > high):
+            fail(400, f"“{name}” must be a whole number from {low}" + (f" to {high}." if high else " up."),
+                 errors=[{"field": name, "message": "out of range"}])
+        out.append(value)
+    return out[0], out[1]
+
+
+def paged(items, limit, offset):
+    """One page of `items` and its `page` object."""
+    total = len(items)
+    return items[offset:offset + limit], {"total": total, "limit": limit, "offset": offset,
+                                          "next_offset": offset + limit if offset + limit < total else None}
+
+
+APP_SORTS = {"name": lambda a: a["name"].casefold(), "owner": lambda a: (a["owner"].casefold(), a["name"].casefold()),
+             "status": lambda a: (a["status"], a["name"].casefold()),
+             "stage": lambda a: (list(journey.JOURNEY).index(a["journey"]["stage"])
+                                 if a["journey"]["stage"] in journey.JOURNEY else len(journey.JOURNEY),
+                                 a["name"].casefold())}
+
+
 @routes.get(V1 + "/apps", auth.signed_in, response_model=m.Catalog)
 def list_apps():
+    query = g.request.query_params
+    limit, offset = page_args()
+    sort = query.get("sort") or ""
+    if sort and sort.lstrip("-") not in APP_SORTS:
+        fail(400, "Sort by name, owner, status or stage.", errors=[{"field": "sort", "message": "unknown sort"}])
     rows = visible(db().execute("SELECT * FROM apps ORDER BY status = 'not_replicated', name").fetchall())
-    recordings = [{"id": r["id"], "name": r["name"]}
-                  for r in db().execute("SELECT id, name FROM recordings ORDER BY name").fetchall()
-                  if reviewer_of_recording(r["id"])]
     tested = tested_releases()
-    return {"apps": [app_summary(row, tested) for row in rows], "recordings": recordings,
-            "journey_titles": list(journey.JOURNEY)}
+    apps = [app_summary(row, tested) for row in rows]
+    owners = sorted({o.strip() for a in apps for o in a["owner"].split(",") if o.strip()}, key=str.casefold)
+    stages = [s for s in journey.JOURNEY if any(a["journey"]["stage"] == s for a in apps)]
+    stages += sorted({a["journey"]["stage"] for a in apps} - set(stages))
+    words = (query.get("q") or "").casefold().split()
+    if words:
+        apps = [a for a in apps if all(w in f"{a['name']} {a['purpose']} {a['owner']}".casefold() for w in words)]
+    if query.get("owner"):
+        apps = [a for a in apps if query["owner"] in [o.strip() for o in a["owner"].split(",")]]
+    if query.get("status"):
+        apps = [a for a in apps if a["status"] == query["status"]]
+    if query.get("stage"):
+        apps = [a for a in apps if a["journey"]["stage"] == query["stage"]]
+    if sort:
+        apps.sort(key=APP_SORTS[sort.lstrip("-")], reverse=sort.startswith("-"))
+        if sort.lstrip("-") == "stage":  # out of scope (no journey stage) last, either way
+            apps.sort(key=lambda a: a["journey"]["stage"] not in journey.JOURNEY)
+    page, where = paged(apps, limit, offset)
+    recordings = []
+    for r in db().execute("SELECT id, name FROM recordings ORDER BY name").fetchall():
+        if len(recordings) == 50:
+            break
+        if reviewer_of_recording(r["id"]):
+            recordings.append({"id": r["id"], "name": r["name"]})
+    return {"apps": page, "page": where, "filters": {"owners": owners, "stages": stages},
+            "recordings": recordings, "journey_titles": list(journey.JOURNEY)}
+
+
+def change_app(app_id, data, current=None):
+    """Count a change of the application's own row (name, purpose, setup): refused with 409
+    `conflict` and the current version when the change names a revision that is no longer the
+    current one (revisions.py). Call it first, inside the change's transaction."""
+    want = revisions.expected(data)
+    sql, args = "UPDATE apps SET revision = revision + 1 WHERE id = ?", [app_id]
+    if want is not None:
+        sql, args = sql + " AND revision = ?", args + [want]
+    if db().execute(sql, tuple(args)).rowcount != 1:
+        raise revisions.conflict((current or app_detail)(app_id), "this application")
 
 
 @routes.post(V1 + "/apps", auth.signed_in, response_model=m.AppRef, status_code=201)
@@ -243,6 +313,7 @@ def update_app(app_id: int, body: m.AppUpdate):
     if status is not None and status not in registry.STATUSES:
         fail(400, "Unknown status.", errors=[{"field": "status", "message": "unknown status"}])
     with db():
+        change_app(app_id, data)
         # only the fields sent change
         for column, limit in (("purpose", 500), ("git_url", 500)):
             if column in data:
@@ -364,7 +435,7 @@ def app_setup(app_id):
     return {
         "app": {key: (item[key] or "") for key in ("name", "git_url", "required_checks", "target_platform",
                                                    "windows_check_pattern", "lab_url", "launch")}
-               | {"id": item["id"], "url_match": item["url_match"] or "path",
+               | {"id": item["id"], "revision": item["revision"], "url_match": item["url_match"] or "path",
                   "data_backend": item["data_backend"] if item["data_backend"] in demo_target.ENGINES else ""},
         "identities": [{"key": r["key"], "surface": r["surface"] or ""} for r in identities(app_id)],
         "platforms": [shapes.choice(value, label) for value, label in commit_checks.PLATFORMS.items()],
@@ -394,6 +465,7 @@ def set_data_backend(app_id: int, body: m.DataBackendInput):
     if value not in demo_target.BACKENDS:
         fail(400, "Choose SQLite, PostgreSQL, SQL Server, or predict it from the data model.")
     with db():
+        change_app(app_id, payload(body), app_setup)
         db().execute("UPDATE apps SET data_backend = ? WHERE id = ?", (value, app_id))
         record("app.data_backend", "app", app_id, app_id=app_id, data_backend=value or "predicted")
     return app_setup(app_id)
@@ -451,8 +523,15 @@ def app_evidence(app_id: int):
 
 def scenario_view(row):
     out = {key: (row.get(key) or "") for key in scenarios.FIELDS}
-    out.update(id=row["id"], events=list(row["events"]))
+    out.update(id=row["id"], revision=row["revision"], events=list(row["events"]))
     return out
+
+
+def current_scenario(app_id, scenario_id):
+    found = next((s for s in scenarios.load(db(), app_id) if s["id"] == scenario_id), None)
+    if found is None:
+        fail(404, "There is no such scenario.")
+    return scenario_view(found)
 
 
 def scenario_form(data):
@@ -466,15 +545,19 @@ def scenario_form(data):
 
 def save_scenario(app_id, body, scenario_id=None):
     get_app(app_id)
+    data = payload(body)
+    want = revisions.expected(data) if scenario_id is not None else None
     try:
-        values = scenarios.from_form(scenario_form(payload(body)), set(selected_events(app_id)))
+        values = scenarios.from_form(scenario_form(data), set(selected_events(app_id)))
     except ValueError as error:
         fail(400, str(error))
     try:
-        scenario_id = scenarios.save(db(), app_id, values, scenario_id)
+        scenario_id = scenarios.save(db(), app_id, values, scenario_id, expected_revision=want)
     except LookupError:
         fail(404, "There is no such scenario.")
-    return scenario_view(next(s for s in scenarios.load(db(), app_id) if s["id"] == scenario_id))
+    except scenarios.Stale:
+        raise revisions.conflict(current_scenario(app_id, scenario_id), "this scenario") from None
+    return current_scenario(app_id, scenario_id)
 
 
 @routes.get(V1 + "/apps/{app_id:int}/scenarios", require_role("owner"), response_model=m.ScenarioList)
@@ -503,7 +586,10 @@ def update_scenario(app_id: int, scenario_id: int, body: m.ScenarioInput):
 @routes.delete(V1 + "/apps/{app_id:int}/scenarios/{scenario_id:int}", require_role("owner"), status_code=204)
 def remove_scenario(app_id: int, scenario_id: int):
     get_app(app_id)
-    scenarios.remove(db(), app_id, scenario_id)
+    try:
+        scenarios.remove(db(), app_id, scenario_id, expected_revision=revisions.expected())
+    except scenarios.Stale:
+        raise revisions.conflict(current_scenario(app_id, scenario_id), "this scenario") from None
     return Response(status_code=204)
 
 
@@ -651,10 +737,14 @@ def recording_detail(recording_id):
         "id": item["id"], "name": item["name"], "status": shapes.recording_status(status),
         "upload": {key: upload[key] for key in ("text", "percent", "complete")} if upload else None,
         "preview": preview, "refs": refs_view(recording_id),
-        "events": [shapes.event(e, data, completeness.in_gap) for e in events],
+        "events": [shapes.event(e, data, completeness.in_gap) for e in events[:DETAIL_EVENTS]],
+        "events_total": len(events),
         "assignable_apps": [shapes.ref(row) for row in db().execute("SELECT id, name FROM apps ORDER BY name")
                             .fetchall() if auth.can("owner", app_id=row["id"])],
     }
+
+
+DETAIL_EVENTS = 200  # the rest: GET .../events
 
 
 @routes.get(V1 + "/recordings/{recording_id}", auth.signed_in, response_model=m.RecordingDetail)
@@ -686,14 +776,66 @@ def download_recording_packages(recording_id: str):
     return download(result.data, "application/zip", result.filename)
 
 
+EVENT_TEXT = ("action", "key", "control", "label", "screen", "source", "app", "time")
+
+
+@routes.get(V1 + "/recordings/{recording_id}/events", auth.signed_in, response_model=m.RecordingEvents)
+def recording_events(recording_id: str):
+    """A reviewer of the recording: its events, a page at a time, searchable."""
+    item = get_recording(recording_id)
+    ensure_reviewer(recording_id)
+    query = g.request.query_params
+    limit, offset = page_args(default=100, maximum=500)
+    events = json.loads(item["events"])
+    # a recorder's events carry their control, label and screen in each application's flow
+    steps = {}
+    for row in db().execute("SELECT recording_apps.flow, apps.name FROM recording_apps JOIN apps ON apps.id = "
+                            "recording_apps.app_id WHERE recording_apps.recording_id = ? ORDER BY apps.name, "
+                            "recording_apps.key", (recording_id,)):
+        for step in json.loads(row["flow"]):
+            steps.setdefault(step.get("event_id"), dict(step, app=row["name"]))
+    events = [dict({k: steps[e["event_id"]].get(k) for k in ("control", "label", "screen", "app")
+                    if steps.get(e["event_id"], {}).get(k) is not None}, **e) for e in events]
+    sources = {}
+    for e in events:
+        source = e.get("source") or "Unknown source"
+        sources[source] = sources.get(source, 0) + 1
+    if query.get("source"):
+        events = [e for e in events if (e.get("source") or "Unknown source") == query["source"]]
+    words = (query.get("q") or "").casefold().split()
+    if words:
+        events = [e for e in events
+                  if all(w in " ".join(str(e.get(k) or "") for k in EVENT_TEXT).casefold() for w in words)]
+    data = registry.recording_status(db(), recording_id)["completeness"]
+    page, where = paged(events, limit, offset)
+    out = {"events": [dict(shapes.event(e, data, completeness.in_gap), **({"app": e["app"]} if e.get("app") else {}))
+                      for e in page], "page": where,
+           "sources": [{"source": k, "count": v} for k, v in sources.items()]}
+    if query.get("ids", "").lower() in ("1", "true"):
+        out["ids"] = [e["event_id"] for e in events]
+    return out
+
+
 def assignment(recording_id, app_id):
     saved = db().execute("SELECT * FROM evidence WHERE app_id = ? AND recording_id = ?",
                          (app_id, recording_id)).fetchone()
+    removal = None if saved else db().execute(
+        "SELECT revision FROM evidence_removals WHERE app_id = ? AND recording_id = ?", (app_id, recording_id)).fetchone()
     return {"app_id": app_id, "recording_id": recording_id, "saved": saved is not None,
+            "revision": saved["revision"] if saved else removal["revision"] if removal else 0,
+            "removed": removal is not None,
             "reviewed": bool(saved and saved["reviewed"]),
             "selected": json.loads(saved["selection"]) if saved else [],
             "suggested": json.loads(saved["suggested"]) if saved else [],
             "notes": (saved["notes"] or "") if saved else ""}
+
+
+def assignment_revision(recording_id, app_id, want):
+    """The assignment's current revision; 409 `conflict` when `want` names another one."""
+    current = assignment(recording_id, app_id)
+    if want is not None and want != current["revision"]:
+        raise revisions.conflict(current, "this assignment")
+    return current
 
 
 @routes.get(V1 + "/recordings/{recording_id}/assignments/{app_id:int}", require_role("owner"), response_model=m.Assignment)
@@ -718,18 +860,52 @@ def save_assignment(recording_id: str, app_id: int, body: m.AssignmentInput):
     if None in selected:
         fail(400, "Invalid event.")
     if not selected or not selected <= {event["event_id"] for event in json.loads(item["events"])}:
-        fail(400, "Choose one or more events from this recording.")
+        fail(400, "Choose one or more events from this recording, or remove the assignment.")
     notes = text(data, "notes")
+    want = revisions.expected(data)
     with db():
-        # the owner's review: a resend never changes this selection (registry.link_evidence)
-        db().execute("""
-            INSERT INTO evidence(app_id, recording_id, selection, notes, reviewed, suggested)
-            VALUES (?, ?, ?, ?, 1, '[]')
-            ON CONFLICT(app_id, recording_id) DO UPDATE
-            SET selection = excluded.selection, notes = excluded.notes, reviewed = 1, suggested = '[]'
-        """, (app_id, recording_id, json.dumps(sorted(selected)), notes))
+        current = assignment_revision(recording_id, app_id, want)
+        value = (json.dumps(sorted(selected)), notes)
+        if current["saved"]:
+            # the owner's review: a resend never changes this selection (registry.link_evidence);
+            # the revision in the WHERE makes the check and the write one step
+            changed = db().execute("""
+                UPDATE evidence SET selection = ?, notes = ?, reviewed = 1, suggested = '[]', revision = revision + 1
+                WHERE app_id = ? AND recording_id = ? AND revision = ?
+            """, (*value, app_id, recording_id, current["revision"])).rowcount
+            if changed != 1:
+                raise revisions.conflict(assignment(recording_id, app_id), "this assignment")
+        else:
+            db().execute("DELETE FROM evidence_removals WHERE app_id = ? AND recording_id = ?", (app_id, recording_id))
+            db().execute("""
+                INSERT INTO evidence(app_id, recording_id, selection, notes, reviewed, suggested, revision)
+                VALUES (?, ?, ?, ?, 1, '[]', ?)
+            """, (app_id, recording_id, *value, current["revision"] + 1))
         record("evidence.review", "recording", recording_id, app_id=app_id,
                selected=sorted(selected), notes_changed=bool(notes))
+    return assignment(recording_id, app_id)
+
+
+@routes.delete(V1 + "/recordings/{recording_id}/assignments/{app_id:int}", require_role("owner"), response_model=m.Assignment)
+def remove_assignment(recording_id: str, app_id: int):
+    """The owner's explicit removal: the application no longer uses this recording's events or
+    notes. Its next draft package leaves the recording out; a resend does not select them again
+    (registry.link_evidence); frozen packages are unchanged."""
+    get_app(app_id)
+    get_recording(recording_id)
+    ensure_reviewer(recording_id)
+    with db():
+        current = assignment_revision(recording_id, app_id, revisions.expected())
+        if current["saved"]:
+            gone = db().execute("DELETE FROM evidence WHERE app_id = ? AND recording_id = ? AND revision = ?",
+                                (app_id, recording_id, current["revision"])).rowcount
+            if gone != 1:
+                raise revisions.conflict(assignment(recording_id, app_id), "this assignment")
+        db().execute("DELETE FROM evidence_removals WHERE app_id = ? AND recording_id = ?", (app_id, recording_id))
+        db().execute("INSERT INTO evidence_removals(app_id, recording_id, revision, removed_by, removed_at) "
+                     "VALUES (?, ?, ?, ?, ?)", (app_id, recording_id, current["revision"] + 1, g.user, registry.now()))
+        record("evidence.remove", "recording", recording_id, app_id=app_id, removed=current["selected"],
+               suggested=current["suggested"], notes_removed=bool(current["notes"]))
     return assignment(recording_id, app_id)
 
 
@@ -1109,6 +1285,7 @@ def verification_settings(app_id: int, body: m.VerificationSettings):
     if lab_url and urlsplit(lab_url).scheme not in ("http", "https"):
         fail(400, "The lab agent URL must be HTTP or HTTPS.")
     with db():
+        change_app(app_id, data, app_setup)
         db().execute("""UPDATE apps SET required_checks = ?, target_platform = ?, windows_check_pattern = ?,
                         lab_url = ?, launch = ? WHERE id = ?""",
                      (checks, platform, text(data, "windows_check_pattern", 200),

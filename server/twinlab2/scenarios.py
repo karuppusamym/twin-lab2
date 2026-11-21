@@ -70,27 +70,42 @@ def from_form(form, allowed_events):
     return values
 
 
+class Stale(Exception):
+    """An update or removal named a revision that is no longer the scenario's (revisions.py)."""
+
+
 def load(db, app_id):
     rows = db.execute("SELECT * FROM scenarios WHERE app_id = ? ORDER BY position, id", (app_id,)).fetchall()
     return [dict(row, events=json.loads(row["events"])) for row in rows]
 
 
-def save(db, app_id, values, scenario_id=None):
+def save(db, app_id, values, scenario_id=None, expected_revision=None):
+    """Add a scenario, or change one (+1 revision). With `expected_revision`, a scenario changed
+    since raises Stale and nothing is written."""
     with db:
         if scenario_id is None:
             return db.execute(
                 f"INSERT INTO scenarios(app_id, position, {', '.join(values)}) VALUES (?, ?{', ?' * len(values)}) RETURNING id",
                 (app_id, next_position(db, app_id), *values.values()),
             ).fetchone()[0]
+        guard, args = ("", ()) if expected_revision is None else (" AND revision = ?", (expected_revision,))
         updated = db.execute(
-            f"UPDATE scenarios SET {', '.join(f'{k} = ?' for k in values)} WHERE id = ? AND app_id = ?",
-            (*values.values(), scenario_id, app_id),
+            f"UPDATE scenarios SET {', '.join(f'{k} = ?' for k in values)}, revision = revision + 1 "
+            f"WHERE id = ? AND app_id = ?{guard}",
+            (*values.values(), scenario_id, app_id, *args),
         ).rowcount
         if updated != 1:
+            if db.execute("SELECT 1 FROM scenarios WHERE id = ? AND app_id = ?", (scenario_id, app_id)).fetchone():
+                raise Stale(scenario_id)
             raise LookupError(scenario_id)
         return scenario_id
 
 
-def remove(db, app_id, scenario_id):
+def remove(db, app_id, scenario_id, expected_revision=None):
     with db:
-        db.execute("DELETE FROM scenarios WHERE id = ? AND app_id = ?", (scenario_id, app_id))
+        guard, args = ("", ()) if expected_revision is None else (" AND revision = ?", (expected_revision,))
+        gone = db.execute(f"DELETE FROM scenarios WHERE id = ? AND app_id = ?{guard}",
+                          (scenario_id, app_id, *args)).rowcount
+        if not gone and expected_revision is not None and db.execute(
+                "SELECT 1 FROM scenarios WHERE id = ? AND app_id = ?", (scenario_id, app_id)).fetchone():
+            raise Stale(scenario_id)

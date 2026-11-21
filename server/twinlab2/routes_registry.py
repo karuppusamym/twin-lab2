@@ -409,18 +409,23 @@ def link_evidence(app_id, recording_id, numbers, seen):  # numbers: the event id
     row = db().execute("SELECT * FROM evidence WHERE app_id = ? AND recording_id = ?",
                        (app_id, recording_id)).fetchone()  # fmt: skip
     if row is None:
-        if numbers:
+        # the owner removed this application's assignment: a resend does not bring it back
+        if numbers and not db().execute("SELECT 1 FROM evidence_removals WHERE app_id = ? AND recording_id = ?",
+                                        (app_id, recording_id)).fetchone():  # fmt: skip
             db().execute("""INSERT INTO evidence(app_id, recording_id, selection, notes, reviewed, suggested)
                             VALUES (?, ?, ?, '', 0, '[]')""", (app_id, recording_id, json.dumps(sorted(numbers))))
     elif not row["reviewed"]:
-        if numbers:
-            db().execute("UPDATE evidence SET selection = ? WHERE app_id = ? AND recording_id = ?",
+        # every change is a new revision of the assignment (revisions.py): an owner's open copy is stale
+        if numbers and json.dumps(sorted(numbers)) != row["selection"]:
+            db().execute("UPDATE evidence SET selection = ?, revision = revision + 1 WHERE app_id = ? AND recording_id = ?",
                          (json.dumps(sorted(numbers)), app_id, recording_id))  # fmt: skip
     else:
         selection = set(json.loads(row["selection"]))
         suggested = (set(json.loads(row["suggested"])) | (numbers - seen)) & numbers
-        db().execute("UPDATE evidence SET suggested = ? WHERE app_id = ? AND recording_id = ?",
-                     (json.dumps(sorted(suggested - selection)), app_id, recording_id))  # fmt: skip
+        value = json.dumps(sorted(suggested - selection))
+        if value != row["suggested"]:
+            db().execute("UPDATE evidence SET suggested = ?, revision = revision + 1 WHERE app_id = ? AND recording_id = ?",
+                         (value, app_id, recording_id))  # fmt: skip
 
 
 @routes.post("/api/agent/references", auth.agent_token)
@@ -633,10 +638,16 @@ def recordings():
         LEFT JOIN automations ON automations.id = session_refs.automation_id
         ORDER BY session_refs.received_at DESC NULLS LAST, recordings.name
     """).fetchall()
-    return {"recordings": [{"id": r["id"], "name": r["name"], "machine": r["machine"], "received_at": r["received_at"],
+    from twinlab2.routes_portal import page_args, paged
+
+    limit, offset = page_args()
+    words = (g.request.query_params.get("q") or "").casefold().split()
+    mine = [r for r in rows if all(w in r["name"].casefold() for w in words) and reviewer_of_recording(r["id"])]
+    page, where = paged(mine, limit, offset)
+    return {"page": where,
+            "recordings": [{"id": r["id"], "name": r["name"], "machine": r["machine"], "received_at": r["received_at"],
                             "automation": r["automation"], "apps": r["apps"],
-                            "status": shapes.recording_status(recording_status(db(), r["id"]))}
-                           for r in rows if reviewer_of_recording(r["id"])]}
+                            "status": shapes.recording_status(recording_status(db(), r["id"]))} for r in page]}
 
 
 @routes.post(V1 + "/recordings/{recording_id}/completeness/accept", auth.signed_in, response_model=m.RecordingDetail)
@@ -694,7 +705,7 @@ def add_identity(app_id: int, data: m.IdentityInput):
 @routes.put(V1 + "/apps/{app_id:int}/url-match", require_role("owner"), response_model=m.AppSetup)
 def set_url_match(app_id: int, data: m.UrlMatchInput):
     """The owner's override of how the application's web addresses match."""
-    from twinlab2.routes_portal import app_setup
+    from twinlab2.routes_portal import app_setup, change_app
 
     get_app(app_id)
     mode = data.url_match
@@ -702,6 +713,7 @@ def set_url_match(app_id: int, data: m.UrlMatchInput):
         if row["key"].startswith("web:") and web_clash(app_id, row["key"], mode) is not None:
             fail(409, "Another application already matches this whole host.")
     with db():
+        change_app(app_id, data.model_dump(exclude_unset=True), app_setup)
         db().execute("UPDATE apps SET url_match = ? WHERE id = ?", (mode, app_id))
     return app_setup(app_id)
 
@@ -855,6 +867,7 @@ def merge_app(app_id: int, data: m.MergeInput):
                         (SELECT COALESCE(MAX(position), 0) FROM scenarios WHERE app_id = ?) WHERE app_id = ?""",
                      (into, into, app_id))  # fmt: skip
         db().execute("DELETE FROM app_roles WHERE app_id = ?", (app_id,))
+        db().execute("DELETE FROM evidence_removals WHERE app_id = ?", (app_id,))
         details = {k: plan[k] for k in ("identities", "links", "combined", "automations", "briefs", "scenarios")}
         for logged in (into, app_id):
             record("app.merge", "app", app_id, app_id=logged, source=plan["source"], target=plan["target"],

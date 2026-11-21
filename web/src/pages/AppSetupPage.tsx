@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
-import { Crumbs, ErrorText, QueryView, useAction, useField, useTitle } from "../components/ui";
+import { ConflictView, Crumbs, DirtyNote, ErrorText, QueryView, conflictOf, useAction, useDraft, useField, useLeaveWarning, useTitle } from "../components/ui";
 import { short } from "../lib/format";
 import { useAppId } from "./AppPage";
 
@@ -27,7 +27,7 @@ function SetupView({ setup }: { setup: Schemas["AppSetup"] }) {
         <Identities setup={setup} />
         <section id="git" aria-labelledby="git-h">
           <h2 id="git-h">Git repository</h2>
-          <GitForm appId={app.id} gitUrl={app.git_url} />
+          <GitForm appId={app.id} gitUrl={app.git_url} revision={app.revision} />
         </section>
       </div>
       <DemoTarget setup={setup} />
@@ -53,9 +53,12 @@ function SetupView({ setup }: { setup: Schemas["AppSetup"] }) {
 function Identities({ setup }: { setup: Schemas["AppSetup"] }) {
   const appId = setup.app.id;
   const [key, setKey] = useState("");
-  const [match, setMatch] = useField(setup.app.url_match);
+  const [match, setMatch, matchDraft] = useField(setup.app.url_match, setup.app.revision);
+  useLeaveWarning(matchDraft.dirty);
   const add = useAction(async () => data(await api.POST("/api/v1/apps/{app_id}/identities", { params: { path: { app_id: appId } }, body: { key: key.trim() } })), () => setKey(""));
-  const saveMatch = useAction(async () => data(await api.PUT("/api/v1/apps/{app_id}/url-match", { params: { path: { app_id: appId } }, body: { url_match: match as "path" | "host" } })));
+  const saveMatch = useAction(async (revision: number) => data(await api.PUT("/api/v1/apps/{app_id}/url-match", { params: { path: { app_id: appId } }, body: { url_match: match as "path" | "host", expected_revision: revision } })),
+    (s) => matchDraft.reset(s.app.url_match, s.app.revision));
+  const matchTheirs = conflictOf<Schemas["AppSetup"]>(saveMatch.error);
   return (
     <section id="identity" aria-labelledby="identity-h">
       <h2 id="identity-h">Identities</h2>
@@ -71,14 +74,19 @@ function Identities({ setup }: { setup: Schemas["AppSetup"] }) {
         <button disabled={add.isPending}>Add identity</button>
       </form>
       {setup.identities.some((i) => i.surface === "web") && (
-        <form aria-label="Web address matching" onSubmit={(e) => { e.preventDefault(); saveMatch.mutate(undefined); }}>
+        <form aria-label="Web address matching" onSubmit={(e) => { e.preventDefault(); saveMatch.mutate(matchDraft.revision); }}>
           <label>Web addresses match
             <select value={match} onChange={(e) => setMatch(e.target.value as "path" | "host")}>
               <option value="path">by path (the longest matching path wins)</option>
               <option value="host">the whole host</option>
             </select>
           </label>
-          <ErrorText error={saveMatch.error} />
+          <DirtyNote dirty={matchDraft.dirty} />
+          {matchTheirs ? (
+            <ConflictView busy={saveMatch.isPending} rows={[{ label: "Web addresses match", mine: match, theirs: matchTheirs.app.url_match }]}
+              onKeepMine={() => saveMatch.mutate(matchTheirs.app.revision)}
+              onTakeTheirs={() => { matchDraft.reset(matchTheirs.app.url_match, matchTheirs.app.revision); saveMatch.reset(); }} />
+          ) : <ErrorText error={saveMatch.error} />}
           <button className="secondary" disabled={saveMatch.isPending}>Save matching</button>
         </form>
       )}
@@ -90,11 +98,14 @@ const ENGINE_LABELS: Record<string, string> = { sqlite: "SQLite", postgresql: "P
 
 function DemoTarget({ setup }: { setup: Schemas["AppSetup"] }) {
   const appId = setup.app.id;
-  const [backend, setBackend] = useField(setup.app.data_backend);
-  const save = useAction(async () => data(await api.PUT("/api/v1/apps/{app_id}/data-backend", {
+  const [backend, setBackend, backendDraft] = useField(setup.app.data_backend, setup.app.revision);
+  useLeaveWarning(backendDraft.dirty);
+  const save = useAction(async (revision: number) => data(await api.PUT("/api/v1/apps/{app_id}/data-backend", {
     params: { path: { app_id: appId } },
-    body: { data_backend: backend as Schemas["DataBackendInput"]["data_backend"] },
-  })));
+    body: { data_backend: backend as Schemas["DataBackendInput"]["data_backend"], expected_revision: revision },
+  })), (s) => backendDraft.reset(s.app.data_backend, s.app.revision));
+  const theirs = conflictOf<Schemas["AppSetup"]>(save.error);
+  const backendLabel = (v: string) => setup.data_backends.find((c) => c.value === v)?.label ?? v;
   const b = setup.data_backend;
   return (
     <section id="demo-target" aria-labelledby="demo-target-h">
@@ -103,13 +114,18 @@ function DemoTarget({ setup }: { setup: Schemas["AppSetup"] }) {
       {b.tables.length > 0
         ? <p className="muted">Tables in the data model: {b.tables.map((t) => <code key={t}>{t} </code>)}</p>
         : <p className="muted">No data model: attach the DDL as a <em>Database</em> attachment (.sql), or the builder infers the tables from the recordings.</p>}
-      <form aria-label="Data backend" onSubmit={(e) => { e.preventDefault(); save.mutate(undefined); }}>
+      <form aria-label="Data backend" onSubmit={(e) => { e.preventDefault(); save.mutate(backendDraft.revision); }}>
         <label>Data backend
           <select value={backend} onChange={(e) => setBackend(e.target.value as typeof backend)}>
             {setup.data_backends.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
         </label>
-        <ErrorText error={save.error} />
+        <DirtyNote dirty={backendDraft.dirty} />
+        {theirs ? (
+          <ConflictView busy={save.isPending} rows={[{ label: "Data backend", mine: backendLabel(backend), theirs: backendLabel(theirs.app.data_backend) }]}
+            onKeepMine={() => save.mutate(theirs.app.revision)}
+            onTakeTheirs={() => { backendDraft.reset(theirs.app.data_backend, theirs.app.revision); save.reset(); }} />
+        ) : <ErrorText error={save.error} />}
         <button className="secondary" disabled={save.isPending}>Save data backend</button>
       </form>
       {setup.deployment.kind === "openshift"
@@ -119,13 +135,20 @@ function DemoTarget({ setup }: { setup: Schemas["AppSetup"] }) {
   );
 }
 
-function GitForm({ appId, gitUrl }: { appId: number; gitUrl: string }) {
-  const [url, setUrl] = useField(gitUrl);
-  const save = useAction(async () => data(await api.PATCH("/api/v1/apps/{app_id}", { params: { path: { app_id: appId } }, body: { git_url: url.trim() } })));
+function GitForm({ appId, gitUrl, revision }: { appId: number; gitUrl: string; revision: number }) {
+  const [url, setUrl, urlDraft] = useField(gitUrl, revision);
+  useLeaveWarning(urlDraft.dirty);
+  const save = useAction(async (rev: number) => data(await api.PATCH("/api/v1/apps/{app_id}", { params: { path: { app_id: appId } }, body: { git_url: url.trim(), expected_revision: rev } })),
+    (a) => urlDraft.reset(a.git_url, a.revision));
+  const theirs = conflictOf<Schemas["AppDetail"]>(save.error);
   return (
-    <form aria-label="Git repository" onSubmit={(e) => { e.preventDefault(); save.mutate(undefined); }}>
-      <label>Demo repository <input maxLength={500} value={url} onChange={(e) => setUrl(e.target.value)} /></label>
-      <ErrorText error={save.error} />
+    <form aria-label="Git repository" onSubmit={(e) => { e.preventDefault(); save.mutate(urlDraft.revision); }}>
+      <label>Demo repository <DirtyNote dirty={urlDraft.dirty} /> <input maxLength={500} value={url} onChange={(e) => setUrl(e.target.value)} /></label>
+      {theirs ? (
+        <ConflictView busy={save.isPending} rows={[{ label: "Demo repository", mine: url.trim(), theirs: theirs.git_url }]}
+          onKeepMine={() => save.mutate(theirs.revision)}
+          onTakeTheirs={() => { urlDraft.reset(theirs.git_url, theirs.revision); save.reset(); }} />
+      ) : <ErrorText error={save.error} />}
       <button disabled={save.isPending}>Save repository</button>
     </form>
   );
@@ -133,17 +156,24 @@ function GitForm({ appId, gitUrl }: { appId: number; gitUrl: string }) {
 
 function VerificationForm({ setup }: { setup: Schemas["AppSetup"] }) {
   const app = setup.app;
-  const [values, setValues] = useState({
-    required_checks: app.required_checks, target_platform: app.target_platform,
-    windows_check_pattern: app.windows_check_pattern, lab_url: app.lab_url, launch: app.launch,
+  const settingsOf = (a: Schemas["AppSetup"]["app"]) => ({
+    required_checks: a.required_checks, target_platform: a.target_platform,
+    windows_check_pattern: a.windows_check_pattern, lab_url: a.lab_url, launch: a.launch,
   });
-  const set = (k: keyof typeof values) => (e: { target: { value: string } }) => setValues((v) => ({ ...v, [k]: e.target.value }));
-  const save = useAction(async () => data(await api.PUT("/api/v1/apps/{app_id}/verification-settings", {
+  const draft = useDraft(settingsOf(app), app.revision);
+  useLeaveWarning(draft.dirty);
+  const values = draft.value;
+  const set = (k: keyof typeof values) => (e: { target: { value: string } }) => { const value = e.target.value; draft.set((v) => ({ ...v, [k]: value })); };
+  const save = useAction(async (revision: number) => data(await api.PUT("/api/v1/apps/{app_id}/verification-settings", {
     params: { path: { app_id: app.id } },
-    body: { ...values, target_platform: values.target_platform as Schemas["VerificationSettings"]["target_platform"] },
-  })));
+    body: { ...values, target_platform: values.target_platform as Schemas["VerificationSettings"]["target_platform"], expected_revision: revision },
+  })), (s) => draft.reset(settingsOf(s.app), s.app.revision));
+  const theirs = conflictOf<Schemas["AppSetup"]>(save.error);
+  const LABELS: Record<keyof typeof values, string> = { required_checks: "Required checks", target_platform: "Target platform",
+    windows_check_pattern: "Windows validation check", lab_url: "Lab agent URL", launch: "Launch instructions" };
   return (
-    <form aria-label="Release verification" onSubmit={(e: FormEvent) => { e.preventDefault(); save.mutate(undefined); }}>
+    <form aria-label="Release verification" onSubmit={(e: FormEvent) => { e.preventDefault(); save.mutate(draft.revision); }}>
+      <DirtyNote dirty={draft.dirty} />
       <label>Required checks (one check name or glob per line; empty: every check reported on the commit)
         <textarea rows={3} placeholder={"build\ntest (*)"} value={values.required_checks} onChange={set("required_checks")} /></label>
       <label>Target platform
@@ -153,7 +183,12 @@ function VerificationForm({ setup }: { setup: Schemas["AppSetup"] }) {
       <label>Windows validation check (for Windows desktop) <input value={values.windows_check_pattern} placeholder={setup.default_windows_pattern} onChange={set("windows_check_pattern")} /></label>
       <label>Lab agent URL (for the reset check) <input type="url" value={values.lab_url} onChange={set("lab_url")} /></label>
       <label>Launch instructions <textarea rows={3} value={values.launch} onChange={set("launch")} /></label>
-      <ErrorText error={save.error} />
+      {theirs ? (
+        <ConflictView busy={save.isPending}
+          rows={(Object.keys(LABELS) as (keyof typeof values)[]).map((k) => ({ label: LABELS[k], mine: values[k], theirs: settingsOf(theirs.app)[k] }))}
+          onKeepMine={() => save.mutate(theirs.app.revision)}
+          onTakeTheirs={() => { draft.reset(settingsOf(theirs.app), theirs.app.revision); save.reset(); }} />
+      ) : <ErrorText error={save.error} />}
       <button disabled={save.isPending}>Save verification settings</button>
     </form>
   );

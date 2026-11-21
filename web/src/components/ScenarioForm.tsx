@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { type FormEvent } from "react";
 import { api, data, type Schemas } from "../api/client";
 import { plural } from "../lib/format";
-import { ActionButton, ErrorText, useAction } from "./ui";
+import { ActionButton, ConflictView, DirtyNote, ErrorText, conflictOf, useAction, useDraft, useLeaveWarning } from "./ui";
 
 type Key = "name" | "starting" | "actions" | "expected" | "failures" | "examples" | "questions" | "notes";
 
@@ -21,16 +21,28 @@ function blank(): Schemas["ScenarioInput"] {
   return { name: "", starting: "", actions: "", expected: "", failures: "", examples: "", questions: "", notes: "", events: [] };
 }
 
+/** The editable fields of a saved scenario (what a draft compares). */
+function fieldsOf(s: Schemas["Scenario"]): Schemas["ScenarioInput"] {
+  return { name: s.name, starting: s.starting, actions: s.actions, expected: s.expected, failures: s.failures,
+           examples: s.examples, questions: s.questions, notes: s.notes, events: [...(s.events ?? [])] };
+}
+
 /** One business scenario (or a new one), the old _scenario.html. */
 export function ScenarioForm({ appId, list, scenario }: { appId: number; list: Schemas["ScenarioList"]; scenario?: Schemas["Scenario"] }) {
-  const [values, setValues] = useState<Schemas["ScenarioInput"]>(() => (scenario ? { ...scenario } : blank()));
+  // follows the saved scenario until the user edits it; a save names the revision it started from
+  const draft = useDraft<Schemas["ScenarioInput"]>(scenario ? fieldsOf(scenario) : blank(), scenario?.revision ?? 0);
+  useLeaveWarning(draft.dirty);
+  const values = draft.value;
+  const setValues = draft.set;
   const formId = scenario ? `scenario-${scenario.id}` : "scenario-new";
-  const save = useAction(async () => {
+  const families = [["app", appId]];
+  const save = useAction(async (revision: number) => {
     if (scenario) {
-      return data(await api.PUT("/api/v1/apps/{app_id}/scenarios/{scenario_id}", { params: { path: { app_id: appId, scenario_id: scenario.id } }, body: values }));
+      return data(await api.PUT("/api/v1/apps/{app_id}/scenarios/{scenario_id}", { params: { path: { app_id: appId, scenario_id: scenario.id } }, body: { ...values, expected_revision: revision } }));
     }
     return data(await api.POST("/api/v1/apps/{app_id}/scenarios", { params: { path: { app_id: appId } }, body: values }));
-  }, () => { if (!scenario) setValues(blank()); });
+  }, (saved) => { if (scenario) draft.reset(fieldsOf(saved), saved.revision); else draft.reset(blank(), 0); }, families);
+  const theirs = conflictOf<Schemas["Scenario"]>(save.error);
   const set = (key: Key, value: string) => setValues((v) => ({ ...v, [key]: value }));
   const events = new Set(values.events ?? []);
   const toggle = (ref: string) => {
@@ -38,14 +50,14 @@ export function ScenarioForm({ appId, list, scenario }: { appId: number; list: S
     if (next.has(ref)) next.delete(ref); else next.add(ref);
     setValues((v) => ({ ...v, events: [...next] }));
   };
-  const submit = (e: FormEvent) => { e.preventDefault(); save.mutate(undefined); };
+  const submit = (e: FormEvent) => { e.preventDefault(); save.mutate(draft.revision); };
   const fields = list.fields.filter((f) => f.key in PLACEHOLDERS) as (Schemas["ScenarioField"] & { key: Key })[];
   return (
     <details id={formId} className="scenario" open={!scenario && list.scenarios.length === 0}>
       <summary>
         {scenario ? (
           <><strong>{scenario.name}</strong> <span className="muted">{plural((scenario.events ?? []).length, "linked event")}{scenario.expected ? "" : " · expected result missing"}</span></>
-        ) : <strong>Add a scenario</strong>}
+        ) : <strong>Add a scenario</strong>} <DirtyNote dirty={draft.dirty} />
       </summary>
       <form onSubmit={submit} aria-label={scenario ? `Scenario ${scenario.name}` : "New scenario"}>
         {fields.map((f) => (
@@ -71,11 +83,19 @@ export function ScenarioForm({ appId, list, scenario }: { appId: number; list: S
             ) : <p className="muted">Select events on a recording's page to link them to scenario actions.</p>)}
           </div>
         ))}
-        <ErrorText error={save.error} />
+        {theirs ? (
+          <ConflictView
+            busy={save.isPending}
+            rows={[...fields.map((f) => ({ label: f.label, mine: (values[f.key] ?? "").trim(), theirs: (theirs[f.key] ?? "").trim() })),
+                   { label: "Linked events", mine: (values.events ?? []).join(", "), theirs: (theirs.events ?? []).join(", ") }]}
+            onKeepMine={() => save.mutate(theirs.revision)}
+            onTakeTheirs={() => { draft.reset(fieldsOf(theirs), theirs.revision); save.reset(); }}
+          />
+        ) : <ErrorText error={save.error} />}
         <button disabled={save.isPending}>{scenario ? "Save scenario" : "Add scenario"}</button>
       </form>
-      {scenario && <ActionButton secondary label="Remove scenario" confirm={`Remove the scenario ${scenario.name}?`} run={async () => {
-        await api.DELETE("/api/v1/apps/{app_id}/scenarios/{scenario_id}", { params: { path: { app_id: appId, scenario_id: scenario.id } } });
+      {scenario && <ActionButton destructive label="Remove scenario" confirm={`Remove the scenario ${scenario.name}?`} invalidate={families} run={async () => {
+        await api.DELETE("/api/v1/apps/{app_id}/scenarios/{scenario_id}", { params: { path: { app_id: appId, scenario_id: scenario.id }, query: { expected_revision: scenario.revision } } });
       }} />}
     </details>
   );

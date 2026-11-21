@@ -29,6 +29,18 @@ class Problem(Model):
     instance: str | None = None
     code: str | None = None
     errors: list[Problem_ErrorsItem] | None = None
+    current: dict[str, Any] | None = None
+
+
+class Page(Model):
+    """Where a page of a paginated list is (see Pagination)."""
+    total: int
+    limit: int
+    offset: int
+    next_offset: int | None
+
+
+Revision = int
 
 
 Role = Literal['viewer', 'builder', 'owner']
@@ -146,6 +158,12 @@ class AppSummary(Model):
     tested_release: TestedRelease | Any
 
 
+class Catalog_Filters(Model):
+    """The values to filter by, from every application the caller sees."""
+    owners: list[str]
+    stages: list[str]
+
+
 class RecordingRef(Model):
     id: str
     name: str
@@ -153,6 +171,8 @@ class RecordingRef(Model):
 
 class Catalog(Model):
     apps: list[AppSummary]
+    page: Page
+    filters: Catalog_Filters
     recordings: list[RecordingRef]
     journey_titles: list[str]
 
@@ -182,6 +202,7 @@ class PackageRevisionSummary(Model):
 
 
 class AppDetail(AppSummary):
+    revision: Revision
     git_url: str
     url_match: Literal['path', 'host']
     surface: str
@@ -196,6 +217,7 @@ class AppUpdate(Model):
     git_url: str | None = None
     status: AppStatus | None = None
     owner: str | None = None
+    expected_revision: Revision | None = None
 
 
 class RoleAssignment(Model):
@@ -236,6 +258,7 @@ class Identity(Model):
 
 class AppSetup_App(Model):
     id: int
+    revision: Revision
     name: str
     git_url: str
     url_match: Literal['path', 'host']
@@ -276,6 +299,7 @@ class AppSetup(Model):
 
 class DataBackendInput(Model):
     data_backend: Literal['', 'sqlite', 'postgresql', 'sqlserver']
+    expected_revision: Revision | None = None
 
 
 class IdentityInput(Model):
@@ -284,6 +308,7 @@ class IdentityInput(Model):
 
 class UrlMatchInput(Model):
     url_match: Literal['path', 'host']
+    expected_revision: Revision | None = None
 
 
 class VerificationSettings(Model):
@@ -292,6 +317,7 @@ class VerificationSettings(Model):
     windows_check_pattern: str | None = None
     lab_url: str | None = None
     launch: str | None = None
+    expected_revision: Revision | None = None
 
 
 class VerifyCommitInput(Model):
@@ -441,10 +467,12 @@ class ScenarioInput(Model):
     questions: str | None = None
     notes: str | None = None
     events: list[str] | None = None
+    expected_revision: Revision | None = None
 
 
 class Scenario(ScenarioInput):
     id: int
+    revision: Revision
 
 
 class ScenarioField(Model):
@@ -758,11 +786,7 @@ class RecordingSummary(Model):
 
 class RecordingList(Model):
     recordings: list[RecordingSummary]
-
-
-class RecordingImport(Model):
-    name: str
-    log: str
+    page: Page
 
 
 class Event(Model):
@@ -776,7 +800,25 @@ class Event(Model):
     screen: str | None = None
     time: str | None = None
     channel: str | None = None
+    app: str | None = None
     in_gap: bool
+
+
+class RecordingEvents_SourcesItem(Model):
+    source: str
+    count: int
+
+
+class RecordingEvents(Model):
+    events: list[Event]
+    page: Page
+    sources: list[RecordingEvents_SourcesItem]
+    ids: list[str] | None = None
+
+
+class RecordingImport(Model):
+    name: str
+    log: str
 
 
 class EvidencePreview(Model):
@@ -859,13 +901,16 @@ class RecordingDetail(Model):
     preview: list[EvidencePreview]
     refs: RecordingRefs | Any
     events: list[Event]
+    events_total: int
     assignable_apps: list[AppRef]
 
 
 class Assignment(Model):
     app_id: int
     recording_id: str
+    revision: Revision
     saved: bool
+    removed: bool
     reviewed: bool
     selected: list[str]
     suggested: list[str]
@@ -875,6 +920,7 @@ class Assignment(Model):
 class AssignmentInput(Model):
     events: list[str]
     notes: str | None = None
+    expected_revision: Revision | None = None
 
 
 class CaptureTarget(Model):
@@ -1243,6 +1289,7 @@ PackageFile.model_rebuild()
 PackageList.model_rebuild()
 PackageRevision.model_rebuild()
 PackageRevisionSummary.model_rebuild()
+Page.model_rebuild()
 PairingCode.model_rebuild()
 Preflight.model_rebuild()
 Problem.model_rebuild()
@@ -1250,6 +1297,7 @@ Provider.model_rebuild()
 RecordedApp.model_rebuild()
 RecordedFlow.model_rebuild()
 RecordingDetail.model_rebuild()
+RecordingEvents.model_rebuild()
 RecordingImport.model_rebuild()
 RecordingList.model_rebuild()
 RecordingRef.model_rebuild()
