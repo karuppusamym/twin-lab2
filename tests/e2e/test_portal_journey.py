@@ -139,7 +139,9 @@ def test_owner_journey_from_workboard_to_published_release(new_context, portal):
     again = page.get_by_role("button", name="Verify this build")
     expect(again).to_be_enabled(timeout=60_000)  # the first verification (from the session page) has finished
     again.click()
-    expect(page.get_by_role("heading", level=1).get_by_text("Tested")).to_be_visible(timeout=60_000)
+    expect(page.get_by_text(re.compile(r"Passed: Tested Verification #\d+"))).to_be_visible(timeout=90_000)
+    page.reload()  # the page's heading follows the release's state on the next read
+    expect(page.get_by_role("heading", level=1).get_by_text("Tested")).to_be_visible()
     page.get_by_role("button", name="Publish this release").click()
     expect(page.get_by_role("heading", level=1).get_by_text("Published")).to_be_visible()
     page.goto(portal.url + "/")
