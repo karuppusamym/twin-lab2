@@ -430,6 +430,7 @@ def collect(folder: Path, rows: list[dict], full: set[str]) -> dict[str, list[di
     screens: dict[str, dict[str, dict]] = {}
     last: dict[str, tuple[str, str]] = {}  # app -> (screen, state id) last seen
     pending: dict[str, list[dict]] = {}  # app -> labels of the steps since that state
+    unseen: dict[str, list[str]] = {}  # app -> event ids since that state with no state of their own
     combos = combo_lists(folder, [r for r in rows if r.get("app") in full])
     for row in rows:
         app = row.get("app")
@@ -439,7 +440,12 @@ def collect(folder: Path, rows: list[dict], full: set[str]) -> dict[str, list[di
         pending.setdefault(app, []).append(label)
         state = state_of(folder, row, combos)
         if state is None:
+            # No snapshot of its own (a click or submit observed at the page it loaded, a tab
+            # opening, typing flushed with the next action): it belongs to the state it led to.
+            if row.get("event_id"):
+                unseen.setdefault(app, []).append(row["event_id"])
             continue
+        state["events"] = sorted(set(state["events"]) | set(unseen.pop(app, [])))
         screen = label.get("screen") or _fallback_screen(row)
         sid = st.state_key(state)
         mine = screens.setdefault(app, {})
