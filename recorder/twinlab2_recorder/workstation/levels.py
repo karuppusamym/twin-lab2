@@ -15,7 +15,9 @@ Levels: `full` (everything the recorders keep), `steps` (desktop steps without t
 pictures), `presence` (that it was used, nothing else). `Targets.level` gives an application's
 level in a session: the deny list and host processes are presence unless a target names them
 explicitly with `allow_denied: true`; a target's own level otherwise; presence for everything
-else.
+else. Above all of them, the PC's own exclude list (`Targets.exclude`,
+twinlab2_recorder.workstation.exclude) makes an application `excluded`: nothing about it is kept,
+whatever the portal says.
 """
 
 from __future__ import annotations
@@ -28,6 +30,9 @@ from urllib.parse import urlsplit
 
 FULL, STEPS, PRESENCE = "full", "steps", "presence"
 LEVELS = (FULL, STEPS, PRESENCE)
+# Excluded on this PC (twinlab2_recorder.workstation.exclude): not even presence; nothing is kept
+# but the exclude entry's name.
+EXCLUDED = "excluded"
 
 # Executables that run many applications under one name: never an application by themselves.
 HOSTS = {
@@ -228,15 +233,26 @@ class Target:
 class Targets:
     targets: list[Target] = field(default_factory=list)
     deny_keys: set[str] = field(default_factory=set)  # applications marked not replicated
+    exclude: object = None  # this PC's exclude list (exclude.Policy), merged with deny_keys
 
     @classmethod
-    def from_list(cls, items: list[dict] | None, deny_keys: list[str] | None = None) -> Targets:
-        return cls([Target.from_dict(d) for d in items or []], set(deny_keys or []))
+    def from_list(cls, items: list[dict] | None, deny_keys: list[str] | None = None,
+                  exclude=None) -> Targets:  # fmt: skip
+        from twinlab2_recorder.workstation.exclude import Policy
+
+        return cls([Target.from_dict(d) for d in items or []], set(deny_keys or []),
+                   Policy.from_session(exclude))
+
+    def excluded(self, ident: dict):
+        """The exclude entry (exclude.Rule) this application falls under on this PC, or None."""
+        return self.exclude.ident(ident) if self.exclude else None
 
     def target_of(self, ident: dict) -> Target | None:
         return next((t for t in self.targets if t.matches(ident)), None)
 
     def level(self, ident: dict, path: str | None = None) -> str:
+        if self.excluded(ident) is not None:
+            return EXCLUDED
         target = self.target_of(ident)
         if ident.get("key") in self.deny_keys and not (target and target.allow_denied):
             return PRESENCE

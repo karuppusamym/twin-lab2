@@ -9,6 +9,11 @@ re-recorded or its owner accepts it as it is (`needs_attention`).
 
 An older recorder (contract 1.0.x) reports nothing: its completeness is unknown, which is shown as
 such and does not hold up the journey.
+
+A 1.5 recorder may say that the PC's own exclude list kept applications out of the recording
+(`local_exclusions`: how many, and the names of the exclude entries, never a title or address).
+That is not a gap and does not make a recording partial: the pages say "N applications excluded on
+this PC" so that the missing activity is not taken for a failure.
 """
 
 from __future__ import annotations
@@ -45,12 +50,47 @@ def clean(doc) -> dict | None:
         notes = [n[:300] for n in item.get("notes") or [] if isinstance(n, str) and n]
         channels[name] = {"status": item["status"], "gaps": gaps[:500], "notes": notes[:50]}
     loss = doc.get("loss_window_seconds")
-    return {
+    out = {
         "overall": doc["overall"], "channels": channels,
         "network_evidence": doc.get("network_evidence") if doc.get("network_evidence") in NETWORK else "none",
         "recovered": doc.get("recovered") is True,
         "loss_window_seconds": loss if isinstance(loss, (int, float)) and not isinstance(loss, bool) and loss >= 0 else None,
     }
+    local = clean_exclusions(doc.get("local_exclusions"))
+    if local is not None:
+        out["local_exclusions"] = local
+    return out
+
+
+def _count(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def clean_exclusions(doc) -> dict | None:
+    """`local_exclusions` (contract 1.5) in the stored form: the count, the entries' names (each
+    at most 80 characters, at most 50), the list's length and whether it was managed."""
+    if not isinstance(doc, dict):
+        return None
+    names = sorted({" ".join(n.split())[:80] for n in doc.get("names") or [] if isinstance(n, str) and n.strip()})[:50]
+    count = _count(doc.get("count"))
+    if count is None:
+        count = len(names)
+    return {"count": max(count, len(names)), "names": names, "entries": _count(doc.get("entries")) or 0,
+            "managed": doc.get("managed") is True}
+
+
+def exclusions_text(data) -> str | None:
+    """"2 applications excluded on this PC (Microsoft Excel, Microsoft Word)", or None."""
+    local = (data or {}).get("local_exclusions")
+    if not local or not local.get("count"):
+        return None
+    n = local["count"]
+    text = f"{n} application{'s' if n != 1 else ''} excluded on this PC"
+    if local.get("names"):
+        shown = local["names"][:5]
+        more = len(local["names"]) - len(shown)
+        text += " (" + ", ".join(shown) + (f" and {more} more" if more > 0 else "") + ")"
+    return text + (" by the office's policy" if local.get("managed") else "")
 
 
 def clean_preflight(doc) -> dict | None:
@@ -99,6 +139,9 @@ def summary(data) -> str:
              if name in data["channels"] and name != "network" and data["channels"][name]["status"] != "not_requested"]
     if data["network_evidence"] != "none" or "network" in data["channels"]:
         parts.append(f"network evidence {data['network_evidence']}")
+    excluded = exclusions_text(data)
+    if excluded:
+        parts.append(excluded)
     text = "; ".join(parts) or f"Recording {data['overall']}"
     return text[0].upper() + text[1:]
 
