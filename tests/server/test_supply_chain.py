@@ -161,10 +161,14 @@ class ReleaseTest(unittest.TestCase):
         with self.assertRaises(release.ReleaseError):
             release.bump("9.9.10", root=self.root)  # Unreleased is empty now
 
-    def test_disagreeing_versions_are_refused(self):
+    def test_a_missing_or_malformed_version_is_refused(self):
         path = self.root / "server" / "pyproject.toml"
-        path.write_text(re.sub(r'^version = "[^"]+"', 'version = "7.0.0"', path.read_text(encoding="utf-8"), count=1, flags=re.M),
-                        encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
+        path.write_text(re.sub(r'^version = "[^"]+"', 'version = "7.x"', text, count=1, flags=re.M), encoding="utf-8")
+        with self.assertRaises(release.ReleaseError):
+            release.check(None, self.root)
+        path.write_text(re.sub(r'^version = "[^"]+"
+', "", text, count=1, flags=re.M), encoding="utf-8")
         with self.assertRaises(release.ReleaseError):
             release.current(self.root)
 

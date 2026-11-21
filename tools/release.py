@@ -6,8 +6,8 @@
     python tools/release.py check --unreleased    -> (pull requests) versions agree, CHANGELOG has [Unreleased]
     python tools/release.py notes 0.3.0           -> that version's CHANGELOG section (the release notes)
 
-One release version: contract/ and server/ (pyproject.toml) carry the same semantic version
-(MAJOR.MINOR.PATCH, with an optional -rc.N style pre-release). The recorder program has its own
+One release version: server/ (pyproject.toml, the portal) carries the semantic version
+(MAJOR.MINOR.PATCH, with an optional -rc.N style pre-release). The contract package and the recorder program have their own
 version (twinlab2_recorder/settings.py VERSION, changed with the recorder's changes; it names the
 MSI) and the recorder contract version (CONTRACT_VERSION) is a protocol version: neither is changed
 here. CHANGELOG.md follows https://keepachangelog.com/en/1.1.0/.
@@ -24,7 +24,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$")
-PYPROJECTS = ["contract/pyproject.toml", "server/pyproject.toml"]  # the release (product) version
+PYPROJECTS = ["server/pyproject.toml"]  # the release (portal) version; contract/ and recorder/ version themselves
 PYPROJECT_VERSION = re.compile(r'^(version\s*=\s*")([^"]+)(")', re.M)
 SECTION = re.compile(r"^## \[(?P<version>[^\]]+)\](?: - (?P<date>\d{4}-\d{2}-\d{2}))?\s*$", re.M)
 

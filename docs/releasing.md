@@ -12,11 +12,10 @@ the rest. Nothing is released by hand.
     [api-versioning.md](api-versioning.md)) or the recorders already in the field.
   - MINOR: new features, compatible.
   - PATCH: fixes only.
-- One release version: `contract/pyproject.toml` and `server/pyproject.toml` (the portal) carry it;
-  `tools/release.py` keeps them in step and `tests/server/test_supply_chain.py` fails when they
-  disagree. The recorder program has its own version (`VERSION` in
-  `recorder/twinlab2_recorder/settings.py`, shown in the MSI's file name): change it with the
-  recorder's own changes, and the release notes say which recorder a release ships.
+- One release version, carried by `server/pyproject.toml` (the portal and its image). `tools/release.py`
+  reads and bumps it. `contract/` and the recorder program have their own versions (the contract's
+  `pyproject.toml`; `VERSION` in `recorder/twinlab2_recorder/settings.py`, shown in the MSI's file
+  name): change them with their own changes, and the release notes say which recorder a release ships.
 - The recorder contract version (`CONTRACT_VERSION`) is a protocol version with its own rules
   ([RECORDER-CONTRACT.md](RECORDER-CONTRACT.md)); a release does not change it.
 
@@ -32,7 +31,7 @@ Fixed, Security). The release notes are that section, word for word.
 
        python tools/release.py bump 0.3.0
 
-   which sets the version in both packages and turns `[Unreleased]` into `## [0.3.0] - <today>`
+   which sets the portal's version and turns `[Unreleased]` into `## [0.3.0] - <today>`
    (with a new empty `[Unreleased]` above it).
 2. Open a pull request ("Release 0.3.0"); merge it when every check is green.
 3. Tag the merge commit on `main` and push the tag:
