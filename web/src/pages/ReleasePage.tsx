@@ -83,7 +83,7 @@ function ReleaseView({ detail }: { detail: Schemas["ReleaseDetail"] }) {
               <ActionButton secondary label="Check GitHub again" run={async () => data(await api.POST("/api/v1/releases/{release_id}/checks/refresh", path))} />
               <ActionButton label="Verify this build" run={async () => data(await api.POST("/api/v1/releases/{release_id}/verify", path))} />
             </span>
-            <p className="muted">Verify this build reads the checks, runs Twin Lab's scenario replay, business-outcome and reset checks against the deployment that reports this commit, stores the report and makes the release Tested when everything holds.</p>
+            <p className="muted">Verify this build reads the checks, runs the scenario replay, business-outcome and reset checks against the deployment that reports this commit, stores the report and makes the release Tested when everything holds.</p>
           </>
         )}
         {builder && checks.reports.map((rep) => (

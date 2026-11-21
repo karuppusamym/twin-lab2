@@ -756,7 +756,7 @@ export interface paths {
         get: operations["listRecordings"];
         put?: never;
         /**
-         * Import a Twin Lab recording (steps.jsonl)
+         * Import a recording file (steps.jsonl)
          * @description Signed in. The recording id is the digest of its events. A recovered upload of the same
          *     session merges by `event_id`; a conflicting event is 409. Audited as `recording.import`.
          */
@@ -1009,7 +1009,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Import a Twin Lab automation.yaml
+         * Import an automation file (automation.yaml)
          * @description Links only the applications (by name) the caller owns; unmatched names go to the notes.
          */
         post: operations["importAutomation"];
@@ -2245,7 +2245,7 @@ export interface components {
         };
         RecordingImport: {
             name: string;
-            /** @description A Twin Lab steps.jsonl */
+            /** @description A recording file (steps.jsonl) */
             log: string;
         };
         Event: {

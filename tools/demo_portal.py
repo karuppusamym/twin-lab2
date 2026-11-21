@@ -1,0 +1,267 @@
+"""A demo portal: the real app, seeded with one recording across ten applications, and test fakes
+for everything outside it.
+
+    python tools/demo_portal.py [--port 8782] [--state DIR]
+
+Build the web app first (`cd web; npm ci; npm run build`). Then open http://127.0.0.1:8782 and
+sign in as one of:
+
+- `alice` / `alice-demo`: owner of every catalog application and portal admin;
+- `bob` / `bob-demo`: builder of Billing (sees its frozen packages and builds, no evidence);
+- `vera` / `vera-demo`: viewer of Billing (its page and published releases only).
+
+What is seeded, all through the portal's own APIs (the agent API for the recorder's part):
+
+- Seven catalog applications with their web addresses: Billing and Billing Admin on one host
+  (told apart by path), Finance Hub, Accounts Receivable and Payroll on another (nested path
+  prefixes, the longest wins), a meter-reading portal and a Japanese invoicing system.
+- A paired recorder machine, a requested recording ("Month-end close") offered to it, and the
+  recording it sent (contract 1.2): web, desktop and mainframe steps interleaved in time. The
+  catalog applications get their steps; the desktop programs (two different ones both titled
+  "Billing"), the TN3270 host and two more web origins are registered as *Discovered: decide
+  scope*. The recording is `tests/fixtures/ten-app-session` (synthetic, no real data).
+- Billing taken through the whole journey: reviewed events, two business scenarios, a frozen
+  package, a build session with the stand-in provider, a verified release (Tested) and its
+  publication.
+- Accounts Receivable up to a frozen package, ready to build.
+
+Nothing here calls a real service or costs money: the build provider is `fake`
+(tests/server/fake_provider.py), GitHub is a local fake, the deployment is a local stub that
+reports the built commit, and the replay is a stand-in. A worker thread works the job queue, so a
+new build session started from the page also runs and finishes after a few seconds.
+"""
+
+from __future__ import annotations
+
+import argparse
+from contextlib import closing
+import os
+from pathlib import Path
+import sys
+import tempfile
+import threading
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+for path in (ROOT / "server", ROOT / "contract", ROOT / "recorder", ROOT / "tests", ROOT / "tests" / "server"):
+    sys.path.insert(0, str(path))
+
+SHA = "7c41e9b2d05f3a68c1e4b97a20d6f58e3b9c1a74"  # the commit the stand-in provider "builds"
+REPO = "acme/billing"
+NOW = "2026-11-20T00:00:00+00:00"
+USERS = {"alice": "alice-demo", "bob": "bob-demo", "vera": "vera-demo"}
+PURPOSES = {
+    "Billing": "Customer invoices: create, correct and send",
+    "Billing Admin": "Tariffs and billing rules",
+    "Zählerstand Portal – Nord": "Meter readings entered by field staff",
+    "請求 システム": "Invoicing for the Japanese branch",
+    "Finance Hub": "Finance landing page and reports",
+    "Accounts Receivable": "Open items and dunning",
+    "Payroll": "Monthly payroll runs",
+}
+
+
+def check(response, *codes):
+    if response.status_code not in (codes or (200, 201)):
+        raise SystemExit(f"seeding failed: {response.request.method} {response.request.url} -> "
+                         f"{response.status_code} {response.text[:800]}")
+    return response.json() if response.content and "json" in response.headers.get("content-type", "") else None
+
+
+def seed(app, world, ctx, database):
+    """Everything a demo needs, through the APIs, as the people who would do it."""
+    from twinlab2 import builds, worker
+    from twinlab2.db import connect
+    from twinlab2_contract import recorder_contract
+    from twinlab2_recorder.client import APP, VERSION
+    from support import Client
+    import test_ten_apps
+    import generate as fixture
+
+    def signed_in(user):
+        client = Client(app, remote="10.0.0.9")
+        check(client.post("/api/v1/session", json={"user": user, "password": USERS[user]}))
+        return client
+
+    alice = signed_in("alice")
+
+    # the catalog: seven applications with their web addresses
+    ids = {}
+    for item in fixture.CATALOG:
+        app_id = check(alice.post("/api/v1/apps", json={"name": item["name"], "purpose": PURPOSES[item["name"]]}))["id"]
+        check(alice.post(f"/api/v1/apps/{app_id}/identities", json={"key": item["key"].removeprefix("web:")}))
+        ids[item["name"]] = app_id
+    billing, receivable = ids["Billing"], ids["Accounts Receivable"]
+    check(alice.put(f"/api/v1/apps/{billing}/roles/bob", json={"role": "builder"}))
+    check(alice.put(f"/api/v1/apps/{billing}/roles/vera", json={"role": "viewer"}))
+
+    # a recorder machine, a requested recording, and the recording it sends
+    code = check(alice.post("/api/v1/machines/pairing-codes"))["code"]
+    paired = check(alice.http.post("/api/agent/pair", headers={"X-TwinLab-Recorder": f"{APP} {VERSION}"}, json={
+        "contract_version": recorder_contract.CONTRACT_VERSION, "code": code, "name": "Finance workstation 7"}))
+    agent = {"Authorization": f"Bearer {paired['token']}", "X-TwinLab-Recorder": f"{APP} {VERSION}"}
+    machine = check(alice.get("/api/v1/machines"))["machines"][0]["id"]
+    check(alice.post("/api/v1/capture-sessions", json={
+        "name": "Month-end close", "machine_id": machine,
+        "targets": [{"app_id": app_id, "level": "full"} for app_id in ids.values()]}))
+    sent = check(alice.http.post("/api/agent/references", json=test_ten_apps.references(), headers=agent))
+    recording = sent["recording_id"]
+    print(f"seeded recording {recording}: {len(sent['mapped'])} applications", flush=True)
+
+    # Billing and Accounts Receivable: review their events, write scenarios, freeze a package
+    detail = check(alice.get(f"/api/v1/recordings/{recording}"))
+
+    def events_of(app_id):
+        return [s["event_id"] for a in detail["refs"]["apps"] if a["app_id"] == app_id for s in a["steps"]]
+
+    def prepare(app_id, scenarios, summary):
+        events = events_of(app_id)
+        check(alice.put(f"/api/v1/recordings/{recording}/assignments/{app_id}",
+                        json={"events": events, "notes": "Month-end close, as recorded"}))
+        for number, scenario in enumerate(scenarios):
+            linked = events[number::len(scenarios)] or events
+            check(alice.post(f"/api/v1/apps/{app_id}/scenarios",
+                             json={**scenario, "events": [f"{recording}#{e}" for e in linked]}))
+        draft = check(alice.get(f"/api/v1/apps/{app_id}/package-draft"))
+        return check(alice.post(f"/api/v1/apps/{app_id}/packages",
+                                json={"sha256": draft["sha256"], "approve": True, "summary": summary}))
+
+    package = prepare(billing, [
+        {"name": "An invoice is created and sent",
+         "starting": "A customer with an open order; the invoice list shows that customer's invoices.",
+         "actions": "Open the invoice list, create an invoice for the order, save it, send it.",
+         "expected": "The invoice has its number, status Sent, and appears at the top of the list.",
+         "failures": "Saving without a customer is refused with a message; the invoice is not created.",
+         "examples": "Customer: Example GmbH; amount 1,250.00 EUR (synthetic)."},
+        {"name": "A sent invoice is corrected",
+         "starting": "A sent invoice.",
+         "actions": "Open the invoice, choose Correct, change the amount, save.",
+         "expected": "A correction invoice is created and linked; the original keeps its number.",
+         "failures": "A paid invoice cannot be corrected: the Correct button is disabled.",
+         "questions": "Does a correction need a second approver above 10,000 EUR?"},
+    ], "First package: invoice creation and correction")
+    prepare(receivable, [
+        {"name": "An overdue item gets a dunning letter",
+         "starting": "An open item 30 days past due.",
+         "actions": "Filter open items by overdue, select the item, start dunning level 1.",
+         "expected": "The item shows dunning level 1 and the letter is listed under the customer.",
+         "failures": "An item with a payment plan is skipped with a note."},
+    ], "Open items and dunning")
+
+    # Billing: a build session with the stand-in provider, verified, tested and published
+    check(alice.patch(f"/api/v1/apps/{billing}", json={"git_url": f"https://github.com/{REPO}.git"}))
+    check(alice.post("/api/v1/setup/builds/repos", json={"repo": REPO}))
+    bob = signed_in("bob")
+    started = check(bob.post(f"/api/v1/apps/{billing}/builds", json={
+        "provider": "fake", "revision": package["revision"], "repo": REPO, "budget": 5, "request_key": "demo-first"}))
+    build_id = started["build"]["id"]
+    for _ in range(3):
+        worker.run(str(database), once=True, ctx=ctx, max_jobs=2, lease=5)
+    with closing(connect(database)) as db:
+        sid = builds.get(db, build_id)["provider_session_id"]
+    world.finish(sid, SHA)
+    for _ in range(3):
+        worker.run(str(database), once=True, ctx=ctx, max_jobs=2, lease=5)
+    check(alice.put(f"/api/v1/apps/{billing}/verification-settings", json={
+        "required_checks": "", "target_platform": "web", "windows_check_pattern": "", "lab_url": "http://lab.test/",
+        "launch": "python run.py"}))
+    return billing, build_id
+
+
+def build(state):
+    """The seeded demo portal in `state`: (app, world, ctx, database), with its fakes running."""
+    state = Path(state)
+    state.mkdir(parents=True, exist_ok=True)
+    sys.path.insert(0, str(ROOT / "tests" / "fixtures" / "ten-app-session"))
+
+    import fake_provider
+    from fakes import FakeGitHub
+    from test_verification import Deployment, FakeGitHub as ChecksGitHub, FakeTwinLab, run
+
+    builds_github = FakeGitHub().start()
+    builds_github.add_repo(REPO, sha="b" * 40)
+    checks = ChecksGitHub()
+    checks.runs[SHA] = [run("build", sha=SHA, run_id=1), run("test", sha=SHA, run_id=2)]
+    deployment = Deployment(SHA)
+    os.environ.update({
+        "TWINLAB2_GITHUB_TOKEN": builds_github.token, "TWINLAB2_GITHUB_API": builds_github.url,
+        "TWINLAB2_WORKSPACES": str(state / "workspaces"), "TWINLAB2_STATE": str(state),
+        "TWINLAB2_DEV_WORKER": "0", "TWINLAB2_SECRET_KEY": "demo-only", "TWINLAB2_HOSTS": "localhost,127.0.0.1",
+        "TWINLAB2_PASSWORD": "shared-demo"})  # sign-in is part of the demo, even on this machine
+    for name in ("TWINLAB2_TRUST_PROXY_USER", "DATABASE_URL"):
+        os.environ.pop(name, None)
+    world = fake_provider.reset()
+
+    from twinlab2 import auth, builds, migrations, verification
+    from twinlab2.app import create_app
+    from twinlab2.db import connect
+
+    database = state / "catalog.db"
+    with closing(connect(database)) as db:
+        migrations.run(db)
+        with db:
+            for user, password in USERS.items():
+                auth.save_user(db, user, password=password, is_admin=user == "alice", by="demo", now=NOW)
+    app = create_app(database)
+    app.config.update(GITHUB=verification.GitHub(token="demo-token", api=checks.url), TWINLAB_RUNNER=FakeTwinLab())
+    ctx = builds.Context(poll_seconds=0, reconcile_delay=0, reconcile_checks=1, timeout=2)
+
+    billing, build_id = seed(app, world, ctx, database)
+    # the session branches (twinlab2/app-<id>/session-N-fake) point at the built commit
+    for n in range(1, 20):
+        checks.branch_heads[f"twinlab2%2Fapp-{billing}%2Fsession-{n}-fake"] = SHA
+    release(app, billing, build_id, deployment)
+    return app, world, ctx, database
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8782)
+    parser.add_argument("--state", default=None)
+    args = parser.parse_args()
+    state = Path(args.state or tempfile.mkdtemp(prefix="tl2-demo-"))
+    app, world, ctx, database = build(state)
+    from twinlab2 import worker
+
+    def work():
+        started = {}
+        while True:
+            try:
+                worker.run(str(database), once=True, ctx=ctx, max_jobs=4, lease=5)
+                with world.lock:
+                    for sid, session in world.sessions.items():
+                        started.setdefault(sid, time.monotonic())
+                        if session["state"] == "running" and time.monotonic() - started[sid] > 6 and not session["head"]:
+                            world.finish(sid, SHA)
+            except Exception as error:  # noqa: BLE001 - keep the demo worker alive
+                print("worker:", error, flush=True)
+            time.sleep(1.5)
+
+    threading.Thread(target=work, daemon=True).start()
+    import uvicorn
+
+    print(f"demo portal http://127.0.0.1:{args.port} (state {state})", flush=True)
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning", proxy_headers=False)
+
+
+def release(app, billing, build_id, deployment):
+    """Billing's build verified on its commit (Tested), its test results recorded, published."""
+    from support import Client
+
+    alice = Client(app, remote="10.0.0.9")
+    check(alice.post("/api/v1/session", json={"user": "alice", "password": USERS["alice"]}))
+    outcome = check(alice.post(f"/api/v1/apps/{billing}/verify-commit",
+                               json={"repo": REPO, "sha": SHA, "build_id": build_id}))
+    release_id = outcome["release_id"]
+    check(alice.put(f"/api/v1/releases/{release_id}/deployments", json={"environment": "Demo", "url": deployment.url}))
+    verified = check(alice.post(f"/api/v1/releases/{release_id}/verify"))
+    detail = check(alice.get(f"/api/v1/releases/{release_id}"))
+    check(alice.post(f"/api/v1/releases/{release_id}/tests", json={
+        "commit": SHA, "platform": "Web", "launch": "python run.py", "reset_result": "pass",
+        "results": {s["id"]: "pass" for s in detail["scenarios"]}}))
+    check(alice.post(f"/api/v1/releases/{release_id}/publish"))
+    print(f"Billing release {release_id}: {verified['release']['state']}, then published", flush=True)
+
+
+if __name__ == "__main__":
+    main()

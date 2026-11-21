@@ -171,12 +171,12 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
     twin = None
     if not base_url:
         reasons.append(f"No deployment reports this release's commit at /{VERSION_PATH}, "
-                       "so Twin Lab's checks did not run.")
+                       "so the scenario checks did not run.")
     else:
         observed = deployed_commit(base_url)
         if observed != sha:
             reasons.append(f"{base_url} reports " + (f"commit {observed[:12]}" if observed else "no commit") +
-                           f", not {sha[:12]}: Twin Lab's checks need the built commit.")
+                           f", not {sha[:12]}: the scenario checks need the built commit.")
         else:
             twin = independent.run(runner or independent.TwinLabChecks(), brief_scenarios(manifest), manifest,
                                    base_url, app["lab_url"] or "")

@@ -216,7 +216,7 @@ function Examples({ item, evidence }: { item: Schemas["AppDetail"]; evidence: Sc
     <section id="examples" aria-labelledby="examples-h">
       <h2 id="examples-h">2. Add examples</h2>
       <p className="muted">Recordings and uploads are <strong>restricted evidence</strong>: only the owners of this application see them. Uploading never shares anything with the builder; only a builder package you approve does.</p>
-      <p><Link to="/sessions">Request a recording</Link> of the process on a paired machine, or import a Twin Lab recording from the <Link to="/">catalog</Link>.</p>
+      <p><Link to="/sessions">Request a recording</Link> of the process on a paired machine, or import a recording file (steps.jsonl) from the <Link to="/">catalog</Link>.</p>
       <div className="columns">
         <div>
           <h3>Recorded flows</h3>
