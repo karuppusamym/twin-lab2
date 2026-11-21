@@ -319,15 +319,33 @@ class UrlIdentityTest(Base):
         self.assertEqual(self.identity(other, "https://example.test").status_code, 409)
         self.assertEqual(self.url_match(billing, "sideways").status_code, 400)
 
-    def test_deny_keys_leave_out_path_identities(self):
+    def test_deny_keys_include_path_identities_but_not_a_host_applications(self):
+        """Contract 1.2 recorders deny steps under a path key; older ones compare whole keys, so a
+        path key never denies the applications sharing its host. A `host` application's path
+        key is left out: it stands for whatever no path claims."""
         self.pair()
         billing = self.make("Billing", "https://example.test/billing")
         legacy = self.make("Legacy", "https://legacy.example.test")
-        for app_id in (billing, legacy):
+        catch_all = self.make("Catch-all", "https://shared.example.test/start")
+        self.assertEqual(self.url_match(catch_all, "host").status_code, 200)
+        for app_id in (billing, legacy, catch_all):
             response = self.client.patch(f"/api/v1/apps/{app_id}", json={"status": "not_replicated"})
             self.assertEqual(response.status_code, 200, response.text)
         deny = self.client.http.get("/api/agent/sessions", headers=self.agent).json()["deny_keys"]
-        self.assertEqual(deny, ["web:https://legacy.example.test"])
+        self.assertEqual(deny, ["web:https://example.test/billing", "web:https://legacy.example.test"])
+
+    def test_a_not_replicated_path_application_gets_no_steps(self):
+        """An older recorder sends every step of a shared host: the steps under a not-replicated
+        application's path are not stored as its flow nor linked as its evidence."""
+        self.pair()
+        orders = self.make("Orders", "https://example.test/orders")
+        payroll = self.make("Payroll", "https://example.test/payroll")
+        response = self.client.patch(f"/api/v1/apps/{payroll}", json={"status": "not_replicated"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.send(shared_host_references(["https://example.test/orders/{id}", "https://example.test/payroll/{id}"]))
+        self.assertEqual(self.flows(), {(orders, "web:https://example.test/orders"): ["b1"]})
+        self.assertIsNone(self.link(payroll))
+        self.assertEqual(self.link(orders)["selection"], [1])
 
 
 class MigrationTest(unittest.TestCase):

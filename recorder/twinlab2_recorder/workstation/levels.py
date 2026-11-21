@@ -136,6 +136,18 @@ def web_path(path: object) -> str | None:
     return "/" + "/".join(segs) if segs else None
 
 
+def denied_prefixes(deny_keys, origin: str) -> list[str]:
+    """The path prefixes of the web deny keys on one origin (`web:<origin>/<path>`)."""
+    out = set()
+    for key in deny_keys or ():
+        key = str(key)
+        if key.startswith("web:") and origin_of(key[4:]) == origin:
+            path = web_path(urlsplit(key[4:]).path)
+            if path:
+                out.add(path)
+    return sorted(out)
+
+
 def denied_exe(path: str | None, name: str | None = None) -> bool:
     name = (name or ntpath.basename(path or "")).lower()
     if any(fnmatch.fnmatch(name, pat) for pat in DENY_EXE):
@@ -247,6 +259,11 @@ class Targets:
             return PRESENCE
         return target.level if target else PRESENCE
 
+    def denied_prefixes(self, origin: str) -> list[str]:
+        """The path prefixes on an origin of applications marked not replicated (deny keys such
+        as `web:https://host/finance/payroll`): their steps are presence (timeline.outbox)."""
+        return denied_prefixes(self.deny_keys, origin)
+
     def prefixes(self, origin: str) -> list[str]:
         """The path prefixes the targets name on an origin (flow.route_template)."""
         return sorted({t.path for t in self.targets if t.origin == origin and t.path})
@@ -259,8 +276,8 @@ class Targets:
 
     def web_start(self) -> str | None:
         for t in self.targets:
-            if t.origin:
-                return t.start or t.origin + "/"
+            if t.origin:  # a target known by path starts at its own page, not the host's
+                return t.start or t.origin + (t.path or "/")
         return None
 
     def as_list(self) -> list[dict]:

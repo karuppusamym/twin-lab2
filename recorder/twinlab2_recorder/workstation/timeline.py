@@ -33,9 +33,10 @@ import heapq
 import json
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from twinlab2_recorder.workstation import flow
-from twinlab2_recorder.workstation.levels import FULL, PRESENCE, STEPS, origin_of, web_path
+from twinlab2_recorder.workstation.levels import FULL, PRESENCE, STEPS, denied_prefixes, origin_of, web_path
 
 FORMAT = "twinlab-workstation-session/1"
 # The recorder contract the references follow (twin-lab2 RECORDER-CONTRACT.md).
@@ -218,9 +219,37 @@ def target_prefixes(meta: dict) -> dict[str, list[str]]:
     return {o: sorted(p) for o, p in out.items()}
 
 
+def under_denied_path(url: str, allowed: list[str], denied: list[str]) -> bool:
+    """Whether a web step's URL belongs to an application marked not replicated: the longest
+    prefix it is under (whole segments) is a denied one rather than a target's, as the portal
+    assigns steps by the longest prefix."""
+    path = [seg for seg in (urlsplit(url).path or "/").split("/") if seg]
+    best, deny = -1, False
+    for prefixes, is_denied in ((allowed, False), (denied, True)):
+        for prefix in prefixes:
+            segs = flow.prefix_segments(prefix)
+            if len(segs) > best and tuple(path[: len(segs)]) == segs:
+                best, deny = len(segs), is_denied
+            elif len(segs) == best and tuple(path[: len(segs)]) == segs and not is_denied:
+                deny = False  # a target that names the same prefix allows it
+    return deny
+
+
 def outbox(meta: dict, rows: list[dict]) -> dict:
     flows: dict[str, list[dict]] = {}
     prefixes = target_prefixes(meta)
+    denied: dict[str, list[str]] = {}
+    for row in rows:
+        step = row.get("_step")
+        if step is not None and row.get("surface") == "web" and row.get("level") in (FULL, STEPS):
+            url = str(step.get("url") or "")
+            origin = origin_of(url)
+            if origin not in denied:
+                denied[origin] = denied_prefixes(meta.get("deny_keys") or (), origin) if origin else []
+            if denied[origin] and under_denied_path(url, prefixes.get(origin) or [], denied[origin]):
+                # an application marked not replicated, on a host shared with targets
+                row.update(app=PRESENCE, level=PRESENCE, surface=None)
+                row.pop("_step", None)
     for row in rows:
         step = row.get("_step")
         if step is None or row.get("level") not in (FULL, STEPS):
