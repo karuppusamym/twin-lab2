@@ -42,13 +42,16 @@ from urllib.parse import urlsplit, urlunsplit
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
 from twinlab2 import artifacts
+from twinlab2 import baselines
 from twinlab2 import demo_target
+from twinlab2 import interfaces
 from twinlab2 import pack_validator
 from twinlab2 import redact
 from twinlab2 import scenarios
+from twinlab2_contract import package
 from twinlab2_contract import structure
 
-FORMAT = 2
+FORMAT = package.PACKAGE_FORMAT  # 3: bindings, visual baselines, confirmations, interfaces (2 stays readable)
 TEXT_EXTENSIONS = {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".sql", ".har"}
 NAMED_KEY = re.compile(
     r"^(?:(?:Ctrl|Control|Alt|Shift|Win|Meta|Cmd)\+)*(?:Enter|Return|Tab|Esc|Escape|Backspace|Delete|Del|Insert"
@@ -193,8 +196,24 @@ def scenario_entry(scenario, events):
     for ref in scenario["events"]:
         if ref not in events:
             gaps.append(f"Linked event {ref} is no longer selected for this app.")
+    examples = scenarios.lines(scenario["examples"])
+    fields = {f["field"]: f for f in package.fixture_fields(examples)}
+    bindings = []
+    for b in scenario.get("bindings") or []:
+        if b["event"] not in events or b["event"] not in scenario["events"]:
+            gaps.append(f"A binding names event {b['event']}, which is no longer linked.")
+            continue
+        entry = {"event_id": events[b["event"]]["event_id"], "recording_id": b["event"].split("#", 1)[0]}
+        if b.get("field"):
+            entry["field"] = b["field"]
+            if b["field"] in fields:
+                entry.update(type=fields[b["field"]]["type"], value=fields[b["field"]]["value"])
+        else:
+            entry["identifier"] = b["identifier"]
+        bindings.append(entry)
     return {
         "name": scenario["name"], "starting_conditions": scenario["starting"],
+        "fixture_fields": list(fields.values()), "bindings": bindings,
         "actions": scenarios.lines(scenario["actions"]), "events": linked,
         "expected_result": scenario["expected"], "failure_cases": scenarios.lines(scenario["failures"]),
         "example_values": scenarios.lines(scenario["examples"]),
@@ -240,8 +259,13 @@ def manifest(db, app_id, version_path=".twinlab/version"):
     screens = screen_structure(db, app_id)
     if screens:
         data["screens"] = screens
+    data["visual_baselines"], baseline_files = baselines.for_pack(db, app_id)
+    files.update(baseline_files)
+    data["interfaces"] = interfaces.for_pack(db, app_id)
+    data["confirmations"] = [{"item": r["item"], "note": redact.redact_text(r["note"])} for r in db.execute(
+        "SELECT item, note FROM item_confirmations WHERE app_id = ? ORDER BY item", (app_id,))]
     for section, label in (("scenarios", "Scenario text"), ("evidence", "Recorded steps and notes"),
-                           ("screens", "Screen structure")):
+                           ("screens", "Screen structure"), ("interfaces", "Interface contracts")):
         if section not in data:
             continue
         found = Counter()
@@ -303,6 +327,11 @@ def task_markdown(data, revision, version_path, completeness=None):
             out += ["**Expected result**", "", s["expected_result"], ""]
         bullets("Failure cases", s["failure_cases"])
         bullets("Synthetic example values", s["example_values"])
+        bullets("Bound values (the replay types these at these steps)", [
+            f"event `{b['event_id']}` ← " + (f"field {b['field']}" + (f" ({b['type']}): `{b['value']}`" if "value" in b else
+                                                                    " (no example line gives it)")
+                                             if b.get("field") else f"shared identifier `{b['identifier']}`")
+            for b in s.get("bindings") or []])
         bullets("Unresolved questions", s["unresolved_questions"])
         if s["notes"]:
             out += ["**Notes**", "", s["notes"], ""]
@@ -310,6 +339,8 @@ def task_markdown(data, revision, version_path, completeness=None):
         out += screens_markdown(data)
     elif surface_of(data) == "mainframe":
         out += host_screens_markdown(data)
+    out += baselines_markdown(data)
+    out += interfaces.markdown(data)
     out += unrecorded_markdown(data)
     if data.get("target"):
         out += demo_target.markdown(data["target"])
@@ -518,6 +549,20 @@ def screens_markdown(data):
                 out.append(f"- from {_state_name(data['screens'], sc['screen'], t['from_state'])}: {via} → {to}{times}")
             out.append("")
     return out
+
+
+def baselines_markdown(data):
+    """The "Visual baselines" section: which state each approved picture shows, and how."""
+    items = data.get("visual_baselines") or []
+    if not items:
+        return []
+    out = ["## Visual baselines", "",
+           "The owner approved these pictures, each for one screen state at one viewport, theme and scale. Match them "
+           "at that size; a state without a picture here is not judged on appearance.", ""]
+    for b in items:
+        out.append(f"- `{b['screen']}` {_state_name(data.get('screens') or [], b['screen'], b['state'])} "
+                   f"(`{b['state']}`), {b['viewport']}, {b['theme']} theme, scale {b['scale']}: `{b['path']}`")
+    return out + [""]
 
 
 def _screen_names(data):
