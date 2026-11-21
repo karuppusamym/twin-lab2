@@ -51,7 +51,7 @@ CONTRACT_SCHEMA = PROJECT / "contract" / "twinlab2_contract" / "recorder-contrac
 
 # Never imported by the recorder; reached only through optional imports of its dependencies.
 EXCLUDES = [
-    "numpy", "comtypes._npsupport",  # comtypes' optional numpy support
+    "numpy",  # comtypes needs its _npsupport module, which guards the numpy import
     "cryptography", "Crypto", "cffi", "pypdf._crypt_providers._cryptography",  # pypdf: encrypted PDFs
     "pypdf._crypt_providers._pycryptodome",
     "setuptools", "pkg_resources", "distutils", "_distutils_hack",
