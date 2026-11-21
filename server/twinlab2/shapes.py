@@ -27,7 +27,8 @@ def choice(value, label):
 
 def journey(j):
     def step(s):
-        return {"id": s.id, "title": s.title, "state": s.state, "hint": s.hint, "href": s.href, "action": s.action}
+        return {"id": s.id, "title": s.title, "state": s.state, "hint": s.hint, "href": s.href, "action": s.action,
+                "blocked": s.blocked}
 
     return {"stage": j.stage, "missing": list(j.missing), "out_of_scope": j.out_of_scope,
             "steps": [step(s) for s in j.steps], "next": step(j.next) if j.next else None}

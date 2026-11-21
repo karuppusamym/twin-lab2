@@ -25,9 +25,9 @@ describe("a recording that holds several applications", () => {
     expect(within(casedesk).queryByText("Invoice")).not.toBeInTheDocument();
 
     expect(within(billing).getByRole("link", { name: "revision 2" })).toHaveAttribute("href", "/apps/1/packages/2");
-    expect(within(billing).getByRole("link", { name: "Download" })).toHaveAttribute("href", "/api/v1/apps/1/packages/2/download");
+    expect(within(billing).getByRole("link", { name: "Download revision 2 of Billing Desk" })).toHaveAttribute("href", "/api/v1/apps/1/packages/2/download");
     expect(within(casedesk).getByRole("link", { name: "revision 1" })).toHaveAttribute("href", "/apps/2/packages/1");
-    expect(within(casedesk).getByRole("link", { name: "Download" })).toHaveAttribute("href", "/api/v1/apps/2/packages/1/download");
+    expect(within(casedesk).getByRole("link", { name: "Download revision 1 of CaseDesk" })).toHaveAttribute("href", "/api/v1/apps/2/packages/1/download");
     // all of them at once: the per-recording export
     expect(within(section).getByRole("link", { name: "Download the packages of this recording" }))
       .toHaveAttribute("href", "/api/v1/recordings/9f2c4e1a7b3d5f60/packages/download");

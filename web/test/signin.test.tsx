@@ -51,7 +51,7 @@ describe("sign-in", () => {
 
   it("has no sign-in or sign-out behind the OAuth proxy", async () => {
     renderApp("/", "viewer");
-    expect(await screen.findByRole("heading", { name: "Applications" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeInTheDocument();
     expect(screen.getByText("vic", { selector: ".who" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
   });
