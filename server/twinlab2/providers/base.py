@@ -86,6 +86,7 @@ class SessionSpec:
     tag: str
     title: str
     attempt: int = 1
+    generation: int = 1   # the runner lease generation the start is for (local runners)
 
 
 @dataclass
@@ -129,6 +130,8 @@ class Snapshot:
     head_sha: str | None = None
     note: str | None = None
     state_update: dict | None = None
+    rejected: int = 0       # updates ignored because an older runner generation wrote them
+    restart: bool = False   # the runner stopped answering: grant the next generation and relaunch
 
 
 class Provider:
