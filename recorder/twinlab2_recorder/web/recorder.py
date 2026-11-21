@@ -69,7 +69,10 @@ each click, change or submit, once the page has been quiet for `settle_ms` with 
 in flight (up to 15 s; `recording.json` says so under `settle`). A recording script's next action
 does not wait for that: just before it, the page writes and snapshots what it has not yet
 (`__tlBeforeAction`) and the step's picture is taken, so it shows the page before the action's
-events; a picture still taken later says `picture_settled: false`. Values typed are never
+events; a picture still taken later says `picture_settled: false`. `attach()` cannot hold a
+robot's next action: it takes each picture as soon as the step's snapshot arrives, and drops a
+picture taken after the next action began (`picture_dropped: true`, `picture_note` says
+why). Values typed are never
 written: the recorder holds them in memory only, to take them out of snapshots, the HAR, pictures
 (masked) and locator texts where they are a value, never inside an id, class or name (the rule:
 twinlab2_contract.evidence.typedvalues; an id that is a whole typed value becomes a placeholder, `tl-typed-a`, and
@@ -1177,12 +1180,14 @@ def next_action(steps: list[dict], n: int) -> dict | None:
     return None
 
 
-def mark_unsettled_pictures(steps: list[dict]) -> int:
+def mark_unsettled_pictures(steps: list[dict], drop_in: Path | None = None) -> int:
     """A step's picture is taken when the recording loop gets control back, after its snapshot.
     When the person's next action in the same tab had already begun by then (typing ends when
     the person clicks on, and the click starts a dialog's fade), the picture may show what that
     action did: it is kept, and the step says `picture_settled: false` with the reason, so a
-    visual comparison does not hold the replica to it. Returns how many were marked."""
+    visual comparison does not hold the replica to it. With `drop_in` (the recording folder:
+    attach mode, where nothing holds the robot's next action), such a picture is deleted instead
+    and the step says `picture_dropped: true` with the reason. Returns how many."""
     from twinlab2_contract.evidence.recording import _ts
 
     marked = 0
@@ -1195,6 +1200,16 @@ def mark_unsettled_pictures(steps: list[dict]) -> int:
         if began is None or began >= shot:
             continue
         ms = int((shot - began).total_seconds() * 1000)
+        if drop_in is not None:
+            (Path(drop_in) / step["screenshot"]).unlink(missing_ok=True)
+            step["screenshot"] = None
+            step.pop("mask_boxes", None)
+            step["picture_dropped"] = True
+            step["picture_note"] = (f"no picture: step {nxt.get('seq')} ({nxt.get('action')}) began "
+                                    f"{ms} ms before it could be taken, so it would show what that "
+                                    "step did")  # fmt: skip
+            marked += 1
+            continue
         step["picture_settled"] = False
         step["picture_note"] = (f"the picture was taken {ms} ms after step {nxt.get('seq')} "
                                 f"({nxt.get('action')}) began: it may show what that step did")  # fmt: skip
@@ -1480,6 +1495,9 @@ class _Steps:
         self.nav_observed: list[tuple[str, int, int]] = []  # (tab, cause, page load) per load
         self.scripts: list[str] = []  # the init scripts, for a page that missed them
         self.replaced: list[tuple[int, list[str]]] = []  # (double click, the clicks it replaces)
+        # attach(): a picture taken after the next action began is dropped (the step says so),
+        # not kept as `picture_settled: false`; record() keeps it marked.
+        self.drop_late_pictures = False
 
     LOAD_CAUSES = ("click", "submit", "keypress", "dblclick")
 
@@ -1685,6 +1703,22 @@ class _Steps:
         if pictures:
             self._ensure_installed()
         waiting, self.waiting = self.waiting, []
+        # The pictures first, the moment the loop has control: each is of the page as its step
+        # left it only until the next action begins (frames, canvases, documents and cookies
+        # can wait; they come from the snapshot or do not change on screen).
+        for step, page in waiting:
+            if pictures and page is not None and self.screenshots and step["dom"]:
+                rel = f"screens/{step['seq']:04d}.png"
+                try:
+                    (self.out_dir / "screens").mkdir(exist_ok=True)
+                    shot_at = _now()  # an action that began before this may show in it
+                    if self._picture(page, self.out_dir / rel):
+                        step["screenshot"] = rel
+                        step["_shot_at"] = shot_at
+                        if self.last_boxes:  # painted over: visual comparison leaves them out
+                            step["mask_boxes"] = self.last_boxes
+                except Exception:  # noqa: BLE001 - a missing picture never loses the step
+                    pass
         for step, page in waiting:
             html = step.pop("_html", None)
             live = pictures and page is not None
@@ -1719,18 +1753,6 @@ class _Steps:
                             d: sorted(n)[:50] for d, n in sorted(per.items())[:20]
                         }
                 except Exception:  # noqa: BLE001 - the page may have gone
-                    pass
-            if live and self.screenshots and step["dom"]:
-                rel = f"screens/{step['seq']:04d}.png"
-                try:
-                    (self.out_dir / "screens").mkdir(exist_ok=True)
-                    shot_at = _now()  # an action that began before this may show in it
-                    if self._picture(page, self.out_dir / rel):
-                        step["screenshot"] = rel
-                        step["_shot_at"] = shot_at
-                        if self.last_boxes:  # painted over: visual comparison leaves them out
-                            step["mask_boxes"] = self.last_boxes
-                except Exception:  # noqa: BLE001 - a missing picture never loses the step
                     pass
             step = self.secrets.clean_step(step)
             self.written.append(step)
@@ -2129,7 +2151,7 @@ class _Steps:
         renumbered = self._renumber(steps)
         if link_events(steps):
             self.rewrite = True
-        if mark_unsettled_pictures(steps):
+        if mark_unsettled_pictures(steps, self.out_dir if self.drop_late_pictures else None):
             self.rewrite = True
         if self.secrets:
             # A value typed late may have been on the page before it was typed: every snapshot
@@ -2559,6 +2581,7 @@ def attach(
     out_dir = Path(out_dir)
     (out_dir / "dom").mkdir(parents=True, exist_ok=True)
     steps = _Steps(out_dir, screenshots, origins=origins, outside=outside, journal=journal)
+    steps.drop_late_pictures = True  # nothing holds the robot's next action for the picture
     har = _Har(origins, journal=network_journal)
     har.steps = steps
     scripts = steps.scripts = _init_scripts(settle_ms)
@@ -2614,8 +2637,14 @@ def attach(
                             pass
                         continue
                     steps.drain()
+                    # The robot is not held between its actions: wait in short slices, so a
+                    # step's picture is taken as soon as its snapshot arrives (a picture taken
+                    # after the next action began is dropped at close: drop_late_pictures).
                     try:
-                        pages[-1].wait_for_timeout(500)
+                        for _ in range(20):
+                            pages[-1].wait_for_timeout(25)
+                            if steps.waiting:
+                                break
                     except Exception:  # noqa: BLE001 - that tab closed (a robot ends its scope)
                         continue
             except KeyboardInterrupt:
