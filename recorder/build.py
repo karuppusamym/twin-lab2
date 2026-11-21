@@ -53,7 +53,11 @@ CONTRACT_SCHEMA = PROJECT / "contract" / "twinlab2_contract" / "recorder-contrac
 # Never imported by the recorder; reached only through optional imports of its dependencies.
 EXCLUDES = [
     "numpy",  # comtypes needs its _npsupport module, which guards the numpy import
-    "cryptography", "Crypto", "cffi", "pypdf._crypt_providers._cryptography",  # pypdf: encrypted PDFs
+    # pypdf: encrypted PDFs. cffi stays (pythonnet's loader, clr_loader, opens .NET with it for the
+    # WebView2 window, ABI mode only); its compilers, which pull in distutils, do not.
+    "cryptography", "Crypto", "pypdf._crypt_providers._cryptography",
+    "cffi.recompiler", "cffi.ffiplatform", "cffi.verifier", "cffi.setuptools_ext", "cffi.pkgconfig",
+    "cffi._shimmed_dist_utils", "cffi.vengine_cpy", "cffi.vengine_gen",
     "pypdf._crypt_providers._pycryptodome",
     "setuptools", "pkg_resources", "distutils", "_distutils_hack",
     "httpx", "httpcore", "anyio", "h11", "sniffio", "dns", "email_validator", "certifi",  # pydantic EmailStr

@@ -74,6 +74,20 @@ class TokensTest(unittest.TestCase):
         self.assertEqual(our_dark, dark)
 
 
+
+class BuildTest(unittest.TestCase):
+    def test_the_build_keeps_what_the_window_needs(self):
+        """pywebview, pythonnet and its loader (with cffi, which opens .NET) are in the build; a
+        frozen recorder that lacks one has no window ('TwinLabRecorder version' says so)."""
+        import sys
+
+        sys.path.insert(0, str(ROOT / "recorder"))
+        import build
+
+        for name in ("cffi", "clr_loader", "pythonnet", "clr", "webview", "webview.platforms.edgechromium"):
+            self.assertFalse(any(name == x or name.startswith(x + ".") for x in build.EXCLUDES), name)
+        self.assertIn("tkinter", build.EXCLUDES)
+
 @unittest.skipIf(sync_playwright is None, "playwright is not installed")
 class WindowPageTest(unittest.TestCase):
     @classmethod
