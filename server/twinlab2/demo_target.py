@@ -246,7 +246,10 @@ def plan(db, app, version_path, included=None):
         files[f"{base}/README.md"] = openshift_readme(app, chosen["engine"], repo).encode("utf-8")
         deploy = {"kind": "openshift", "name": name, "files": sorted(files), "repository": repo or None,
                   "port": PORT}
-    return {"kind": surface, "data_backend": chosen, "data_model": data_model, "deploy": deploy}, files
+    out = {"kind": surface, "data_backend": chosen, "data_model": data_model, "deploy": deploy}
+    if surface != "desktop":  # what the release checks read the deployed commit from
+        out["version_endpoint"] = "/" + version_path.lstrip("/")
+    return out, files
 
 
 def markdown(target):

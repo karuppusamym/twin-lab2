@@ -10,7 +10,8 @@ Actions written today (dotted, `area.verb`):
 - evidence: `evidence.upload`, `evidence.review` (recording selection saved), `evidence.share`
   (an attachment marked restricted / reviewed / synthetic), `evidence.remove`,
   `recording.import`;
-- packages: `package.freeze`, `package.download`;
+- packages: `package.freeze`, `package.freeze_override` (frozen over critical completeness gaps, with the
+  reason), `package.download`;
 - builds and releases: `build.start` (for the build-job routes), `release.test`,
   `release.publish`, `deployment.register`;
 - access: `role.assign`, `role.remove`, `user.save`;

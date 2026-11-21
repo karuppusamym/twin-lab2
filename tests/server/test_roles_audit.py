@@ -21,7 +21,7 @@ from twinlab2.portal import create_app
 from twinlab2 import redact
 from test_registry import eid
 from twinlab2.db import Error as database_errors
-from support import Client, connect, new_database
+from support import Client, connect, new_database, preview
 
 RECORDING_LOG = b'{"seq":1,"action":"submit","url":"http://billing.local/?customer=jane@corp.com"}\n' \
                 b'{"seq":2,"action":"click","url":"http://billing.local/"}\n'
@@ -116,9 +116,9 @@ class Base(unittest.TestCase):
         return response.json()
 
     def as_owner_freeze(self, app_id, user="alice", summary=""):
-        sha = self.draft(app_id, user)["sha256"]
+        draft, extra = preview(self.as_(user), app_id)
         return self.as_(user).post(f"/api/v1/apps/{app_id}/packages",
-                                   json={"approve": True, "sha256": sha, "summary": summary})
+                                   json={"approve": True, "sha256": draft.json()["sha256"], "summary": summary, **extra})
 
 
 class EveryRouteHasAPolicyTest(Base):
@@ -371,14 +371,15 @@ class PackageTest(Base):
 
     def test_freezing_needs_the_owners_approval_of_the_previewed_bytes(self):
         self.assertEqual(self.get(f"/api/v1/apps/{self.app_id}/build-pack", "alice").status_code, 400)
-        sha = self.draft(self.app_id)["sha256"]
+        draft, extra = preview(self.as_("alice"), self.app_id)  # no recording: frozen over its gaps
+        sha = draft.json()["sha256"]
         path = f"/api/v1/apps/{self.app_id}/packages"
-        self.assertEqual(self.post(path, "alice", sha256=sha).status_code, 400)  # not approved
-        self.assertEqual(self.post(path, "alice", approve=False, sha256=sha).status_code, 400)
-        stale = self.post(path, "alice", approve=True, sha256="0" * 64)
+        self.assertEqual(self.post(path, "alice", sha256=sha, **extra).status_code, 400)  # not approved
+        self.assertEqual(self.post(path, "alice", approve=False, sha256=sha, **extra).status_code, 400)
+        stale = self.post(path, "alice", approve=True, sha256="0" * 64, **extra)
         self.assertEqual((stale.status_code, stale.json()["code"]), (409, "draft_changed"))
-        self.assertEqual(self.post(path, "alice", approve=True, sha256=sha).status_code, 201)
-        again = self.post(path, "alice", approve=True, sha256=sha)
+        self.assertEqual(self.post(path, "alice", approve=True, sha256=sha, **extra).status_code, 201)
+        again = self.post(path, "alice", approve=True, sha256=sha, **extra)
         self.assertEqual((again.status_code, again.json()["code"]), (409, "unchanged"))
         row = self.rows("SELECT rev, approved_by, sha256 FROM builder_packages")
         self.assertEqual(row, [(1, "alice", sha)])

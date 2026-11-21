@@ -28,6 +28,7 @@ import unicodedata
 from twinlab2 import artifacts
 from twinlab2 import audit
 from twinlab2 import buildpack
+from twinlab2 import pack_validator
 
 # The table and its guards are created by migrations.py (6: roles and audit).
 
@@ -176,22 +177,59 @@ class Unchanged(ValueError):
     """The draft is the latest frozen revision: nothing to freeze."""
 
 
-def freeze(db, app_id, user, approved_sha256, note, version_path):
+class Incomplete(ValueError):
+    """The draft misses critical items of the completeness spec and the owner gave no reason to
+    freeze it anyway. `validation` is pack_validator's result."""
+
+    def __init__(self, message, validation):
+        super().__init__(message)
+        self.validation = validation
+
+
+OVERRIDE_MIN = 10  # characters of a written reason, at least
+
+
+def override_reason(text):
+    """The owner's reason for freezing over critical gaps, cleaned, or '' when there is none."""
+    text = (text or "").strip()[:2000]
+    return text if len(text) >= OVERRIDE_MIN else ""
+
+
+def freeze(db, app_id, user, approved_sha256, note, version_path, override=None):
     """Freeze the application's current draft as the next revision. The caller has checked the
     owner role; `approved_sha256` is the SHA-256 the owner approved on the preview. ValueError
-    when the draft changed since, or nothing changed since the latest revision."""
-    current = buildpack.draft(db, app_id, version_path)
+    when the draft changed since, or nothing changed since the latest revision; `Incomplete` when
+    critical items are missing (pack_validator) and `override` gives no written reason.
+
+    With critical gaps and a reason, the draft carries the reason and those gaps ("Known gaps" in
+    BUILD_TASK.md, `known_gaps` in evidence.json): the owner previews the draft with the same
+    reason (`buildpack.draft(..., known_gaps=reason)`) and approves exactly those bytes. The
+    override is audited as `package.freeze_override` and kept on the revision."""
+    reason = override_reason(override)
+    current = buildpack.draft(db, app_id, version_path, known_gaps=reason or None)
     if (approved_sha256 or "").strip().lower() != current.sha256:
         raise DraftChanged("The package changed since you previewed it: review the preview again and approve it.")
     previous = latest(db, app_id)
     if previous is not None and previous["sha256"] == current.sha256:
         raise Unchanged(f"Nothing changed since revision {previous['rev']}: it is still the latest package.")
+    gaps = pack_validator.critical(current.validation)
+    known = None
+    if gaps:
+        if not reason:
+            names = "; ".join(g["title"] for g in gaps[:6]) + (" …" if len(gaps) > 6 else "")
+            raise Incomplete(f"The package misses {len(gaps)} critical item{'s' if len(gaps) != 1 else ''}: {names}. "
+                             f"Add them, or freeze it anyway with a written reason (at least {OVERRIDE_MIN} characters).",
+                             current.validation)
+        known = {"reason": reason, "gaps": [{"item": g["item"], "title": g["title"]} for g in gaps]}
     old_files, old_manifest = {}, None
     if previous is not None:
         old_files = buildpack.read(open_package(db, previous["storage_ref"]))
         old_manifest = json.loads(old_files.get("evidence.json", b"{}"))
     lines, diff = changes(old_files, current.files, old_manifest, json.loads(current.manifest))
     note = (note or "").strip()[:2000]
+    if known:
+        lines.insert(0, f"Frozen with {len(known['gaps'])} known critical gap{'s' if len(known['gaps']) != 1 else ''}: "
+                        f"{reason}")
     summary = "\n".join(([note] if note else []) + lines)
     rev = (previous["rev"] if previous else 0) + 1
     at = audit.now()
@@ -199,14 +237,28 @@ def freeze(db, app_id, user, approved_sha256, note, version_path):
                (current.revision, app_id, current.manifest))
     ref = put_package(db, app_id, current.revision, current.package)
     db.execute("""INSERT INTO builder_packages(app_id, rev, revision, sha256, size, storage_ref, approved_by,
-                  approved_at, summary, diff, report) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                  approved_at, summary, diff, report, completeness, known_gaps) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                (app_id, rev, current.revision, current.sha256, len(current.package), ref, user, at,
-                summary, diff, json.dumps(current.report, ensure_ascii=False)))
+                summary, diff, json.dumps(current.report, ensure_ascii=False),
+                json.dumps(current.validation, ensure_ascii=False, sort_keys=True),
+                json.dumps(known, ensure_ascii=False, sort_keys=True) if known else ""))
     # frozen_packs: the index Build with Devin (builds.py) references
     if db.execute("SELECT 1 FROM frozen_packs WHERE revision = ?", (current.revision,)).fetchone() is None:
         db.execute("INSERT INTO frozen_packs (revision, app_id, sha256, frozen_by, frozen_at) VALUES (?, ?, ?, ?, ?)",
                    (current.revision, app_id, current.sha256, user, at))
     audit.record(db, user, "package.freeze", "builder_package", f"{app_id}/rev{rev}", app_id=app_id,
                  rev=rev, sha256=current.sha256, revision=current.revision, summary=summary,
-                 report=current.summary())
+                 report=current.summary(), completeness=current.validation["score"],
+                 passed=current.validation["passed"])
+    if known:
+        audit.record(db, user, "package.freeze_override", "builder_package", f"{app_id}/rev{rev}", app_id=app_id,
+                     rev=rev, sha256=current.sha256, reason=reason, gaps=[g["item"] for g in known["gaps"]])
     return rev
+
+
+def completeness_of(row):
+    """(validation, known gaps) stored with a revision; (None, None) before they were kept."""
+    keys = row.keys()
+    validation = json.loads(row["completeness"]) if "completeness" in keys and row["completeness"] else None
+    known = json.loads(row["known_gaps"]) if "known_gaps" in keys and row["known_gaps"] else None
+    return validation, known

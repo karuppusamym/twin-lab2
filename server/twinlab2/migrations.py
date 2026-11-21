@@ -413,6 +413,10 @@ MIGRATIONS = [
     (8, "screen structure", SCREEN_STRUCTURE),
     # the demo's data backend chosen at onboarding: '' = predicted from its data model (demo_target)
     (9, "demo data backend", [add_columns([("apps", "data_backend", "TEXT NOT NULL DEFAULT ''")])]),
+    # the completeness of a frozen package (pack_validator) and the owner's written reason when it
+    # was frozen over critical gaps: JSON text, '' for revisions frozen before this
+    (10, "package completeness", [add_columns([("builder_packages", "completeness", "TEXT NOT NULL DEFAULT ''"),
+                                               ("builder_packages", "known_gaps", "TEXT NOT NULL DEFAULT ''")])]),
 ]
 
 

@@ -17,7 +17,7 @@ from twinlab2.portal import VERSION_PATH, create_app
 from twinlab2 import artifacts, auth, buildpack, packages, registry, scenarios
 from twinlab2_recorder import main as agent_main
 from twinlab2_contract import recorder_contract as contract
-from support import Client, connect, new_database
+from support import Client, connect, freeze_draft, new_database
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "host-app-session"
 # loaded by path under a name of its own: the ten-app fixture's module is also `generate`
@@ -129,9 +129,7 @@ class HostAppsTest(unittest.TestCase):
                 "name": f"{tag} scenario", "starting": "", "actions": f"{tag}-start", "expected": "", "failures": "",
                 "examples": "", "questions": "", "notes": "",
                 "events": json.dumps([scenarios.event_ref(RECORDING, e) for e in selection])})
-            draft = buildpack.draft(self.db, app_id, VERSION_PATH)
-            with self.db:
-                rev = packages.freeze(self.db, app_id, OWNER, draft.sha256, "", VERSION_PATH)
+            rev = freeze_draft(self.db, app_id, OWNER, VERSION_PATH)
             row = packages.get(self.db, app_id, rev)
             shas.add(row["sha256"])
             files = buildpack.read(packages.open_package(self.db, row["storage_ref"]))

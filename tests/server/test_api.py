@@ -27,7 +27,7 @@ from zipfile import ZipFile
 import contract
 import fake_provider
 from fakes import FakeGitHub
-from support import Client, connect, new_database
+from support import Client, connect, new_database, preview
 from test_registry import DESK, WEB, references
 from test_verification import REPO, SHA, Deployment, FakeGitHub as ChecksGitHub, FakeTwinLab, run
 from twinlab2 import auth, builds, rest, verification, worker
@@ -116,9 +116,10 @@ class ApiTest(unittest.TestCase):
         cls.attachment = ok(alice.post(f"/api/v1/apps/{cls.billing}/attachments", data={
             "title": "API notes", "kind": "API", "share": "reviewed"},
             files={"file": ("notes.md", b"# The invoice API\n", "text/markdown")}), 201)["id"]
-        draft = ok(alice.get(f"/api/v1/apps/{cls.billing}/package-draft"))
+        draft, extra = preview(alice, cls.billing)
         cls.package = ok(alice.post(f"/api/v1/apps/{cls.billing}/packages",
-                                    json={"sha256": draft["sha256"], "approve": True, "summary": "First"}), 201)
+                                    json={"sha256": ok(draft)["sha256"], "approve": True, "summary": "First",
+                                          **extra}), 201)
         # build setup and a build session with the fake provider
         ok(root.post("/api/v1/setup/builds/repos", json={"repo": REPO}), 201)
         started = ok(cls.as_("bob").post(f"/api/v1/apps/{cls.billing}/builds", json={
@@ -261,18 +262,20 @@ class ApiTest(unittest.TestCase):
 
     def test_packages(self):
         alice, bob = self.as_("alice"), self.as_("bob")
-        draft = self.ok(alice.get(f"/api/v1/apps/{self.billing}/package-draft"))
+        draft, extra = preview(alice, self.billing)
+        draft = self.ok(draft)
         if not draft["unchanged"]:  # another test linked more evidence: freeze it as the next revision
             frozen = self.ok(alice.post(f"/api/v1/apps/{self.billing}/packages",
-                                        json={"sha256": draft["sha256"], "approve": True}), 201)
+                                        json={"sha256": draft["sha256"], "approve": True, **extra}), 201)
             self.assertEqual(frozen["rev"], draft["next_rev"])
-            draft = self.ok(alice.get(f"/api/v1/apps/{self.billing}/package-draft"))
+            draft = self.ok(preview(alice, self.billing)[0])
         self.assertTrue(draft["unchanged"])
         listed = self.ok(bob.get(f"/api/v1/apps/{self.billing}/packages"))
         self.assertEqual(listed["packages"][-1]["rev"], 1)
         self.assertIsNone(self.ok(bob.get(f"/api/v1/apps/{self.billing}/packages/1"))["report"])
         self.assertIsInstance(self.ok(alice.get(f"/api/v1/apps/{self.billing}/packages/1"))["report"], list)
-        again = alice.post(f"/api/v1/apps/{self.billing}/packages", json={"sha256": draft["sha256"], "approve": True})
+        again = alice.post(f"/api/v1/apps/{self.billing}/packages", json={"sha256": draft["sha256"], "approve": True,
+                                                                          **extra})
         self.assertEqual((again.status_code, again.json()["code"]), (409, "unchanged"))
         stale = alice.post(f"/api/v1/apps/{self.billing}/packages", json={"sha256": "0" * 64, "approve": True})
         self.assertEqual((stale.status_code, stale.json()["code"]), (409, "draft_changed"))

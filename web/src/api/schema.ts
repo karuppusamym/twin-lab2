@@ -457,6 +457,14 @@ export interface paths {
          *     `sha256` must be the SHA-256 of the current draft from `GET .../package-draft`. If the
          *     draft changed since the preview, or nothing changed since the latest revision, 409
          *     (`code: draft_changed` / `unchanged`). Needs a business scenario (400). Audited as `package.freeze`.
+         *
+         *     A draft with critical completeness gaps (`completeness.passed: false` on the preview) is
+         *     refused with 409 `code: incomplete_package` (one `errors` entry per critical gap: `field`
+         *     is the spec item) unless `override_reason` gives a written reason (at least 10
+         *     characters). The package then carries the reason and those gaps ("Known gaps" in
+         *     BUILD_TASK.md, `known_gaps` in evidence.json and on the revision), so `sha256` must be that
+         *     of the draft previewed with the same `override_reason`. Audited as
+         *     `package.freeze_override`.
          */
         post: operations["freezePackage"];
         delete?: never;
@@ -477,8 +485,13 @@ export interface paths {
         /**
          * The draft package exactly as freezing would store it
          * @description Owner. Every file with its size and SHA-256 (text files in full), the archive's SHA-256 to
-         *     approve, and the pre-freeze report (what was excluded or redacted, and why). 400 without a
-         *     business scenario.
+         *     approve, the pre-freeze report (what was excluded or redacted, and why) and the
+         *     completeness of the draft against the package completeness spec
+         *     (docs/PACKAGE-COMPLETENESS.md): a score per section and every gap with the page and action
+         *     that fix it. 400 without a business scenario.
+         *
+         *     With `override_reason` (at least 10 characters) and critical gaps, the draft carries the
+         *     reason and those gaps as "Known gaps": the bytes a freeze with that reason stores.
          */
         get: operations["previewPackageDraft"];
         put?: never;
@@ -1588,7 +1601,7 @@ export interface components {
             /**
              * @description A stable machine-readable reason where the web app acts on it: `signed_out`,
              *     `wrong_credentials`, `csrf`, `role`, `restricted`, `draft_changed`, `unchanged`,
-             *     `plan_changed`, `publish_locked`.
+             *     `incomplete_package`, `plan_changed`, `publish_locked`.
              */
             code?: string;
             /** @description Per-field problems of a request body. */
@@ -2018,6 +2031,68 @@ export interface components {
             files: components["schemas"]["PackageFile"][];
             /** @description The pre-freeze report; null unless the caller is an owner. */
             report: components["schemas"]["ReportEntry"][] | null;
+            /** @description The completeness of the frozen package; null for a revision frozen before it was checked. */
+            completeness: components["schemas"]["PackageCompleteness"] | null;
+            /** @description The owner's reason for freezing over critical gaps, and those gaps; null when none were overridden. */
+            known_gaps: components["schemas"]["KnownGaps"] | null;
+        };
+        CompletenessFix: {
+            /** @description The page (and section) where the owner fixes it. */
+            page: string;
+            /** @description The web app's path of that page. */
+            href: string;
+            /** @description What to do there. */
+            action: string;
+        };
+        CompletenessGap: {
+            /** @description The spec item, e.g. scenario.expected. */
+            item: string;
+            title: string;
+            section: string;
+            /** @enum {string} */
+            severity: "critical" | "important" | "nice";
+            /** @description Why the builder or the replay needs it. */
+            why: string;
+            fix: components["schemas"]["CompletenessFix"];
+            /** @description Which scenario, screen or event lacks it. */
+            details: string[];
+            /** @description Set when today's recorder or pack builder cannot produce the item at all. */
+            capture_gap?: string;
+        };
+        CompletenessSection: {
+            id: string;
+            title: string;
+            score: number;
+            present: string[];
+            missing: string[];
+            not_applicable: string[];
+        };
+        CompletenessCounts: {
+            critical: number;
+            important: number;
+            nice: number;
+        };
+        /** @description A package checked against the package completeness spec (server/twinlab2/pack_validator.py). */
+        PackageCompleteness: {
+            spec_version: number;
+            /** @enum {string} */
+            surface: "web" | "desktop" | "mainframe";
+            /** @description No critical item is missing. */
+            passed: boolean;
+            /** @description Present items weighted by severity (critical 3, important 2, nice 1). */
+            score: number;
+            sections: components["schemas"]["CompletenessSection"][];
+            /** @description Most severe first. */
+            gaps: components["schemas"]["CompletenessGap"][];
+            counts: components["schemas"]["CompletenessCounts"];
+        };
+        KnownGap: {
+            item: string;
+            title: string;
+        };
+        KnownGaps: {
+            reason: string;
+            gaps: components["schemas"]["KnownGap"][];
         };
         PackageList: {
             app: components["schemas"]["AppRef"];
@@ -2036,6 +2111,9 @@ export interface components {
             /** @description The draft is the latest revision's bytes; nothing to freeze. */
             unchanged: boolean;
             next_rev: number;
+            completeness: components["schemas"]["PackageCompleteness"];
+            /** @description The reason and gaps this draft carries (previewed with `override_reason` over critical gaps); else null. */
+            known_gaps: components["schemas"]["KnownGaps"] | null;
         };
         FreezeInput: {
             sha256: components["schemas"]["Sha256"];
@@ -2046,6 +2124,8 @@ export interface components {
              * @constant
              */
             approve: true;
+            /** @description Freeze despite critical completeness gaps, for this reason (at least 10 characters; audited and carried by the package). The same reason the draft was previewed with. */
+            override_reason?: string;
         };
         ApprovedPack: components["schemas"]["PackageRevisionSummary"] & {
             files: components["schemas"]["PackageFile"][];
@@ -3586,7 +3666,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
-            /** @description The draft changed since the preview (or is unchanged since the latest revision). */
+            /** @description The draft changed since the preview, is unchanged since the latest revision, or misses critical items without an override reason. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3599,7 +3679,10 @@ export interface operations {
     };
     previewPackageDraft: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description The owner's reason to freeze over critical gaps. */
+                override_reason?: string;
+            };
             header?: never;
             path: {
                 app_id: components["parameters"]["AppId"];

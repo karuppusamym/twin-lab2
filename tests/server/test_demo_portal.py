@@ -42,6 +42,11 @@ class DemoPortalTest(unittest.TestCase):
             self.assertEqual([r["state"] for r in billing["releases"]], ["published"])
             receivable = apps["Accounts Receivable"]["id"]
             self.assertEqual(len(alice.get(f"/api/v1/apps/{receivable}/packages").json()["packages"]), 1)
+            # both seeded packages are complete: frozen without a known-gaps override
+            for app_id in (apps["Billing"]["id"], receivable):
+                revision = alice.get(f"/api/v1/apps/{app_id}/packages/1").json()
+                self.assertTrue(revision["completeness"]["passed"], revision["completeness"]["gaps"])
+                self.assertIsNone(revision["known_gaps"])
 
             export = alice.get(f"/api/v1/recordings/{recording}/packages/download")
             self.assertEqual(export.status_code, 200)

@@ -43,6 +43,7 @@ from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
 from twinlab2 import artifacts
 from twinlab2 import demo_target
+from twinlab2 import pack_validator
 from twinlab2 import redact
 from twinlab2 import scenarios
 from twinlab2_contract import structure
@@ -51,7 +52,8 @@ FORMAT = 2
 TEXT_EXTENSIONS = {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".sql", ".har"}
 NAMED_KEY = re.compile(
     r"^(?:(?:Ctrl|Control|Alt|Shift|Win|Meta|Cmd)\+)*(?:Enter|Return|Tab|Esc|Escape|Backspace|Delete|Del|Insert"
-    r"|Home|End|PageUp|PageDown|Page_Up|Page_Down|Up|Down|Left|Right|Arrow(?:Up|Down|Left|Right)|Space|F\d{1,2})$"
+    r"|Home|End|PageUp|PageDown|Page_Up|Page_Down|Up|Down|Left|Right|Arrow(?:Up|Down|Left|Right)|Space|F\d{1,2}"
+    r"|PF\d{1,2}|PA[1-3]|Clear)$"
     r"|^(?:(?:Ctrl|Control|Alt|Win|Meta|Cmd)\+)+(?:Shift\+)?[A-Za-z0-9]$", re.I)
 
 
@@ -223,6 +225,9 @@ def manifest(db, app_id, version_path=".twinlab/version"):
     app = dict(app)
     if "://" in (app.get("git_url") or ""):  # never a credential in the address: `https://bot:token@host/...`
         app["git_url"] = demo_target.public_git_url(app["git_url"])
+    toolkit = toolkit_of(db, app_id)
+    if toolkit:
+        app["toolkit"] = toolkit
     data = {
         "format": FORMAT, "app": app, "scenarios": items, "evidence": linked, "attachments": attachments,
         "target": target,
@@ -243,6 +248,20 @@ def manifest(db, app_id, version_path=".twinlab/version"):
     return data, files, report
 
 
+def toolkit_of(db, app_id):
+    """The desktop toolkit (WinForms, WPF, …) the recorder detected for one of the application's
+    identities (`app_identities.facts`), or None."""
+    for row in db.execute("SELECT facts FROM app_identities WHERE app_id = ? ORDER BY key", (app_id,)):
+        try:
+            facts = json.loads(row[0] or "{}")
+        except (TypeError, ValueError):
+            continue
+        value = facts.get("toolkit") if isinstance(facts, dict) else None
+        if isinstance(value, str) and value:
+            return redact.redact_text(value)[:40]
+    return None
+
+
 def redact_strings(value, found):
     """Every string in the value through the text rules (keys are the pack's own schema)."""
     if isinstance(value, dict):
@@ -254,7 +273,7 @@ def redact_strings(value, found):
     return value
 
 
-def task_markdown(data, revision, version_path):
+def task_markdown(data, revision, version_path, completeness=None):
     out = [f"# Build {data['app']['name']}", "", f"Brief revision `{revision}`", ""]
     out += ["Build a repeatable copy of this application for the business scenarios below. "
             "`evidence.json` has the same scenarios with the recorded events (screen, control and label), "
@@ -287,6 +306,8 @@ def task_markdown(data, revision, version_path):
         out += screens_markdown(data)
     if data.get("target"):
         out += demo_target.markdown(data["target"])
+    if completeness is not None:
+        out += pack_validator.markdown(completeness, data.get("known_gaps"))
     if data["unresolved_questions"]:
         out += ["## Other unresolved questions", ""]
         out += [f"- {q}" for q in data["unresolved_questions"]] + [""]
@@ -402,6 +423,7 @@ class Draft:
     files: dict  # path -> bytes, in archive order
     package: bytes  # the ZIP
     report: list = field(default_factory=list)  # items excluded or redacted, with reasons
+    validation: dict = field(default_factory=dict)  # pack_validator.validate of the pack
 
     @property
     def sha256(self):
@@ -425,13 +447,24 @@ class Draft:
         return text
 
 
-def draft(db, app_id, version_path):
+def draft(db, app_id, version_path, known_gaps=None):
+    """The pack of the catalog's current state, validated (`pack_validator`): evidence.json
+    carries the result as `completeness` and BUILD_TASK.md as "Completeness". `known_gaps` is
+    the owner's written reason for freezing over critical gaps: when there are any, the pack also
+    carries it, with those gaps, as `known_gaps` and "Known gaps" (so the owner previews and
+    approves exactly those bytes); without critical gaps it is not used."""
     data, attachments, report = manifest(db, app_id, version_path)
+    validation = pack_validator.validate(data, attachments)
+    data["completeness"] = pack_validator.summary(validation)
+    if known_gaps and not validation["passed"]:
+        data["known_gaps"] = {"reason": redact.redact_text(known_gaps),
+                              "gaps": [{"item": g["item"], "title": g["title"]}
+                                       for g in pack_validator.critical(validation)]}
     contents = json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2)
     revision = hashlib.sha256(contents.encode("utf-8")).hexdigest()
-    files = {"BUILD_TASK.md": task_markdown(data, revision, version_path).encode("utf-8"),
+    files = {"BUILD_TASK.md": task_markdown(data, revision, version_path, validation).encode("utf-8"),
              "evidence.json": contents.encode("utf-8"), **attachments}
-    return Draft(revision, contents, files, archive(files), report)
+    return Draft(revision, contents, files, archive(files), report, validation)
 
 
 def build(db, app_id, version_path):
