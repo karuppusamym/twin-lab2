@@ -695,6 +695,13 @@ class AppEvidence(Model):
     merge_candidates: list[AppRef]
 
 
+class Binding(Model):
+    """A typing or selecting step bound to a fixture field (an example line's field) or a shared identifier."""
+    event: str
+    field: str | None = None
+    identifier: str | None = None
+
+
 class ScenarioInput(Model):
     name: str
     starting: str | None = None
@@ -705,6 +712,7 @@ class ScenarioInput(Model):
     questions: str | None = None
     notes: str | None = None
     events: list[str] | None = None
+    bindings: list[Binding] | None = None
     expected_revision: Revision | None = None
 
 
@@ -728,10 +736,145 @@ class EventChoice(Model):
     recording: str
 
 
+class SharedIdentifier(Model):
+    name: str
+    field: str
+    type: str
+    value: str
+    producer: int | None
+    consumers: list[int]
+
+
 class ScenarioList(Model):
     scenarios: list[Scenario]
     fields: list[ScenarioField]
     event_choices: list[EventChoice]
+    identifiers: list[SharedIdentifier] | None = None
+
+
+class InterfaceRelationship(Model):
+    kind: Literal['identifier', 'api', 'file']
+    producer: int
+    consumer: int
+    identifier: str | None = None
+    when_down: str
+    detail: dict[str, Any] | None = None
+
+
+class InterfaceApp(Model):
+    id: int
+    name: str
+
+
+class InterfaceDoc(Model):
+    version: int
+    recording_id: str | None = None
+    apps: list[InterfaceApp]
+    identifiers: list[SharedIdentifier]
+    relationships: list[InterfaceRelationship]
+    launch_order: list[int]
+    reset_order: list[int]
+
+
+class InterfaceContract(Model):
+    recording_id: str
+    edited: bool
+    revision: int
+    edited_by: str | None = None
+    edited_at: str | None = None
+    doc: InterfaceDoc
+    generated: InterfaceDoc | Any | None = None
+
+
+class InterfaceList(Model):
+    contracts: list[InterfaceContract]
+
+
+class InterfaceInput(Model):
+    doc: InterfaceDoc
+    expected_revision: int | None = None
+
+
+class NeededState(Model):
+    screen: str
+    state: str
+    number: int
+    events: list[str]
+
+
+class BaselineCandidate(Model):
+    source: Literal['recording', 'attachment']
+    label: str
+    attachment_id: int | None = None
+    recording_id: str | None = None
+    event_id: str | None = None
+    screen: str | None = None
+    state: str | None = None
+
+
+class Baseline(Model):
+    id: int
+    screen: str
+    state: str
+    viewport: str
+    theme: Literal['light', 'dark']
+    scale: str
+    source: str
+    attachment_id: int | None = None
+    recording_id: str | None = None
+    event_id: str | None = None
+    sha256: str
+    approved_by: str
+    approved_at: str
+
+
+class BaselineList(Model):
+    needed: list[NeededState]
+    approved: list[Baseline]
+    candidates: list[BaselineCandidate]
+
+
+class BaselineSource(Model):
+    attachment_id: int | None = None
+    recording_id: str | None = None
+    event_id: str | None = None
+
+
+class BaselineInput(Model):
+    screen: str
+    state: str
+    viewport: str
+    theme: Literal['light', 'dark']
+    scale: str
+    source: BaselineSource
+
+
+class ConfirmationInput(Model):
+    note: str | None = None
+
+
+class Confirmation(Model):
+    item: str
+    note: str
+
+
+class CompletenessItem(Model):
+    item: str
+    title: str
+    section: str
+    dimension: str
+    severity: Literal['critical', 'important', 'nice']
+    status: Literal['present', 'missing', 'not_applicable']
+    level: Literal['documented', 'observed', 'owner-confirmed', 'replay-tested'] | Any
+    confirmed: bool
+
+
+class EvidenceLevels(Model):
+    missing: int
+    documented: int
+    observed: int
+    owner_confirmed_: int = Field(alias='owner-confirmed')
+    replay_tested_: int = Field(alias='replay-tested')
 
 
 class PackageFile(Model):
@@ -790,6 +933,9 @@ class PackageCompleteness(Model):
     dimensions: list[CompletenessSection]
     gaps: list[CompletenessGap]
     counts: CompletenessCounts
+    coverage: int | None = None
+    levels: EvidenceLevels | None = None
+    items: list[CompletenessItem] | None = None
 
 
 class KnownGap(Model):
@@ -1923,6 +2069,12 @@ Automation.model_rebuild()
 AutomationDetail.model_rebuild()
 AutomationPage.model_rebuild()
 AutomationRef.model_rebuild()
+Baseline.model_rebuild()
+BaselineCandidate.model_rebuild()
+BaselineInput.model_rebuild()
+BaselineList.model_rebuild()
+BaselineSource.model_rebuild()
+Binding.model_rebuild()
 Build.model_rebuild()
 BuildBrief.model_rebuild()
 BuildDetail.model_rebuild()
@@ -1947,7 +2099,10 @@ Completeness.model_rebuild()
 CompletenessCounts.model_rebuild()
 CompletenessFix.model_rebuild()
 CompletenessGap.model_rebuild()
+CompletenessItem.model_rebuild()
 CompletenessSection.model_rebuild()
+Confirmation.model_rebuild()
+ConfirmationInput.model_rebuild()
 ConnectionCheck.model_rebuild()
 DataBackend.model_rebuild()
 DataBackendInput.model_rebuild()
@@ -1956,6 +2111,7 @@ DeploymentCheck.model_rebuild()
 DeploymentInput.model_rebuild()
 Event.model_rebuild()
 EventChoice.model_rebuild()
+EvidenceLevels.model_rebuild()
 EvidenceLink.model_rebuild()
 EvidencePreview.model_rebuild()
 FileLocations.model_rebuild()
@@ -1967,6 +2123,12 @@ Home.model_rebuild()
 Identity.model_rebuild()
 IdentityInput.model_rebuild()
 IdentityView.model_rebuild()
+InterfaceApp.model_rebuild()
+InterfaceContract.model_rebuild()
+InterfaceDoc.model_rebuild()
+InterfaceInput.model_rebuild()
+InterfaceList.model_rebuild()
+InterfaceRelationship.model_rebuild()
 Job.model_rebuild()
 Journey.model_rebuild()
 JourneyStep.model_rebuild()
@@ -1980,6 +2142,7 @@ MachineList.model_rebuild()
 MergeInput.model_rebuild()
 MergePlan.model_rebuild()
 MergeSide.model_rebuild()
+NeededState.model_rebuild()
 NewApp.model_rebuild()
 NewAutomation.model_rebuild()
 NewBuild.model_rebuild()
@@ -2045,6 +2208,7 @@ Session.model_rebuild()
 SetupPage.model_rebuild()
 ShareInput.model_rebuild()
 SharedHost.model_rebuild()
+SharedIdentifier.model_rebuild()
 SignIn.model_rebuild()
 Suggestion.model_rebuild()
 TestInput.model_rebuild()

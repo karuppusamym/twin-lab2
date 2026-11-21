@@ -43,6 +43,7 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel
 
 from twinlab2.replay import bindings as bindings_mod
+from twinlab2_contract import package
 from twinlab2_contract.evidence import dom as domlib
 from twinlab2.replay.acceptance import CaseResult
 from twinlab2.replay.judging import Category, Divergence, Requirements
@@ -325,6 +326,39 @@ def latest(root: Path, app_id: str) -> tuple[str, FidelityReport] | None:
         except ValueError:
             continue
     return None
+
+
+def twin_label_required() -> bool:
+    """Verify replays a twin built from a format-3 package: its label must show on every screen
+    (`--twin-label`), and is left out of every comparison."""
+    import os
+
+    return os.environ.get("TWINLAB2_TWIN_LABEL") == "1"
+
+
+class hidden_label:
+    """The twin's banner hidden while a picture is taken, so the visual comparison never sees it."""
+
+    def __init__(self, page):
+        self.page = page
+
+    def __enter__(self):
+        if twin_label_required():
+            try:
+                self.page.evaluate(f"document.querySelectorAll('[{package.TWIN_ATTR}]')"
+                                   ".forEach(e => {{ e.dataset.twinVis = e.style.visibility; e.style.visibility = 'hidden'; }})")
+            except Exception:  # noqa: BLE001 - a picture is still taken
+                pass
+        return self
+
+    def __exit__(self, *exc):
+        if twin_label_required():
+            try:
+                self.page.evaluate(f"document.querySelectorAll('[{package.TWIN_ATTR}]')"
+                                   ".forEach(e => {{ e.style.visibility = e.dataset.twinVis || ''; }})")
+            except Exception:  # noqa: BLE001
+                pass
+        return False
 
 
 def _data_row(sig: str) -> bool:
@@ -1487,7 +1521,14 @@ def replay(
                     live = domlib.page_html(page)
                     if placed is not None:  # ids that were a typed value: as recorded
                         live = placed.redact_html(live)
+                    label_missing = False
+                    if twin_label_required():  # the twin's own label: required, never compared
+                        label_missing = not package.html_has_label(live)
+                        live = package.strip_label_html(live)
                     diffs = compare_dom(expected_html, live, step.seq, supplied)
+                    if label_missing:
+                        diffs.append(Difference(step=step.seq, element="(AI generated Twin App label)",
+                                                check="twin_label", expected=package.TWIN_LABEL, actual=None))
                     # an element exclusion covers the element and what is inside it
                     names = scope_mod.resolve(sc, expected_html, live) if diffs else {}
                     for d in diffs:
@@ -1579,7 +1620,8 @@ def _shoot(page, artifacts: Path | None, seq: int, shots: dict[int, str]) -> Non
         return
     try:
         path = Path(artifacts) / f"step-{seq:04d}.after.png"
-        page.screenshot(path=str(path), animations="disabled", caret="hide")
+        with hidden_label(page):
+            page.screenshot(path=str(path), animations="disabled", caret="hide")
         shots[seq] = str(path)
     except Exception:  # noqa: BLE001 - a missing picture never loses the result
         pass

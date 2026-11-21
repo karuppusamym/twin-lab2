@@ -431,7 +431,10 @@ def _count(mask) -> int:
 
 def shoot(page, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    page.screenshot(path=str(path), animations="disabled", caret="hide", scale="css")
+    from twinlab2.replay.fidelity import hidden_label
+
+    with hidden_label(page):  # the twin's label is not part of the original's picture
+        page.screenshot(path=str(path), animations="disabled", caret="hide", scale="css")
     return path
 
 

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
+import { BaselinesSection, EvidenceLevels, InterfacesSection } from "../components/Bundle";
 import { CompletenessChecklist, PackageFiles } from "../components/shared";
 import { ErrorText, QueryView, useAction, useTitle } from "../components/ui";
 import { plural, short } from "../lib/format";
@@ -55,7 +56,12 @@ function Preview({ draft, reason, onReason }: { draft: Schemas["PackageDraft"]; 
           (<a href="https://github.com/karuppusamym/twin-lab2/blob/main/docs/PACKAGE-COMPLETENESS.md">the spec</a>). A package with a critical
           item missing is frozen only with your written reason.</p>
         <CompletenessChecklist completeness={draft.completeness} fixLinks />
+        <EvidenceLevels completeness={draft.completeness} appId={draft.app.id} />
       </section>
+
+      <BaselinesSection appId={draft.app.id} />
+
+      <InterfacesSection appId={draft.app.id} />
 
       <section id="report" aria-labelledby="report-h">
         <h2 id="report-h">Pre-freeze report</h2>

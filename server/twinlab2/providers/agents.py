@@ -77,7 +77,7 @@ async def copilot(prompt, ctx):
     async def on_permission(request, _invocation):
         kind = getattr(request, "kind", "tool")
         details = {k: v for k, v in vars(request).items() if isinstance(v, (str, int, bool, list))} if hasattr(request, "__dict__") else {}
-        if kind == "read" or await ctx.ask_tool(f"copilot:{kind}", details):
+        if await ctx.ask_tool(f"copilot:{kind}", details):
             return PermissionDecisionApproveOnce()
         return PermissionDecisionReject(feedback="Denied in the TwinLab2 session chat.")
 
