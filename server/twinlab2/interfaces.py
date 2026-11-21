@@ -318,12 +318,19 @@ def for_pack(db, app_id) -> list[dict]:
         rec = doc.get("recording_id") or c["recording_id"]
         _apps_, order = _apps(db, rec)
         named = {a["id"]: set(_uses(db, a["id"], rec, order)) for a in doc["apps"]}
-        idents = []
-        for i in doc["identifiers"]:
-            idents.append(dict(i, produced=i.get("producer") is not None and i["name"] in named.get(i["producer"], set())))
-        out.append({"recording_id": rec, "edited": c["edited"], "apps": doc["apps"], "identifiers": idents,
-                    "relationships": [r for r in doc["relationships"] if app_id in (r["producer"], r["consumer"])],
-                    "launch_order": doc["launch_order"], "reset_order": doc["reset_order"]})
+        # only the applications this one exchanges data with: a package never names the others
+        rels = [r for r in doc["relationships"] if app_id in (r["producer"], r["consumer"])]
+        idents = [i for i in doc["identifiers"] if app_id == i.get("producer") or app_id in (i.get("consumers") or [])]
+        related = {app_id} | {r["producer"] for r in rels} | {r["consumer"] for r in rels} |             {i.get("producer") for i in idents if i.get("producer") is not None}
+        if len(related) < 2:
+            continue
+        idents = [dict(i, consumers=[x for x in i.get("consumers") or [] if x in related],
+                       produced=i.get("producer") is not None and i["name"] in named.get(i["producer"], set()))
+                  for i in idents]
+        out.append({"recording_id": rec, "edited": c["edited"], "apps": [a for a in doc["apps"] if a["id"] in related],
+                    "identifiers": idents, "relationships": rels,
+                    "launch_order": [a for a in doc["launch_order"] if a in related],
+                    "reset_order": [a for a in doc["reset_order"] if a in related]})
     return out
 
 

@@ -24,6 +24,7 @@ from starlette.datastructures import MultiDict
 from twinlab2 import api_models as m
 from twinlab2 import artifacts
 from twinlab2 import audit
+from twinlab2 import baselines
 from twinlab2 import demo_target
 from twinlab2 import auth
 from twinlab2 import buildpack
@@ -45,6 +46,7 @@ from twinlab2 import uploads
 from twinlab2 import verification as commit_checks
 from twinlab2 import verifications
 from twinlab2 import idempotency
+from twinlab2 import interfaces
 from twinlab2.auth import require_role
 from twinlab2.portal import (ATTACHMENT_TYPES, RESULTS, VERSION_PATH, PublishConflict, acquire_publish,
                              brief_scenarios, deployment_label, deployment_reason, ordered, publish,
@@ -621,6 +623,7 @@ def list_scenarios(app_id: int):
         "scenarios": [scenario_view(s) for s in scenarios.load(db(), app_id)],
         "fields": [{"key": key, "label": label, "max_length": limit}
                    for key, (label, limit) in scenarios.FIELDS.items()],
+        "identifiers": [i for c in interfaces.of_app(db(), app_id) for i in c["doc"]["identifiers"]],
         "event_choices": [{"ref": key, "seq": e["seq"], "action": e["action"], "label": e.get("label"),
                            "screen": e.get("screen"), "recording": e["recording"]}
                           for key, e in selected_events(app_id).items()],
@@ -1081,7 +1084,8 @@ def preview_pack(app_id: int, override_reason: str = ""):
             "size": len(d.package), "files": file_list(d.files), "report": report_entries(d.report),
             "summary": d.summary(), "latest": shapes.package_summary(latest) if latest else None,
             "unchanged": latest is not None and latest["sha256"] == d.sha256,
-            "next_rev": (latest["rev"] if latest else 0) + 1, "completeness": d.validation,
+            "next_rev": (latest["rev"] if latest else 0) + 1,
+            "completeness": pack_validator.with_tested(d.validation, tested_dimensions(app_id, d.revision)),
             "known_gaps": json.loads(d.manifest).get("known_gaps")}
 
 
@@ -1562,3 +1566,133 @@ def download_release(release_id: int):
         auth.ensure("builder", app_id=item["app_id"])
     return send_stored(item, "archive", f"demo-{item['app_id']}-{item['version']}.zip")
 
+
+
+
+# -- package bundle: baselines, interface contracts, confirmations ---------------------------------------
+
+
+def tested_dimensions(app_id, revision):
+    """The per-dimension results of the latest verification of a release built from this
+    package revision (the items they exercised are shown as replay-tested), or {}."""
+    row = db().execute(
+        "SELECT verifications.dimensions FROM verifications JOIN releases ON releases.id = verifications.release_id "
+        "WHERE verifications.app_id = ? AND releases.revision = ? AND verifications.dimensions IS NOT NULL "
+        "ORDER BY verifications.id DESC LIMIT 1", (app_id, revision)).fetchone()
+    try:
+        return json.loads(row["dimensions"]) if row else {}
+    except ValueError:
+        return {}
+
+
+@routes.get(V1 + "/apps/{app_id:int}/baselines", require_role("owner"), response_model=m.BaselineList)
+def list_baselines(app_id: int):
+    get_app(app_id)
+    return {"needed": baselines.needed(db(), app_id), "approved": baselines.approved(db(), app_id),
+            "candidates": baselines.candidates(db(), app_id)}
+
+
+@routes.get(V1 + "/apps/{app_id:int}/baselines/picture", require_role("owner"))
+def baseline_picture(app_id: int, attachment_id: int | None = None, recording_id: str = "", event_id: str = ""):
+    get_app(app_id)
+    source = {"attachment_id": attachment_id} if attachment_id is not None else         {"recording_id": recording_id, "event_id": event_id}
+    try:
+        content = baselines.picture(db(), app_id, source)
+    except LookupError as error:
+        fail(404, str(error))
+    kind = "image/jpeg" if content[:2] == bytes([0xFF, 0xD8]) else "image/png"
+    return Response(content, media_type=kind, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@routes.post(V1 + "/apps/{app_id:int}/baselines", require_role("owner"), response_model=m.Baseline, status_code=201)
+def approve_baseline(app_id: int, body: m.BaselineInput):
+    get_app(app_id)
+    data = payload(body)
+    try:
+        out = baselines.approve(db(), app_id, data, g.user, registry.now())
+    except ValueError as error:
+        fail(400, str(error))
+    except LookupError as error:
+        fail(404, str(error))
+    record("baseline.approve", "baseline", out["id"], app_id=app_id, screen=out["screen"], state=out["state"],
+           viewport=out["viewport"], theme=out["theme"], scale=out["scale"], source=out["source"])
+    return out
+
+
+@routes.delete(V1 + "/apps/{app_id:int}/baselines/{baseline_id:int}", require_role("owner"), status_code=204)
+def remove_baseline(app_id: int, baseline_id: int):
+    get_app(app_id)
+    try:
+        baselines.remove(db(), app_id, baseline_id)
+    except LookupError:
+        fail(404, "There is no such baseline.")
+    record("baseline.remove", "baseline", baseline_id, app_id=app_id)
+    return Response(status_code=204)
+
+
+def interface_view(c):
+    return {k: c.get(k) for k in ("recording_id", "edited", "revision", "edited_by", "edited_at", "doc", "generated")}
+
+
+@routes.get(V1 + "/apps/{app_id:int}/interfaces", require_role("owner"), response_model=m.InterfaceList)
+def list_interfaces(app_id: int):
+    get_app(app_id)
+    return {"contracts": [interface_view(c) for c in interfaces.of_app(db(), app_id)]}
+
+
+def contract_of(app_id, recording_id):
+    get_app(app_id)
+    if recording_id not in interfaces.recordings_of(db(), app_id):
+        fail(404, "This application has no events in that recording.")
+    found = interfaces.current(db(), recording_id)
+    if found is None:
+        fail(404, "Only one application has selected events in that recording: there is no interface contract.")
+    return found
+
+
+@routes.put(V1 + "/apps/{app_id:int}/interfaces/{recording_id}", require_role("owner"), response_model=m.InterfaceContract)
+def save_interface(app_id: int, recording_id: str, body: m.InterfaceInput):
+    current = contract_of(app_id, recording_id)
+    data = payload(body)
+    try:
+        saved = interfaces.save(db(), recording_id, data.get("doc"), g.user, registry.now(),
+                                expected_revision=data.get("expected_revision"))
+    except ValueError as error:
+        fail(400, str(error))
+    except interfaces.Stale:
+        raise revisions.conflict(interface_view(current), "this interface contract") from None
+    record("interfaces.save", "interface_contract", recording_id, app_id=app_id, revision=saved["revision"])
+    return interface_view(saved)
+
+
+@routes.delete(V1 + "/apps/{app_id:int}/interfaces/{recording_id}", require_role("owner"), status_code=204)
+def reset_interface(app_id: int, recording_id: str):
+    contract_of(app_id, recording_id)
+    interfaces.reset(db(), recording_id)
+    record("interfaces.reset", "interface_contract", recording_id, app_id=app_id)
+    return Response(status_code=204)
+
+
+@routes.put(V1 + "/apps/{app_id:int}/confirmations/{item}", require_role("owner"), response_model=m.Confirmation)
+def confirm_item(app_id: int, item: str, body: m.ConfirmationInput):
+    get_app(app_id)
+    if item not in pack_validator.BY_ID:
+        fail(400, "There is no such completeness item.")
+    note = redact.redact_text(str(payload(body).get("note") or "")[:1000])
+    with db():
+        readiness_cache.forget(db(), app_id)
+        db().execute("DELETE FROM item_confirmations WHERE app_id = ? AND item = ?", (app_id, item))
+        db().execute("INSERT INTO item_confirmations(app_id, item, note, confirmed_by, confirmed_at) VALUES (?, ?, ?, ?, ?)",
+                     (app_id, item, note, g.user, registry.now()))
+    record("item.confirm", "completeness_item", item, app_id=app_id)
+    return {"item": item, "note": note}
+
+
+@routes.delete(V1 + "/apps/{app_id:int}/confirmations/{item}", require_role("owner"), status_code=204)
+def unconfirm_item(app_id: int, item: str):
+    get_app(app_id)
+    with db():
+        readiness_cache.forget(db(), app_id)
+        db().execute("DELETE FROM item_confirmations WHERE app_id = ? AND item = ?", (app_id, item))
+    record("item.unconfirm", "completeness_item", item, app_id=app_id)
+    return Response(status_code=204)

@@ -94,19 +94,30 @@ class FakeGitHub:
         self.server.server_close()
 
 
-class Deployment:
-    """A built app that reports `commit` at /.twinlab/version."""
+TWIN_PAGE = ('<!doctype html><html><head><meta name="twin-app" content="AI generated Twin App"></head><body>'
+             '<div data-twin-app style="position:fixed">AI generated Twin App</div></body></html>')
 
-    def __init__(self, commit):
+
+class Deployment:
+    """A built app that reports `commit` at /.twinlab/version and shows the twin's label on its
+    pages (`labelled=False`: a twin without it)."""
+
+    def __init__(self, commit, labelled=True):
         self.commit = commit
+        self.labelled = labelled
         stub = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 self.send_response(200)
-                self.send_header("Content-Type", "application/json")
+                if self.path.rstrip("/").endswith(".twinlab/version"):
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"commit": stub.commit}).encode())
+                    return
+                self.send_header("Content-Type", "text/html")
                 self.end_headers()
-                self.wfile.write(json.dumps({"commit": stub.commit}).encode())
+                self.wfile.write((TWIN_PAGE if stub.labelled else "<html><body></body></html>").encode())
 
             def log_message(self, *args):
                 pass
