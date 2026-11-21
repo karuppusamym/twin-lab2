@@ -202,3 +202,52 @@ class ScaleTest(Base):
         saved = self.ok(self.client.put(url, json={"events": everything, "expected_revision": 0}))
         self.assertEqual(len(saved["selected"]), 2000)
         self.assertTrue(self.ok(self.client.delete(url + f"?expected_revision={saved['revision']}"))["removed"])
+
+    def test_the_catalog_is_grouped_by_status_family(self):
+        """Needs a scope decision, in build, tested, published, not replicated: each group counted
+        over every page, the pages family by family; a collapsed family takes no room on a page."""
+        import importlib.util
+        from pathlib import Path
+
+        tool = Path(__file__).resolve().parents[2] / "tools" / "demo_portal.py"
+        spec = importlib.util.spec_from_file_location("demo_portal_groups", tool)
+        demo = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(demo)
+        demo.scale_seed(self.client, apps=50, events=20)
+        order = ["decide", "build", "tested", "published", "not_replicated"]
+        every = self.ok(self.client.get("/api/v1/apps?limit=100"))
+        self.assertEqual([g["family"] for g in every["groups"]], order)
+        counts = {g["family"]: g["count"] for g in every["groups"]}
+        self.assertEqual(sum(counts.values()), 50)
+        self.assertEqual(counts["decide"], sum(a["status"] == "discovered" for a in every["apps"]))
+        self.assertEqual(counts["not_replicated"], sum(a["status"] == "not_replicated" for a in every["apps"]))
+        families = [a["family"] for a in every["apps"]]
+        self.assertEqual(families, sorted(families, key=order.index))
+        for group in every["groups"]:
+            if group["count"]:
+                self.assertEqual(every["apps"][group["offset"]]["family"], group["family"])
+            else:
+                self.assertIsNone(group["offset"])
+        # pages of 20: the groups count every page, the families follow on from page to page
+        seen, offset = [], 0
+        while offset is not None:
+            page = self.ok(self.client.get(f"/api/v1/apps?limit=20&offset={offset}"))
+            self.assertEqual({g["family"]: g["count"] for g in page["groups"]}, counts)
+            seen += [a["id"] for a in page["apps"]]
+            offset = page["page"]["next_offset"]
+        self.assertEqual(seen, [a["id"] for a in every["apps"]])
+        # collapsed: counted, not paged
+        folded = self.ok(self.client.get("/api/v1/apps?limit=100&collapsed=decide&collapsed=not_replicated"))
+        self.assertEqual({g["family"]: g["count"] for g in folded["groups"]}, counts)
+        self.assertEqual(folded["page"]["total"], 50 - counts["decide"] - counts["not_replicated"])
+        self.assertFalse({"decide", "not_replicated"} & {a["family"] for a in folded["apps"]})
+        self.assertEqual([g["collapsed"] for g in folded["groups"]], [True, False, False, False, True])
+        self.assertIsNone(folded["groups"][0]["offset"])
+        self.assertEqual(folded["groups"][1]["offset"], 0)
+        # with a filter and a sort: the groups count the matches, the sort applies within a family
+        owned = self.ok(self.client.get("/api/v1/apps", params={"owner": "ben", "sort": "-name"}))
+        self.assertEqual(sum(g["count"] for g in owned["groups"]), owned["page"]["total"])
+        for family in order:
+            names = [a["name"] for a in owned["apps"] if a["family"] == family]
+            self.assertEqual(names, sorted(names, key=str.casefold, reverse=True))
+        self.assertEqual(self.client.get("/api/v1/apps?collapsed=nope").status_code, 400)

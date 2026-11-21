@@ -153,6 +153,8 @@ tags:
     description: Setup / Advanced, build setup (admins).
   - name: users
     description: Local users and portal admins (admins).
+  - name: access
+    description: Requesting a role on an application, and its owners' decisions.
   - name: audit
     description: Append-only audit history.
   - name: agent
@@ -244,6 +246,13 @@ paths:
         order (out-of-scope applications last, then by name). `filters` lists the owners and stages
         to choose from (of every visible application, not only this page). `recordings` is the
         first 50 recordings the caller may open; the recordings list has them all.
+
+        The page is grouped by status family (`AppSummary.family`: needs a scope decision, in
+        build, tested, published, not replicated, in that order; the sort applies within each
+        family). `groups` counts every matching application per family, also those of other pages.
+        `collapsed` names families whose applications are counted but left out of the pages, so
+        a collapsed group takes no room on any page; each other group's `offset` is where its
+        first application is, to page straight to it.
       x-twinlab-role: signed-in
       parameters:
         - { $ref: "#/components/parameters/Limit" }
@@ -253,6 +262,10 @@ paths:
         - { name: status, in: query, schema: { $ref: "#/components/schemas/AppStatus" } }
         - { name: stage, in: query, schema: { type: string, maxLength: 120 } }
         - { name: sort, in: query, schema: { type: string, enum: [name, -name, owner, -owner, status, -status, stage, -stage] } }
+        - name: collapsed
+          in: query
+          description: Families to count but leave out of the pages (repeat the parameter for more than one).
+          schema: { type: array, items: { $ref: "#/components/schemas/AppFamily" }, maxItems: 5 }
       responses:
         "200":
           description: The catalog.
@@ -1580,6 +1593,101 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /api/v1/apps/{app_id}/access-requests:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    post:
+      tags: [access]
+      operationId: requestAccess
+      summary: Ask an application's owners for a role
+      description: |
+        Any signed-in user, typically after a 403 `role` on the application (its `app_id` and
+        `requested_role` are in that problem). Needs a role and a reason. One pending request per
+        person and application: asking again replaces its role and reason. The answer is the same
+        202 whether or not the application exists (a 403 hides that; so does this). Audited as
+        `access.request`. 400 when the caller already holds that role or a higher one.
+      x-twinlab-role: signed-in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccessRequestInput" }
+            examples:
+              builder: { value: { role: builder, reason: "I am rebuilding Billing for the demo week." } }
+      responses:
+        "202":
+          description: Sent to the owners (or nothing to send to; the caller cannot tell).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessRequestSent" }
+              examples:
+                sent:
+                  value: { state: pending, role: builder, message: "Your request was sent to the application's owners. You will see their answer on your home page." }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/access-requests:
+    get:
+      tags: [access]
+      operationId: listAccessRequests
+      summary: My access requests, and the ones I decide
+      description: |
+        `mine`: the caller's own requests, newest first (at most 50), with their outcome; `app_name`
+        is null where the caller cannot see the application (a declined request, say).
+        `to_decide`: pending requests on applications the caller owns (a portal admin: all of them).
+      x-twinlab-role: signed-in
+      responses:
+        "200":
+          description: The requests.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessRequestList" }
+              examples:
+                owner:
+                  value:
+                    mine: []
+                    to_decide:
+                      - { id: 4, app_id: 1, app_name: Billing, user: bob, role: builder, reason: "Rebuilding Billing.", state: pending, created_at: "2026-11-21T09:00:00+00:00", decided_by: null, decided_at: null, note: "" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/access-requests/{request_id}/decision:
+    parameters:
+      - name: request_id
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [access]
+      operationId: decideAccessRequest
+      summary: Approve or decline an access request
+      description: |
+        The application's owners and portal admins. `approve` assigns the requested role (or
+        `role`, when given) as the access table does (`role.assign`), unless the person holds that
+        role or a higher one by now; `decline` assigns nothing. `note` is shown to the requester.
+        Audited as `access.approve` / `access.decline`. 409 `state_conflict` once decided; 404 for
+        a request the caller neither made nor decides.
+      x-twinlab-role: owner-or-admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccessDecision" }
+            examples:
+              approve: { value: { decision: approve } }
+              decline: { value: { decision: decline, note: "Ask again when the package is frozen." } }
+      responses:
+        "200":
+          description: The decided request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessRequest" }
+              examples:
+                approved:
+                  value: { id: 4, app_id: 1, app_name: Billing, user: bob, role: builder, reason: "Rebuilding Billing.", state: approved, created_at: "2026-11-21T09:00:00+00:00", decided_by: olivia, decided_at: "2026-11-21T09:05:00+00:00", note: "" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /api/v1/home:
     get:
       tags: [session]
@@ -1696,8 +1804,18 @@ paths:
       x-twinlab-idempotent: stored
       parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       summary: Make a pairing code
-      description: Signed in. The code works once, within `minutes`, and is never shown again.
+      description: |
+        Signed in. The code works once, within `minutes`, and is never shown again. `scopes`: what
+        the machine paired with it may do (default both): `record` (sessions offered, applications,
+        a recording's references) and `upload` (evidence uploads). See docs/AGENT-API-SECURITY.md.
       x-twinlab-role: signed-in
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PairingCodeInput" }
+            examples:
+              upload_only: { value: { scopes: [upload] } }
       responses:
         "201":
           description: The code.
@@ -1705,7 +1823,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PairingCode" }
               examples:
-                code: { value: { code: ABCDE23456, display: ABCDE-23456, minutes: 10, expires_at: "2026-11-20T10:10:00+00:00" } }
+                code: { value: { code: ABCDE23456, display: ABCDE-23456, minutes: 10, expires_at: "2026-11-20T10:10:00+00:00", scopes: [record, upload] } }
+        "400": { $ref: "#/components/responses/BadRequest" }
 
   /api/v1/machines/{machine_id}/revoke:
     parameters:
@@ -1723,7 +1842,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Machine" }
               examples:
-                revoked: { value: { id: 3, name: OLD-PC, paired_by: ana, paired_at: "2026-09-01T09:00:00+00:00", last_seen: null, recorder: "", contract_version: null, revoked_at: "2026-11-20T10:00:00+00:00" } }
+                revoked: { value: { id: 3, name: OLD-PC, paired_by: ana, paired_at: "2026-09-01T09:00:00+00:00", last_seen: null, recorder: "", contract_version: null, revoked_at: "2026-11-20T10:00:00+00:00", scopes: [record, upload] } }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -2209,7 +2328,8 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
 
   # ---------------------------------------------------------------------------------------------
-  # recorder agent API (unchanged; RECORDER-CONTRACT.md)
+  # recorder agent API (RECORDER-CONTRACT.md). Token scopes and the per-machine rate limit
+  # (403 {error, scope}, 429 {error, retry_after} with Retry-After): docs/AGENT-API-SECURITY.md
   # ---------------------------------------------------------------------------------------------
   /api/agent/pair:
     post:
@@ -2235,26 +2355,33 @@ paths:
       tags: [agent]
       operationId: agentSessions
       summary: Sessions offered to this machine, and the keys not to record in full
+      description: Scope `record`.
       x-twinlab-role: agent-token
       security: [{ agentToken: [] }]
       responses:
         "200": { $ref: "#/components/responses/AgentJson" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
   /api/agent/apps:
     get:
       tags: [agent]
       operationId: agentApps
       summary: Catalog applications with an identity, for a session started on the recorder
+      description: Scope `record`.
       x-twinlab-role: agent-token
       security: [{ agentToken: [] }]
       responses:
         "200": { $ref: "#/components/responses/AgentJson" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
   /api/agent/references:
     post:
       tags: [agent]
       operationId: agentReferences
       summary: The references of a finished recording (applications, steps, timeline, completeness)
+      description: Scope `record`.
       x-twinlab-role: agent-token
       security: [{ agentToken: [] }]
       requestBody:
@@ -2266,6 +2393,8 @@ paths:
         "200": { $ref: "#/components/responses/AgentJson" }
         "400": { $ref: "#/components/responses/AgentError" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
         "409": { $ref: "#/components/responses/AgentError" }
         "426": { $ref: "#/components/responses/AgentError" }
   /api/uploads:
@@ -2273,6 +2402,7 @@ paths:
       tags: [agent]
       operationId: agentUploadInit
       summary: Start a resumable upload of a recording's evidence
+      description: Scope `upload` (the upload's own token, then, for its chunks, parts and completion).
       x-twinlab-role: agent-token
       security: [{ agentToken: [] }]
       requestBody:
@@ -2285,6 +2415,8 @@ paths:
         "201": { $ref: "#/components/responses/AgentJson" }
         "400": { $ref: "#/components/responses/AgentError" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
   /api/uploads/{upload_id}:
     parameters:
       - { name: upload_id, in: path, required: true, schema: { type: string } }
@@ -2297,6 +2429,8 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/AgentJson" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
         "404": { $ref: "#/components/responses/AgentError" }
     put:
       tags: [agent]
@@ -2313,6 +2447,8 @@ paths:
         "200": { $ref: "#/components/responses/AgentJson" }
         "400": { $ref: "#/components/responses/AgentError" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
         "409": { $ref: "#/components/responses/AgentError" }
   /api/uploads/{upload_id}/parts:
     parameters:
@@ -2326,6 +2462,8 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/AgentJson" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
   /api/uploads/{upload_id}/complete:
     parameters:
       - { name: upload_id, in: path, required: true, schema: { type: string } }
@@ -2339,6 +2477,8 @@ paths:
         "200": { $ref: "#/components/responses/AgentJson" }
         "400": { $ref: "#/components/responses/AgentError" }
         "401": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
         "409": { $ref: "#/components/responses/AgentError" }
   /api/recordings/{recording_id}/upload:
     parameters: [{ $ref: "#/components/parameters/RecordingId" }]
@@ -2497,6 +2637,8 @@ components:
           type: array
           items: { type: string }
           description: "With `code: role` on an application: its owners, who can grant the role (only to a caller who may see them)."
+        app_id: { type: integer, description: "With `code: role` on an application: the application (as in the path), for `requestAccess`." }
+        requested_role: { $ref: "#/components/schemas/Role", description: "With `app_id`: the lowest role that would have been enough." }
         errors:
           type: array
           description: Per-field problems of a request body.
@@ -2720,24 +2862,48 @@ components:
             fail: { type: integer }
             not-run: { type: integer }
         deployment: { oneOf: [{ $ref: "#/components/schemas/Deployment" }, { type: "null" }] }
+    AppFamily:
+      type: string
+      enum: [decide, build, tested, published, not_replicated]
+      description: |
+        Where an application stands, as the catalog groups it: `decide` needs a scope decision
+        (status `discovered`); `build` is replicated and has no Tested or Published release yet;
+        `tested` has a Tested release and none published; `published` has a Published release;
+        `not_replicated` is out of scope (status `not_replicated`).
     AppSummary:
       type: object
-      required: [id, name, status, status_label, owner, purpose, my_role, journey, tested_release]
+      required: [id, name, status, status_label, family, owner, purpose, my_role, journey, tested_release]
       properties:
         id: { type: integer }
         name: { type: string }
         status: { $ref: "#/components/schemas/AppStatus" }
         status_label: { type: string }
+        family: { $ref: "#/components/schemas/AppFamily" }
         owner: { type: string, description: "The owners' names for display (roles are authoritative)." }
         purpose: { type: string }
         my_role: { oneOf: [{ $ref: "#/components/schemas/Role" }, { type: "null" }] }
         journey: { $ref: "#/components/schemas/Journey" }
         tested_release: { oneOf: [{ $ref: "#/components/schemas/TestedRelease" }, { type: "null" }] }
+    CatalogGroup:
+      type: object
+      required: [family, label, count, offset, collapsed]
+      properties:
+        family: { $ref: "#/components/schemas/AppFamily" }
+        label: { type: string }
+        count: { type: integer, minimum: 0, description: "Matching applications of this family, on every page." }
+        collapsed: { type: boolean, description: "Named in `collapsed`: counted, not paged." }
+        offset:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+          description: The offset of the page that starts with this family's first application; null when collapsed or empty.
     Catalog:
       type: object
-      required: [apps, page, filters, recordings, journey_titles]
+      required: [apps, page, groups, filters, recordings, journey_titles]
       properties:
-        apps: { type: array, items: { $ref: "#/components/schemas/AppSummary" }, description: "One page of the matching applications." }
+        apps: { type: array, items: { $ref: "#/components/schemas/AppSummary" }, description: "One page of the matching applications, family by family." }
+        groups:
+          type: array
+          description: Every status family in order, with its count of matching applications (zero included).
+          items: { $ref: "#/components/schemas/CatalogGroup" }
         page: { $ref: "#/components/schemas/Page" }
         filters:
           type: object
@@ -3871,7 +4037,7 @@ components:
     # -- machines ---------------------------------------------------------------------------------
     Machine:
       type: object
-      required: [id, name, paired_by, paired_at, last_seen, recorder, contract_version, revoked_at]
+      required: [id, name, paired_by, paired_at, last_seen, recorder, contract_version, revoked_at, scopes]
       properties:
         id: { type: integer }
         name: { type: string }
@@ -3881,6 +4047,7 @@ components:
         recorder: { type: string }
         contract_version: { type: [string, "null"] }
         revoked_at: { type: [string, "null"] }
+        scopes: { type: array, items: { $ref: "#/components/schemas/AgentScope" }, description: "What its token may do." }
     MachineList:
       type: object
       required: [machines, code_minutes]
@@ -3889,12 +4056,25 @@ components:
         code_minutes: { type: integer }
     PairingCode:
       type: object
-      required: [code, display, minutes, expires_at]
+      required: [code, display, minutes, expires_at, scopes]
       properties:
         code: { type: string, pattern: "^[A-HJ-NP-Z2-9]{10}$" }
         display: { type: string, description: "The code as shown, XXXXX-XXXXX." }
         minutes: { type: integer }
         expires_at: { $ref: "#/components/schemas/Timestamp" }
+        scopes: { type: array, items: { $ref: "#/components/schemas/AgentScope" } }
+    PairingCodeInput:
+      type: object
+      additionalProperties: false
+      properties:
+        scopes:
+          type: array
+          items: { $ref: "#/components/schemas/AgentScope" }
+          description: "What the paired machine may do; default both."
+    AgentScope:
+      type: string
+      enum: [record, upload]
+      description: "`record`: sessions offered, applications, a recording's references; `upload`: evidence uploads."
 
     # -- automations ------------------------------------------------------------------------------
     Automation:
@@ -4466,6 +4646,52 @@ components:
       required: [decisions]
       properties:
         decisions: { type: array, maxItems: 200, items: { $ref: "#/components/schemas/TriageDecision" } }
+    AccessRequestInput:
+      type: object
+      required: [role, reason]
+      additionalProperties: false
+      properties:
+        role: { $ref: "#/components/schemas/Role" }
+        reason: { type: string, maxLength: 2000, description: "Why the role is needed (at most 500 characters are kept)." }
+    AccessRequestSent:
+      type: object
+      required: [state, role, message]
+      properties:
+        state: { type: string, enum: [pending] }
+        role: { $ref: "#/components/schemas/Role" }
+        message: { type: string }
+    AccessRequestState:
+      type: string
+      enum: [pending, approved, declined]
+    AccessRequest:
+      type: object
+      required: [id, app_id, app_name, user, role, reason, state, created_at, decided_by, decided_at, note]
+      properties:
+        id: { type: integer }
+        app_id: { type: integer }
+        app_name: { type: [string, "null"], description: "Null where the caller cannot see the application." }
+        user: { type: string, description: "Who asked." }
+        role: { $ref: "#/components/schemas/Role" }
+        reason: { type: string }
+        state: { $ref: "#/components/schemas/AccessRequestState" }
+        created_at: { type: string }
+        decided_by: { type: [string, "null"] }
+        decided_at: { type: [string, "null"] }
+        note: { type: string, description: "The decider's note to the requester." }
+    AccessRequestList:
+      type: object
+      required: [mine, to_decide]
+      properties:
+        mine: { type: array, items: { $ref: "#/components/schemas/AccessRequest" } }
+        to_decide: { type: array, items: { $ref: "#/components/schemas/AccessRequest" } }
+    AccessDecision:
+      type: object
+      required: [decision]
+      additionalProperties: false
+      properties:
+        decision: { type: string, enum: [approve, decline] }
+        role: { $ref: "#/components/schemas/Role", description: "Approve with this role instead of the requested one." }
+        note: { type: string, maxLength: 2000 }
     TriageOutcome:
       type: object
       required: [apps, message]
@@ -4783,6 +5009,12 @@ components:
     Catalog:
       value:
         page: { total: 3, limit: 50, offset: 0, next_offset: null }
+        groups:
+          - { family: decide, label: Needs a scope decision, count: 1, offset: 0, collapsed: false }
+          - { family: build, label: In build, count: 1, offset: 0, collapsed: false }
+          - { family: tested, label: Tested, count: 1, offset: 0, collapsed: false }
+          - { family: published, label: Published, count: 0, offset: null, collapsed: false }
+          - { family: not_replicated, label: Not replicated (used only), count: 0, offset: null, collapsed: true }
         filters: { owners: [ana, ben], stages: [Choose application, Verify] }
         journey_titles: [Choose application, Add examples, Review required behaviour, Connect repository, Build, Verification settings, Verify, Open or download]
         recordings:
@@ -4792,6 +5024,7 @@ components:
             name: Billing Desk
             status: known
             status_label: Replicate
+            family: tested
             owner: ana
             purpose: Invoice from saved orders
             my_role: owner
@@ -4829,6 +5062,7 @@ components:
             name: CaseDesk
             status: known
             status_label: Replicate
+            family: build
             owner: ana
             purpose: Case handling desktop client
             my_role: owner
@@ -4849,6 +5083,7 @@ components:
             name: Outlook
             status: discovered
             status_label: Needs a scope decision
+            family: decide
             owner: ana
             purpose: ""
             my_role: owner
@@ -4873,6 +5108,7 @@ components:
         name: Billing Desk
         status: known
         status_label: Replicate
+        family: tested
         owner: ana
         purpose: Invoice from saved orders
         my_role: owner
@@ -4907,6 +5143,7 @@ components:
         name: Billing Desk
         status: known
         status_label: Replicate
+        family: tested
         owner: ana
         purpose: Invoice from saved orders
         my_role: viewer
@@ -5485,8 +5722,8 @@ components:
       value:
         code_minutes: 10
         machines:
-          - { id: 2, name: CLERK-PC, paired_by: ana, paired_at: "2026-11-01T08:00:00+00:00", last_seen: "2026-11-20T08:55:00+00:00", recorder: TwinLabRecorder 1.4.0, contract_version: "1.1", revoked_at: null }
-          - { id: 3, name: OLD-PC, paired_by: ana, paired_at: "2026-09-01T09:00:00+00:00", last_seen: null, recorder: "", contract_version: null, revoked_at: "2026-10-01T09:00:00+00:00" }
+          - { id: 2, name: CLERK-PC, paired_by: ana, paired_at: "2026-11-01T08:00:00+00:00", last_seen: "2026-11-20T08:55:00+00:00", recorder: TwinLabRecorder 1.4.0, contract_version: "1.1", revoked_at: null, scopes: [record, upload] }
+          - { id: 3, name: OLD-PC, paired_by: ana, paired_at: "2026-09-01T09:00:00+00:00", last_seen: null, recorder: "", contract_version: null, revoked_at: "2026-10-01T09:00:00+00:00", scopes: [record, upload] }
 
     AutomationPage:
       value:

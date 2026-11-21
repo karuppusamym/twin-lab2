@@ -18,10 +18,12 @@ from fastapi import Depends, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 import yaml
 
+from twinlab2 import agentauth
 from twinlab2 import api_models as m
 from twinlab2 import audit
 from twinlab2 import auth
 from twinlab2 import event_ids
+from twinlab2 import readiness_cache
 from twinlab2 import shapes
 from twinlab2.auth import require_role
 from twinlab2.registry import (CODE_ALPHABET, CODE_LENGTH, CODE_MINUTES, FAILURES_PER_10_MIN, HOST_EXES, LEVELS,
@@ -57,8 +59,9 @@ def owned(app_ids):
         auth.ensure("owner", app_id=app_id)
 
 
-def agent_machine():
-    """The paired, not revoked machine of the request's bearer token (401 otherwise)."""
+def agent_machine(scope="record"):
+    """The paired, not revoked machine of the request's bearer token (401 otherwise), counted
+    against its rate limit (429) and holding `scope` (403; agentauth)."""
     request = g.request
     header = request.headers.get("Authorization", "")
     if not header.startswith("Bearer "):
@@ -70,6 +73,8 @@ def agent_machine():
                        (sha(token),)).fetchone()  # fmt: skip
     if row is None:
         fail(401)
+    agentauth.limit(row["id"])
+    agentauth.require_scope(row, scope)
     with db():
         db().execute("UPDATE machines SET last_seen = ?, recorder = ? WHERE id = ?",
                      (now(), request.headers.get("X-TwinLab-Recorder", "")[:60], row["id"]))  # fmt: skip
@@ -95,15 +100,21 @@ def list_machines():
 
 @routes.post(V1 + "/machines/pairing-codes", auth.signed_in, response_model=m.PairingCode, status_code=201,
              idempotent="stored")
-def make_code():
-    """A one-time pairing code, returned once (only its SHA-256 is stored)."""
+def make_code(body: m.PairingCodeInput | None = None):
+    """A one-time pairing code, returned once (only its SHA-256 is stored). `scopes`: what the
+    machine paired with it may do (agentauth; default both)."""
+    try:
+        scopes = agentauth.parse_scopes(body.scopes) if body is not None and body.scopes is not None             else agentauth.DEFAULT_SCOPES
+    except ValueError as error:
+        fail(400, str(error), errors=[{"field": "scopes", "message": str(error)}])
     code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
     created = datetime.now(timezone.utc)
     expires = (created + timedelta(minutes=CODE_MINUTES)).isoformat()
     with db():
-        db().execute("INSERT INTO pairing_codes(code_sha, created_by, created_at, expires_at) VALUES (?, ?, ?, ?)",
-                     (sha(code), current_user(), created.isoformat(), expires))  # fmt: skip
-    return {"code": code, "display": f"{code[:5]}-{code[5:]}", "minutes": CODE_MINUTES, "expires_at": expires}
+        db().execute("INSERT INTO pairing_codes(code_sha, created_by, created_at, expires_at, scopes) "
+                     "VALUES (?, ?, ?, ?, ?)", (sha(code), current_user(), created.isoformat(), expires, scopes))
+    return {"code": code, "display": f"{code[:5]}-{code[5:]}", "minutes": CODE_MINUTES, "expires_at": expires,
+            "scopes": scopes.split()}
 
 
 @routes.post(V1 + "/machines/{machine_id:int}/revoke", auth.signed_in, response_model=m.Machine)
@@ -149,8 +160,10 @@ def agent_pair(request: Request, body=Depends(json_body)):
         if used != 1:
             fail(403)
         machine = db().execute(
-            "INSERT INTO machines(name, token_sha, paired_by, paired_at, recorder) VALUES (?,?,?,?,?) RETURNING id",
-            (name, sha(token), row["created_by"], now(), request.headers.get("X-TwinLab-Recorder", "")[:60]),
+            "INSERT INTO machines(name, token_sha, paired_by, paired_at, recorder, scopes) VALUES (?,?,?,?,?,?) "
+            "RETURNING id",
+            (name, sha(token), row["created_by"], now(), request.headers.get("X-TwinLab-Recorder", "")[:60],
+             row["scopes"] or agentauth.DEFAULT_SCOPES),
         ).fetchone()[0]  # fmt: skip
         db().execute("UPDATE pairing_codes SET machine_id = ? WHERE code_sha = ?", (machine, row["code_sha"]))
         rec_name, rec_version = recorder_of(body, request.headers.get("X-TwinLab-Recorder", ""))
@@ -367,6 +380,7 @@ def app_for(item):
         created = True
     db().execute("INSERT INTO app_identities(key, app_id, surface, facts) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                  (item["key"], app_id, item["surface"], json.dumps(facts)))  # fmt: skip
+    readiness_cache.forget(db(), app_id)
     return app_id, created
 
 
@@ -534,6 +548,9 @@ def agent_references(request: Request, doc=Depends(json_body)):
                     (discovered if created else mapped).append(app_id)
         for app_id, numbers in received.items():
             link_evidence(app_id, recording_id, numbers, seen.get(app_id, set()))
+        # the recording's events, flows and recorded day changed for the applications it had and has
+        readiness_cache.forget(db(), *seen)
+        readiness_cache.forget_recording(db(), recording_id)
         db().execute("INSERT INTO recording_uploads(recording_id, added_by, added_at) VALUES (?, ?, ?) "
                      "ON CONFLICT DO NOTHING", (recording_id, machine["paired_by"], now()))
         for app_id in discovered:
@@ -720,6 +737,7 @@ def add_identity(app_id: int, data: m.IdentityInput):
         db().execute("INSERT INTO app_identities(key, app_id, surface, facts) VALUES (?, ?, ?, '{}') ON CONFLICT DO NOTHING",
                      (key, app_id, surface))
         db().execute("UPDATE apps SET surface = ? WHERE id = ? AND surface = ''", (surface, app_id))
+        readiness_cache.forget(db(), app_id)
     return app_setup(app_id)
 
 
@@ -856,6 +874,7 @@ def merge_app(app_id: int, data: m.MergeInput):
     if plan["blockers"]:
         fail(400, "This application cannot be merged: " + ", ".join(plan["blockers"]) + ".")
     with db():
+        readiness_cache.forget(db(), app_id, into)
         db().execute("UPDATE app_identities SET app_id = ? WHERE app_id = ?", (into, app_id))
         for row in db().execute("SELECT * FROM recording_apps WHERE app_id = ?", (app_id,)).fetchall():
             keep = db().execute("SELECT flow, screens FROM recording_apps WHERE recording_id = ? AND app_id = ? AND key = ?",
