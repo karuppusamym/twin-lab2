@@ -548,6 +548,35 @@ RUNNER_LEASES = [
 ]
 
 
+# -- 18: package bundle: fixture bindings, visual baselines, confirmations, interface contracts -------
+
+PACKAGE_BUNDLE = [
+    # per scenario, each typing or selecting step bound to a synthetic fixture field or a shared
+    # identifier (twinlab2_contract.package): JSON [{event, field | identifier}]
+    add_columns([("scenarios", "bindings", "TEXT NOT NULL DEFAULT '[]'")]),
+    # one approved visual baseline per (screen, state, viewport, theme, scale) of an application:
+    # the picture is an approved Screen attachment or a recorder picture of one recorded event
+    """CREATE TABLE IF NOT EXISTS visual_baselines (
+        id {id}, app_id INTEGER NOT NULL REFERENCES apps(id), screen TEXT NOT NULL, state_id TEXT NOT NULL,
+        viewport TEXT NOT NULL, theme TEXT NOT NULL, scale TEXT NOT NULL, source TEXT NOT NULL,
+        attachment_id INTEGER, recording_id TEXT, event_id TEXT, content {blob}, sha256 TEXT NOT NULL,
+        approved_by TEXT NOT NULL, approved_at TEXT NOT NULL
+    )""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS visual_baselines_key ON visual_baselines(app_id, screen, state_id, viewport, theme, scale)",
+    # the owner's confirmation of a completeness item (evidence level owner-confirmed)
+    """CREATE TABLE IF NOT EXISTS item_confirmations (
+        app_id INTEGER NOT NULL REFERENCES apps(id), item TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+        confirmed_by TEXT NOT NULL, confirmed_at TEXT NOT NULL, PRIMARY KEY (app_id, item)
+    )""",
+    # the owner-edited interface contract of the applications recorded together in one recording
+    # (none stored: the generated one is used)
+    """CREATE TABLE IF NOT EXISTS interface_contracts (
+        recording_id TEXT PRIMARY KEY, doc TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
+        edited_by TEXT NOT NULL, edited_at TEXT NOT NULL
+    )""",
+]
+
+
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
@@ -574,6 +603,7 @@ MIGRATIONS = [
     (15, "access requests and agent scopes", ACCESS_AND_AGENT),
     (16, "data lifecycle", DATA_LIFECYCLE),
     (17, "runner leases and acceptance checks", RUNNER_LEASES),
+    (18, "package bundle", PACKAGE_BUNDLE),
 ]
 
 

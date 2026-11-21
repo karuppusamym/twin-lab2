@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -48,6 +49,9 @@ def surface_of(folder: Path) -> str:
     return folder.name if folder.name in ("mainframe", "desktop") else "web"
 
 
+LABEL_ENV = "TWINLAB2_TWIN_LABEL"
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m twinlab2.replay", description=__doc__.split("\n\n")[0])
     parser.add_argument("recording", type=Path, help="recording folder (with steps.jsonl)")
@@ -60,7 +64,12 @@ def main(argv=None) -> int:
     parser.add_argument("--artifacts", type=Path, help="web: where the replica's pictures go")
     parser.add_argument("--json", type=Path, required=True, dest="json_out", help="report file to write")
     parser.add_argument("--headed", action="store_true")
+    parser.add_argument("--twin-label", action="store_true",
+                        help="require the \"AI generated Twin App\" label on every screen and leave it out of the "
+                             "comparisons (twinlab2_contract.package)")
     args = parser.parse_args(argv)
+    if args.twin_label:
+        os.environ[LABEL_ENV] = "1"
     surface = args.surface or surface_of(args.recording)
     if surface == "mainframe":
         from twinlab2.replay import tn3270

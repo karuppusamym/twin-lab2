@@ -33,10 +33,15 @@ def text(s: str) -> bytes:
     return s.encode("cp037")
 
 
+# The served host stands in for a rebuilt twin: it shows the "AI generated Twin App" label as a
+# protected field on row 23, which none of its screens uses (twinlab2_contract.package.twin_label).
+TWIN_LABEL = (23, 2, PROT, "AI generated Twin App", 21)
+
+
 def build(items: list[tuple], cursor: tuple[int, int]) -> bytes:
-    """An Erase/Write: items are (row, col, attribute, text, length)."""
+    """An Erase/Write: items are (row, col, attribute, text, length), plus the twin's label."""
     out = bytearray([0xF5, 0xC3])  # Erase/Write, WCC: reset, restore keyboard
-    for row, col, attr, s, length in items:
+    for row, col, attr, s, length in [*items, TWIN_LABEL]:
         out += bytes([0x11]) + encode_addr(at(row, col)) + bytes([0x1D, attr])
         body = text(s)[:length]
         out += body

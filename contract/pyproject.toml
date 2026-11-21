@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "twinlab2-contract"
-version = "0.2.0"
+version = "0.3.0"
 description = "What the TwinLab2 recorder and portal share: the recorder contract and the recording format"
 license = "Apache-2.0"
 requires-python = ">=3.12"
