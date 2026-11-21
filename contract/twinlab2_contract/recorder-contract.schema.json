@@ -3,7 +3,7 @@
   "$id": "https://github.com/karuppusamym/twin-lab2/blob/main/contract/recorder-contract.schema.json",
   "title": "TwinLab recorder contract",
   "description": "What a workstation recorder sends to the TwinLab2 portal: the pairing request (#/$defs/pair) and the references of a recorded session (#/$defs/references for contract 1.0.x, #/$defs/references_1_1 for 1.1.0 and later minors; from 1.3.0 an optional screens block). See RECORDER-CONTRACT.md. Unknown fields are allowed, so that a minor version can add optional ones, and are ignored: the portal stores only the fields named here.",
-  "x-contract-version": "1.5.0",
+  "x-contract-version": "1.6.0",
   "oneOf": [
     {
       "$ref": "#/$defs/pair"
@@ -352,6 +352,50 @@
             "managed": {
               "type": "boolean",
               "description": "true when an office's managed policy file was part of it."
+            }
+          }
+        },
+        "paused": {
+          "description": "1.6: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap, and no channel is less complete for it.",
+          "type": "object",
+          "required": [
+            "count",
+            "seconds",
+            "periods"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "seconds": {
+              "type": "number",
+              "minimum": 0
+            },
+            "periods": {
+              "type": "array",
+              "maxItems": 50,
+              "items": {
+                "type": "object",
+                "required": [
+                  "from",
+                  "to"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "from": {
+                    "$ref": "#/$defs/iso_time"
+                  },
+                  "to": {
+                    "$ref": "#/$defs/iso_time"
+                  },
+                  "seconds": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                }
+              }
             }
           }
         }

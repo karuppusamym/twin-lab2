@@ -18,7 +18,9 @@
   digit run (`addressLine2`); 1.0 to 1.3 are accepted as before. 1.5.0 adds none: the
   completeness may carry `local_exclusions`, how many applications this PC's own exclude list kept
   out of the recording and the names of its entries that matched (no title, address or time);
-  1.0 to 1.4 are accepted as before.
+  1.0 to 1.4 are accepted as before. 1.6.0 adds none: the completeness may carry `paused`,
+  when the person paused the recording (how many times, for how long, and each period); not a
+  gap. 1.0 to 1.5 are accepted as before.
 
 The validator is a small, dependency-free subset of JSON Schema 2020-12: the keywords the
 schema uses (type, required, properties, additionalProperties, items, enum, const, pattern,
@@ -32,7 +34,7 @@ import json
 from pathlib import Path
 import re
 
-CONTRACT_VERSION = "1.5.0"
+CONTRACT_VERSION = "1.6.0"
 OLDEST_SUPPORTED = "1.0.0"  # the oldest contract version this portal still accepts
 RECORDER_MIN = "0.2.0"  # the first TwinLabRecorder that declares a contract version
 EVENT_IDS_FROM = (1, 1, 0)  # the first contract version whose steps carry event_id

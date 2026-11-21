@@ -1,4 +1,4 @@
-# Recorder contract 1.5.0
+# Recorder contract 1.6.0
 
 What a workstation recorder sends to the TwinLab2 portal, and how the two sides agree on a version. The
 machine-checkable form is [`contract/twinlab2_contract/recorder-contract.schema.json`](contract/twinlab2_contract/recorder-contract.schema.json)
@@ -279,6 +279,25 @@ What the references say about it is only `completeness.local_exclusions`:
 time. An exclusion is not a gap: `overall` and the channels' statuses do not change for it, and the
 portal shows "N applications excluded on this PC" beside the recording's completeness instead of
 treating the missing activity as a failure.
+
+#### Contract 1.6: paused periods
+
+1.6.0 is a minor version with no new requirement; the portal still accepts 1.0.x to 1.5.x.
+
+The person may pause a recording in the recorder's window and resume it
+(`twinlab2_recorder.workstation.pause`). While it is paused, nothing is captured: no event, step,
+UI Automation read, picture, presence row, mainframe screen or HAR/network entry (the TN3270
+proxy still passes the terminal's traffic on). The session's journal gets a `pause` and a
+`resume` row, and the references say when in `completeness.paused`:
+
+```json
+{"paused": {"count": 2, "seconds": 200.5, "periods": [{"from": "2026-11-21T10:53:12.000Z", "to": "2026-11-21T10:55:40.100Z", "seconds": 148.1}]}}
+```
+
+At most 50 periods are listed; `count` and `seconds` cover all of them. A pause is not a gap:
+`overall` and the channels' statuses do not change for it. The portal shows "Paused twice, for 3 min
+21 s in all" beside the recording's completeness, so that the missing activity is not taken for a
+failure.
 
 #### Event ids in the portal
 

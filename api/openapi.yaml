@@ -4167,6 +4167,24 @@ components:
         network_evidence: { type: string }
         channels: { type: object, additionalProperties: { $ref: "#/components/schemas/Channel" } }
         local_exclusions: { $ref: "#/components/schemas/LocalExclusions" }
+        paused: { $ref: "#/components/schemas/PausedPeriods" }
+    PausedPeriods:
+      type: object
+      description: "Recorder contract 1.6: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap."
+      required: [count, seconds, periods]
+      properties:
+        count: { type: integer, minimum: 0, description: "How many times the recording was paused." }
+        seconds: { type: number, minimum: 0, description: "How long it was paused in all." }
+        periods:
+          type: array
+          description: "Each pause (at most 50)."
+          items:
+            type: object
+            required: [from, to, seconds]
+            properties:
+              from: { type: string, format: date-time }
+              to: { type: string, format: date-time }
+              seconds: { type: number, minimum: 0 }
     LocalExclusions:
       type: object
       description: "Recorder contract 1.5: applications the recording PC's own exclude list kept out. Not a gap: they were never meant to be recorded. Names of the exclude entries only."

@@ -1041,6 +1041,19 @@ class LocalExclusions(Model):
     managed: bool
 
 
+class PausedPeriods_PeriodsItem(Model):
+    from_: str = Field(alias='from')
+    to: str
+    seconds: float
+
+
+class PausedPeriods(Model):
+    """Recorder contract 1.6: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap."""
+    count: int
+    seconds: float
+    periods: list[PausedPeriods_PeriodsItem]
+
+
 class Completeness(Model):
     overall: str
     recovered: bool | None = None
@@ -1048,6 +1061,7 @@ class Completeness(Model):
     network_evidence: str
     channels: dict[str, Channel]
     local_exclusions: LocalExclusions | None = None
+    paused: PausedPeriods | None = None
 
 
 class Preflight_ChecksItem(Model):
@@ -1953,6 +1967,7 @@ PackageRevisionSummary.model_rebuild()
 Page.model_rebuild()
 PairingCode.model_rebuild()
 PairingCodeInput.model_rebuild()
+PausedPeriods.model_rebuild()
 Preflight.model_rebuild()
 Problem.model_rebuild()
 Provider.model_rebuild()
