@@ -109,10 +109,52 @@ class Recording:
             return None
         if rel not in self._trees:
             try:
-                self._trees[rel] = json.loads((self.path / rel).read_text(encoding="utf-8"))
+                self._trees[rel] = unframe(json.loads((self.path / rel).read_text(encoding="utf-8")))
             except (OSError, ValueError):
                 return None
         return self._trees[rel]
+
+
+# A modern (UWP / WinUI) application's window is drawn by Windows' frame host: the top-level
+# ApplicationFrameWindow holds the title bar (ApplicationFrameTitleBarWindow), an input sink and
+# the application's own CoreWindow. A rebuild in another toolkit cannot have those Windows
+# classes; what the application itself shows is the CoreWindow's content and the title bar.
+FRAME_WINDOW = "ApplicationFrameWindow"
+FRAME_TITLE_BAR = "ApplicationFrameTitleBarWindow"
+FRAME_INPUT_SINK = "ApplicationFrameInputSinkWindow"
+CORE_WINDOW = "Windows.UI.Core.CoreWindow"
+
+
+def unframe(tree: dict) -> dict:
+    """A recorded window tree as the application draws it: when the window is a frame host's,
+    the CoreWindow's children are the window's own, the input sink is left out, and the frame
+    host's classes are not compared (the title bar keeps its controls). Any other tree as it is."""
+    if not isinstance(tree, dict) or locator.normalise_class(tree.get("cls")) != FRAME_WINDOW:
+        return tree
+    kids: list[dict] = []
+    for child in tree.get("children") or []:
+        cls = child.get("cls")
+        if cls == FRAME_INPUT_SINK:
+            continue
+        if cls == CORE_WINDOW:
+            kids += child.get("children") or []
+        elif cls == FRAME_TITLE_BAR:
+            kids.append({k: v for k, v in child.items() if k not in ("cls", "fw")})
+        else:
+            kids.append(child)
+    out = {k: v for k, v in tree.items() if k not in ("cls", "fw")}
+    out["children"] = kids
+    out["framed"] = True
+    return out
+
+
+def window_wanted(selector: str) -> dict:
+    """The parts of a recorded window locator a rebuilt window can have: a frame host's class
+    (ApplicationFrameWindow) is left out, so the window is found by its name and type."""
+    want = locator.parse(selector)
+    if want.get("ClassName") == FRAME_WINDOW:
+        want.pop("ClassName")
+    return want
 
 
 COMPARED = {"Button", "Edit", "Document", "CheckBox", "RadioButton", "ComboBox", "List",
@@ -262,6 +304,8 @@ def compare_trees(recorded: dict, live: dict, step: int = 0,
     # the message box opened or closed), not the app: enabled states are then not compared; the
     # message box itself is compared as its own window.
     modal = bool(recorded.get("enabled")) != bool(live.get("enabled"))
+    if recorded.get("framed"):  # the window's own class is the frame host's: on neither side
+        live = {k: v for k, v in live.items() if k not in ("cls", "fw")}
     for node, ancestors, idx in _controls(recorded):
         loc = locator.build(recorded, node, ancestors, idx)
         expected.append((loc, node, ancestors))
@@ -288,7 +332,10 @@ def compare_trees(recorded: dict, live: dict, step: int = 0,
             continue
         have, anc = hits[0]
         matched_ids.add(id(have))
-        for key, label in (("cls", "ClassName"), ("fw", "FrameworkId")):
+        # A modern application's controls are XAML automation peers (FrameworkId XAML,
+        # NamedContainerAutomationPeer...): toolkit classes a rebuild in WPF or WinForms cannot
+        # have. For a frame host's window they are not compared (the report says so).
+        for key, label in () if recorded.get("framed") else (("cls", "ClassName"), ("fw", "FrameworkId")):
             a = locator.normalise_class(node.get(key)) if key == "cls" else node.get(key)
             b = locator.normalise_class(have.get(key)) if key == "cls" else have.get(key)
             if a and a != b:
@@ -411,7 +458,7 @@ class _Live:
 
     def window(self, selector: str, timeout: float = 8.0) -> tuple[int, dict] | tuple[None, int]:
         """The window a recorded window locator names: (hwnd, tree), or (None, matches)."""
-        want = locator.parse(selector)
+        want = window_wanted(selector)
         end = time.monotonic() + timeout
         count = 0
         while True:
@@ -723,7 +770,7 @@ def judge_case(case: dict, windows: list[dict] | None) -> dict:
         return {**out, "status": "BLOCKED",
                 "note": "a desktop case needs selector: uia:... and expect: present, absent, enabled or disabled"}
     if out["check"] == "window":
-        want = locator.parse(sel)
+        want = window_wanted(sel)
         hits = [(t, ()) for t in windows if locator.matches(t, want)]
     elif out["check"] == "control":
         hits = [h for t in windows for h in locator.find(t, sel)]
@@ -809,4 +856,15 @@ def replay(recording: Path, exe: str) -> dict:
             pass
     observe = {"after": after}
     report = verify(exe, folder, values=values_of(folder), observe=observe)
-    return finish(report, judge_cases(decl, observe.get("trees") or {}))
+    out = finish(report, judge_cases(decl, observe.get("trees") or {}))
+    if framed(folder):
+        out["categories"]["replay"]["note"] += (
+            "; a modern (UWP / WinUI) application's window: the frame host's layers and the "
+            "controls' toolkit classes (ClassName, FrameworkId) are not compared")
+    return out
+
+
+def framed(folder: Path) -> bool:
+    """Whether a desktop recording's windows are a frame host's (a modern application)."""
+    rec = Recording(Path(folder))
+    return any((rec.tree(s.get("tree")) or {}).get("framed") for s in rec.steps[:5])

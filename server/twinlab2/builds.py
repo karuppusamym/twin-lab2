@@ -521,8 +521,9 @@ def propose_scope_change(db, build, text, user, key, reply_to):
     """An answer that changes agreed behaviour: a new proposed scenario, so the application's draft
     package changes and an owner must review and approve a new revision. The revision this
     session builds is untouched, and nothing is sent to the provider."""
-    from twinlab2 import scenarios
+    from twinlab2 import readiness_cache, scenarios
 
+    readiness_cache.forget(db, build["app_id"])
     stamp = now()
     name = f"Agreed in build session #{build['id']}"[:200]
     cursor = db.execute(

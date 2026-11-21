@@ -177,6 +177,9 @@ DESKTOP_GRIDS = {"Table", "DataGrid", "List", "Tree"}
 DESKTOP_NAMED = {"Button", "CheckBox", "RadioButton", "MenuItem", "ComboBox", "Edit", "SplitButton",
                  "TabItem"}  # fmt: skip
 DATA_ITEMS = {"DataItem", "ListItem", "TreeItem"}
+# An item outside any grid or list with an identifier that is a plain word (Windows Calculator's
+# navigation: `Standard`, `Scientific` in a Group) is a place of the application, not a record.
+NAV_ID = re.compile(r"[A-Za-z][A-Za-z_]{1,39}")
 
 
 def _rows(node: dict) -> int:
@@ -195,10 +198,19 @@ def desktop_state(tree: dict, combos: dict | None = None) -> dict:
     texts: list[dict] = []
     withheld = 0
 
-    def walk(n: dict, in_data: bool) -> None:
+    def walk(n: dict, in_data: bool, parent: str | None = None) -> None:
         nonlocal withheld
         t = n.get("type") or "Custom"
         if t in DATA_ITEMS:
+            if (t == "ListItem" and parent not in DESKTOP_GRIDS and not in_data
+                    and NAV_ID.fullmatch(n.get("aid") or "")):  # fmt: skip
+                item: dict = {"kind": t, "id": n["aid"], "visible": bool(n.get("visible", True)),
+                              "enabled": bool(n.get("enabled", True))}  # fmt: skip
+                if n.get("name_is") == "structure" and n.get("name"):
+                    item["label"] = n["name"]
+                if n.get("selected") is not None:
+                    item["selected"] = bool(n["selected"])
+                controls.append(item)
             return  # a record: counted by its grid, never described
         aid = n.get("aid") or None
         if t in DESKTOP_GRIDS:
@@ -253,7 +265,7 @@ def desktop_state(tree: dict, combos: dict | None = None) -> dict:
             # keeps it, digit tokens masked); its Win32 id (65535) is no identifier.
             texts.append({"kind": "message", "text": n["name"]})
         for child in n.get("children") or []:
-            walk(child, in_data or t in DATA_ITEMS)
+            walk(child, in_data or t in DATA_ITEMS, t)
 
     walk(tree, False)
     out = {"controls": controls, "regions": regions, "grids": grids, "withheld": withheld}

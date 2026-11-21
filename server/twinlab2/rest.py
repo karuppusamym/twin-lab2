@@ -466,7 +466,7 @@ def check_csrf(request: Request):
     sent = request.headers.get("X-CSRF-Token", "")
     token = request.session.get("form_token", "")
     if not sent or not token or not hmac.compare_digest(sent, token):
-        fail(403, "Reload the page: the form token is missing or out of date.", "csrf")
+        fail(403, "The form token is missing or out of date (you signed in or out in another tab?): read the session again and retry.", "csrf")
 
 
 def deny(request: Request):

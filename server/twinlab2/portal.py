@@ -756,5 +756,6 @@ if __name__ == "__main__":
         import uvicorn
 
         os.environ["DATABASE_URL"] = str(args.database)
+        os.environ["TWINLAB2_BIND_HOST"] = args.host  # app.bind_host: the startup check of the address
         uvicorn.run("twinlab2.app:asgi", factory=True, host=args.host, port=args.port, reload=args.reload,
                     proxy_headers=False)

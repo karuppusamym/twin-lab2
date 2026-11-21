@@ -137,4 +137,8 @@ def migrate(db) -> dict:
             if moved != refs:
                 db.execute("UPDATE scenarios SET events = ? WHERE id = ?", (json.dumps(moved), scenario_id))
                 changed["scenarios"] += 1
+        if any(changed.values()):
+            from twinlab2 import readiness_cache
+
+            readiness_cache.forget_all(db)
     return changed
