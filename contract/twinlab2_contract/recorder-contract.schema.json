@@ -3,7 +3,7 @@
   "$id": "https://github.com/karuppusamym/twin-lab2/blob/main/contract/recorder-contract.schema.json",
   "title": "TwinLab recorder contract",
   "description": "What a workstation recorder sends to the TwinLab2 portal: the pairing request (#/$defs/pair) and the references of a recorded session (#/$defs/references for contract 1.0.x, #/$defs/references_1_1 for 1.1.0 and later minors; from 1.3.0 an optional screens block). See RECORDER-CONTRACT.md. Unknown fields are allowed, so that a minor version can add optional ones, and are ignored: the portal stores only the fields named here.",
-  "x-contract-version": "1.4.0",
+  "x-contract-version": "1.5.0",
   "oneOf": [
     {
       "$ref": "#/$defs/pair"
@@ -322,6 +322,38 @@
             }
           ],
           "description": "At most this many seconds before the interruption may be lost; null when nothing is known to be lost."
+        },
+        "local_exclusions": {
+          "description": "1.5: applications this PC's own exclude list kept out of the recording. Not a gap: they were never meant to be recorded. Names of the exclude entries that matched, never a title, address or time.",
+          "type": "object",
+          "required": [
+            "count",
+            "names"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "names": {
+              "type": "array",
+              "maxItems": 50,
+              "items": {
+                "$ref": "#/$defs/text",
+                "maxLength": 80
+              }
+            },
+            "entries": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "How many entries the exclude list had."
+            },
+            "managed": {
+              "type": "boolean",
+              "description": "true when an office's managed policy file was part of it."
+            }
+          }
         }
       }
     },

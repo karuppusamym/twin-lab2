@@ -148,6 +148,66 @@ Tested only on fixture trees so far (`tests/recorder/test_structure_texts.py`,
    → their steps keep that id as `label` in the outbox flow and as `id` in `screens`; Win32's
      numeric ids (`2`, `65535`) are still not labels.
 
+## 11. Excluded apps (contract 1.5)
+
+The exclude list is tested on fakes (`tests/recorder/test_exclude.py`) and in the hidden window
+(`test_window_headless.py`); these checks need real windows.
+
+1. **The tab.** Open **Excluded apps**.
+   → Office, Outlook, Teams and the password managers are listed as *Default*; the columns
+     *Kind*, *Matches*, *Name*, *From* fit without a horizontal scroll bar at the window's
+     default size; *Remove selected* is greyed out until a row is selected.
+2. **Pick from running apps.** Open Notepad, press **Pick from running apps…**.
+   → A small list of programs with a window open now (no titles, no paths); Word and other
+     excluded programs are not in it. Choose `notepad.exe`, **Exclude selected**: it is added as
+     *Added on this PC*. Close and reopen the recorder: it is still there.
+3. **Live exclusion: Calculator recorded while Notepad is open and excluded.** With `notepad.exe`
+   excluded, start **My own session** with `CalculatorApp.exe` as the only target; switch between
+   Calculator and Notepad a few times, type in both, then stop.
+   → `journal.jsonl` has no `presence` row for Notepad, only one `{"kind": "excluded", "name":
+     "notepad.exe"}` (no `ts`); `desktop/steps.jsonl` has Calculator's steps only; the review says
+     *excluded on this PC: 1 application(s), nothing recorded; the portal sees only their names:
+     notepad.exe*; the outbox's `completeness.local_exclusions` is `{"count": 1, "names":
+     ["notepad.exe"], ...}` and `overall` is what it would be without Notepad. After sending,
+     the portal's recording page shows *Excluded on this PC: 1 application (notepad.exe)*.
+4. **Pictures.** Repeat 3 with *Take pictures of desktop windows* on (Settings tab), with
+   Notepad's window dragged half over Calculator's for one step and fully over it for another.
+   → In `desktop/pictures/`, the half-covered step's picture has a grey rectangle where Notepad
+     was; the fully covered step has no picture and its step says `picture_note: "not kept: an
+     excluded window covered it"`.
+5. **Window title.** Add `Window title` `Personal`, name a Notepad file `Personal.txt`, remove
+   `notepad.exe` from the list, and record Calculator again.
+   → Notepad's window titled *Personal.txt - Notepad* leaves no presence row; another Notepad
+     window (*Untitled*) is a presence row as before.
+6. **Web.** Add `Web site` `example.com`; record a web target and open `https://example.com/` in
+   the session's browser.
+   → No step and no HAR entry for example.com (`web/recording.har`, `capture/network.jsonl`),
+     and no `outside` row.
+7. **Office policy.** As administrator, write `%ProgramData%\TwinLabRecorder\policy.json` with
+   `{"exclude": [{"kind": "process", "pattern": "notepad.exe", "name": "Notepad"}]}` and reopen.
+   → The first row is *Notepad* from *Office policy (locked)*; selecting it leaves *Remove
+     selected* greyed out. With `"allow_user_changes": false` added, every edit control is greyed
+     out and the tab says the office manages the list.
+
+## 12. The window's look (review of PR wp/p3-exclude)
+
+1. Open the recorder unpaired.
+   → The six tabs (*Offered sessions*, *My own session*, *Recordings on this PC*, *Uploads*,
+     *Excluded apps*, *Settings*) fit on one row; *Offered sessions* says to pair first; *Start
+     selected session*, *Send summary to the portal*, *Show what is sent (JSON)*, *Upload the
+     recording…* and *Retry selected* are greyed out; *My own session* says the catalog appears
+     once paired.
+2. Pair.
+   → The button reads *Pair again…*; with no offered session the tab says the portal is asked
+     again every 15 to 20 seconds; selecting an offered session enables *Start selected session*.
+3. Open **Settings**.
+   → The browser options (browser, kept profile, DevTools address) and the desktop pictures
+     option are here, not under every tab; the window's other tabs have more room for their
+     lists. Resize the window to its minimum (600×460): labels wrap and no button is cut off.
+4. Record and stop a session.
+   → The indicator ends on *Not recording. The last recording is saved on this PC: review it
+     before you send it.*; the list row reads *<name> · finished · not sent yet*.
+
 ## Verify: the portal's desktop replay
 
 Verify's desktop replay (`twinlab2.replay.desktop`) is unit-tested on recorded window trees

@@ -350,14 +350,39 @@ def surface_of(data):
     return (data.get("target") or {}).get("kind") or (data.get("app") or {}).get("surface") or "web"
 
 
+def host_fields(st):
+    """A host state's fields with a position: its input controls and its protected fields. A
+    recorder at contract 1.4 sends the protected fields as the state's `texts` (title, label,
+    message and key line with their text, other protected text as a shape); they are given here
+    as protected fields (`protected: true`, `text` or `shape`, `role` the text's kind)."""
+    out = list(st.get("controls") or [])
+    for t in st.get("texts") or []:
+        if not all(isinstance(t.get(k), int) for k in ("row", "col", "len")):
+            continue  # a desktop message box's text has no position
+        f = {"kind": "field", "row": t["row"], "col": t["col"], "len": t["len"], "protected": True,
+             "role": t.get("kind")}
+        for k in ("text", "shape", "intensified", "hidden"):
+            if t.get(k):
+                f[k] = t[k]
+        out.append(f)
+    return out
+
+
+def _messages(st):
+    """The texts of a state that have no position: a desktop message box's message."""
+    return [t["text"] for t in st.get("texts") or [] if t.get("text") and not isinstance(t.get("row"), int)]
+
+
 def _title_line(sc):
     """The line that tells the builder which row holds the title of a host screen."""
     name = sc["screen"]
     if TITLE_ID.match(name):
         return ("- title: none recorded (this screen is known only by its layout id): put no protected text on "
                 "its first rows that a scenario does not name")
-    rows = [c["row"] for st in sc.get("states") or [] for c in st.get("controls") or []
-            if c.get("protected") and c.get("text") and not c.get("hidden") and isinstance(c.get("row"), int)]
+    fields = [c for st in sc.get("states") or [] for c in host_fields(st)
+              if c.get("protected") and c.get("text") and not c.get("hidden") and isinstance(c.get("row"), int)]
+    titles = [c["row"] for c in fields if c.get("role") == "title"]
+    rows = titles or [c["row"] for c in fields]
     row = min(rows) if rows else 1
     return f"- title (compared exactly): row {row} holds only `{name}`; put nothing else on that row"
 
@@ -371,6 +396,10 @@ def _ident(c):
     return ident
 
 
+ROLE_WORDS = {"title": "title", "label": "label", "message": "message line", "keys": "key line",
+              "text": "output"}
+
+
 def _layout_table(controls):
     """The host screen layout: every field with a position, protected or not, in screen order."""
     out = ["| Row | Col | Length | Attribute | Text or shape |", "|---|---|---|---|---|"]
@@ -382,6 +411,8 @@ def _layout_table(controls):
         if c.get("protected"):
             what = (f"`{c['text']}`" if c.get("text") else f"shape `{c['shape']}`" if c.get("shape")
                     else "(withheld as possible data)")
+            if c.get("role") in ROLE_WORDS:
+                what = f"{ROLE_WORDS[c['role']]}: {what}"
         else:
             what = f"(input: {c['label']})" if c.get("label") else "(input)"
         out.append(f"| {c['row']} | {c['col']} | {c['len']} | {', '.join(attrs)} | {what} |")
@@ -450,9 +481,14 @@ def screens_markdown(data):
             out += [f"**State {i}** (`{st['id']}`), after {after}{more}", ""]
             inputs = [c for c in st["controls"] if not c.get("protected")]
             out += [_control_line(c) for c in inputs] or ["- no controls"]
-            if host and len(inputs) < len(st["controls"]):
-                out += ["", "Layout (every field with its position; protected text is the screen's own):", ""]
-                out += _layout_table(st["controls"])
+            fields = host_fields(st) if host else []
+            if host and len(inputs) < len(fields):
+                out += ["", "Layout (every field with its position; protected text is the screen's own, text that "
+                        "may be data is a shape):", ""]
+                out += _layout_table(fields)
+                out.append("")
+            for message in _messages(st):
+                out.append(f'- message (the application\'s own text, shown as recorded): "{message}"')
             shown = [_region(r) for r in st["regions"] if r.get("visible", True)]
             hidden = [_region(r) for r in st["regions"] if r.get("visible") is False]
             if shown:

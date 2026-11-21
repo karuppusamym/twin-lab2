@@ -28,7 +28,9 @@ step at `/finance/billing-archive` checks that a prefix matches whole segments o
 `LEGACY_STEPS` are the steps without those three: what the 1.1 recorder recorded for
 `../references-ten-apps-1.1.json` (built by the recorder of PR 23, kept as it was sent).
 `../references-ten-apps-1.2.json` is what the 1.2 recorder of PR 25 built from this session (before
-screen structure), kept as it was sent for the portal's 1.2 tests.
+screen structure), kept as it was sent for the portal's 1.2 tests. `../references-ten-apps-1.3.json`
+and `../references-ten-apps-1.4.json` are the 1.3 and 1.4 recorders' (the 1.4 one is what this
+script wrote before contract 1.5), kept to check that older minors are still accepted.
 """
 
 from __future__ import annotations

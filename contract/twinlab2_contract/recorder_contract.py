@@ -15,7 +15,10 @@
   (`twinlab2_contract.structure`), which the portal reads only from a 1.3 or later sender.
   1.4.0 adds none: a screen state may carry `texts` (a 3270 screen's protected fields with
   their positions, a desktop message box's message), and an identifier may hold one short
-  digit run (`addressLine2`); 1.0 to 1.3 are accepted as before.
+  digit run (`addressLine2`); 1.0 to 1.3 are accepted as before. 1.5.0 adds none: the
+  completeness may carry `local_exclusions`, how many applications this PC's own exclude list kept
+  out of the recording and the names of its entries that matched (no title, address or time);
+  1.0 to 1.4 are accepted as before.
 
 The validator is a small, dependency-free subset of JSON Schema 2020-12: the keywords the
 schema uses (type, required, properties, additionalProperties, items, enum, const, pattern,
@@ -29,7 +32,7 @@ import json
 from pathlib import Path
 import re
 
-CONTRACT_VERSION = "1.4.0"
+CONTRACT_VERSION = "1.5.0"
 OLDEST_SUPPORTED = "1.0.0"  # the oldest contract version this portal still accepts
 RECORDER_MIN = "0.2.0"  # the first TwinLabRecorder that declares a contract version
 EVENT_IDS_FROM = (1, 1, 0)  # the first contract version whose steps carry event_id

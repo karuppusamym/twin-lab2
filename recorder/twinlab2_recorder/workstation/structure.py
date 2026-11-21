@@ -424,8 +424,11 @@ def collect(folder: Path, rows: list[dict], full: set[str]) -> dict[str, list[di
             pending[app] = []
             continue
         prev = last.get(app)
-        if prev is not None and prev != (screen, sid):
-            via = _via(pending[app])
+        via = _via(pending[app])
+        # A 3270 key that leaves the screen as it was (Clear redrawing it, PF8 at the last page,
+        # a key the host ignores) is how the host answers that key (gap 20): kept as a transition.
+        same_key = row["surface"] == "mainframe" and via.get("action") == "aid" and bool(via.get("key"))
+        if prev is not None and (prev != (screen, sid) or same_key):
             t = {"from_state": prev[1], "to": screen, "to_state": sid, **via}
             src = mine[prev[0]]["transitions"]
             k = tuple(t.get(x) for x in ("from_state", "to", "to_state", "action", "control", "label", "key"))

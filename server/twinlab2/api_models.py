@@ -871,12 +871,21 @@ class Channel(Model):
     notes: list[str]
 
 
+class LocalExclusions(Model):
+    """Recorder contract 1.5: applications the recording PC's own exclude list kept out. Not a gap: they were never meant to be recorded. Names of the exclude entries only."""
+    count: int
+    names: list[str]
+    entries: int
+    managed: bool
+
+
 class Completeness(Model):
     overall: str
     recovered: bool | None = None
     loss_window_seconds: float | None = None
     network_evidence: str
     channels: dict[str, Channel]
+    local_exclusions: LocalExclusions | None = None
 
 
 class Preflight_ChecksItem(Model):
@@ -1758,6 +1767,7 @@ JourneyStep.model_rebuild()
 KnownGap.model_rebuild()
 KnownGaps.model_rebuild()
 Lane.model_rebuild()
+LocalExclusions.model_rebuild()
 LocalUser.model_rebuild()
 Machine.model_rebuild()
 MachineList.model_rebuild()

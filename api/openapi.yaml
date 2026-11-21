@@ -3708,6 +3708,16 @@ components:
         loss_window_seconds: { type: [number, "null"] }
         network_evidence: { type: string }
         channels: { type: object, additionalProperties: { $ref: "#/components/schemas/Channel" } }
+        local_exclusions: { $ref: "#/components/schemas/LocalExclusions" }
+    LocalExclusions:
+      type: object
+      description: "Recorder contract 1.5: applications the recording PC's own exclude list kept out. Not a gap: they were never meant to be recorded. Names of the exclude entries only."
+      required: [count, names, entries, managed]
+      properties:
+        count: { type: integer, minimum: 0, description: "How many applications were excluded." }
+        names: { type: array, items: { type: string }, description: "The exclude entries' names (Microsoft Word), never a title or address." }
+        entries: { type: integer, minimum: 0, description: "How many entries the PC's exclude list had." }
+        managed: { type: boolean, description: "An office's managed policy file was part of the list." }
     Preflight:
       type: object
       required: [ready, checks]
