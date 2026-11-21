@@ -1112,6 +1112,25 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/recordings/{recording_id}/packages/download:
+    parameters: [{ $ref: "#/components/parameters/RecordingId" }]
+    get:
+      tags: [recordings]
+      operationId: downloadRecordingPackages
+      summary: Download the packages of every application a recording holds
+      description: |
+        A reviewer of the recording (restricted evidence: else 403 `restricted`). One ZIP: `manifest.json`
+        (format `twinlab2-recording-export/1`) and, per application of the recording the caller is a
+        builder or owner of, its latest builder-approved package as `<app slug>/<app slug>-rev<N>-<revision12>.zip`.
+        The other applications are listed in the manifest only (`not_available` or `no_package`): an admin
+        flag gives nothing extra. Each included package is checked against its approved SHA-256 (500 if
+        the stored bytes differ) and audited as `package.download`.
+      x-twinlab-role: recording reviewer (packages only of the applications the caller builds)
+      responses:
+        "200": { $ref: "#/components/responses/Zip" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/recordings/{recording_id}/assignments/{app_id}:
     parameters:
       - { $ref: "#/components/parameters/RecordingId" }
@@ -2484,7 +2503,7 @@ components:
           properties:
             app: { $ref: "#/components/schemas/AppRef" }
             summary: { type: string, description: "The change summary." }
-            diff: { type: string, description: "Against the previous revision; empty for the first." }
+            diff: { type: string, description: "Against the previous revision; the first revision is diffed against nothing (every line added)." }
             files: { type: array, items: { $ref: "#/components/schemas/PackageFile" } }
             report:
               description: The pre-freeze report; null unless the caller is an owner.
@@ -3814,7 +3833,7 @@ components:
           provider_detail: null
         app: { id: 1, name: Billing Desk }
         messages:
-          - { id: 31, direction: from_provider, kind: clarification, author: Claude, body: Is VAT added before or after the discount?, created_at: "2026-11-20T08:10:00+00:00", state: received, state_label: Received, error: null, reply_to: null, scenario_id: null, data: {}, decision: null }
+          - { id: 31, direction: from_provider, kind: clarification, author: Claude, body: "Is VAT added before or after the discount?", created_at: "2026-11-20T08:10:00+00:00", state: received, state_label: Received, error: null, reply_to: null, scenario_id: null, data: {}, decision: null }
           - { id: 32, direction: from_provider, kind: tool_approval, author: Claude, body: "", created_at: "2026-11-20T08:11:00+00:00", state: received, state_label: Received, error: null, reply_to: null, scenario_id: null, data: { tool: bash, input: { command: npm test } }, decision: null }
         questions: []
         outstanding: [{ id: 31, kind: clarification }]

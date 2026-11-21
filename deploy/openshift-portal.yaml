@@ -82,6 +82,7 @@ items:
                 - --cookie-secret-file=/etc/proxy/secret/cookie-secret
                 - --pass-user-headers=true
                 - --skip-auth-regex=^/api/agent/
+                - --skip-auth-regex=^/api/uploads
                 - --skip-auth-regex=^/healthz$
               ports:
                 - {name: https, containerPort: 8443}

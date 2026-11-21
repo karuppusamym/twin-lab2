@@ -10,7 +10,6 @@ else to start.
 import json
 import os
 from pathlib import Path
-import re
 import socket
 import subprocess
 import sys
@@ -111,10 +110,13 @@ class PreflightRecordTest(unittest.TestCase):
         self.assertEqual(contract.errors(doc, "references"), [])
         self.assertEqual(doc["preflight"], pre)
         sent = json.loads((folder / "sent.json").read_text(encoding="utf-8"))
-        page = self.ui.get(f"/recordings/{sent['recording_id']}").data.decode()
-        self.assertIn("Not ready: recording started with failed checks", page)
-        self.assertTrue(re.search(r"mainframe 127\.0\.0\.1:\d+", page), page[:2000])
-        self.assertIn("the host does not answer", page)
+        shown = self.ui.get(f"/api/v1/recordings/{sent['recording_id']}")
+        self.assertEqual(shown.status_code, 200, shown.text)
+        preflight = shown.json()["status"]["preflight"]
+        self.assertFalse(preflight["ready"])  # not ready: recording started with failed checks
+        [check] = [c for c in preflight["checks"] if not c["ok"]]
+        self.assertRegex(check["name"], r"mainframe 127\.0\.0\.1:\d+")
+        self.assertIn("the host does not answer", check["detail"])
 
 
 if __name__ == "__main__":

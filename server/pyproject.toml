@@ -12,7 +12,11 @@ requires-python = ">=3.12"
 #   pip install -e ./contract -e ./server
 dependencies = [
     "twinlab2-contract",
-    "Flask>=3.1,<4",
+    # the ASGI app (app.py): FastAPI on Starlette; signed session cookies; multipart uploads
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "itsdangerous>=2.1",
+    "python-multipart>=0.0.18",
     "PyYAML>=6",
     "boto3>=1.34",
     "httpx>=0.27,<1",
@@ -31,11 +35,11 @@ providers = [
     # GitHub Copilot build sessions (TWINLAB2_ENABLE_COPILOT=1; authentication and deployment not validated)
     "github-copilot-sdk>=1.0.35,<2",
 ]
-serve = ["gunicorn>=23,<24"]
-test = ["pytest>=8", "jsonschema>=4.18", "moto[s3,server]>=5.0"]
+# the container image: gunicorn with uvicorn workers
+serve = ["gunicorn>=23,<24", "uvicorn-worker>=0.3,<1"]
+# FastAPI's TestClient needs httpx (a dependency already); the contract tests validate every
+# /api/v1 response against api/openapi.yaml with jsonschema
+test = ["pytest>=8", "jsonschema>=4.18", "referencing>=0.30", "moto[s3,server]>=5.0"]
 
 [tool.setuptools.packages.find]
 include = ["twinlab2*"]
-
-[tool.setuptools.package-data]
-twinlab2 = ["templates/*.html", "static/*"]

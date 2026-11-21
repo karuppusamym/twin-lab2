@@ -23,6 +23,8 @@ def unzip(data):
 
 
 class RecordingExportTest(ten.TenAppRecordingTest):
+    # the route over this module is tested in test_ten_apps (TenAppRecordingTest)
+    test_the_recording_export_holds_the_packages_the_caller_builds = None
     test_ten_applications_get_ten_separate_packages = None
     test_the_download_route_names_the_package_by_its_application = None
 

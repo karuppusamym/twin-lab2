@@ -33,6 +33,8 @@ rows whose artifact verifies.
 from __future__ import annotations
 
 import builtins
+from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import hashlib
@@ -305,51 +307,59 @@ def from_env(database=None, environ=None):
 _default = None
 
 
-def init_app(app, database=None, store=None):
-    """Give a Flask app its store (from the environment unless given) and the local backend's
-    download route. Call once from create_app."""
-    app.extensions["artifacts"] = store or from_env(database)
+@dataclass
+class Binding:
+    """The store a running portal uses, with what signs its local download links: `secret` signs
+    the token, `link(token)` is the URL of the portal's /artifacts/<token> route."""
+    store: "LocalStore | S3Store"
+    secret: str = ""
+    link: Callable[[str], str] | None = None
 
-    @app.get("/artifacts/<token>")
-    def artifact_download(token):
-        from flask import abort, send_file
-        from itsdangerous import BadSignature
 
-        try:
-            payload = _signer(app.secret_key).loads(token)
-        except BadSignature:
-            payload = None
-        if not isinstance(payload, dict) or payload.get("e", 0) < time.time():
-            abort(403, "This download link has expired: open the download again from the portal.")
-        ref = ArtifactRef(**payload["r"])
-        current = app.extensions["artifacts"]
-        if current.backend != ref.backend or not current.exists(ref):
-            abort(404)
-        return send_file(current.open(ref), mimetype=ref.content_type, as_attachment=bool(payload.get("n")),
-                         download_name=payload.get("n") or None, max_age=0)
+_bound: ContextVar[Binding | None] = ContextVar("twinlab2_artifacts", default=None)
 
-    return app.extensions["artifacts"]
+
+def bind(binding: Binding):
+    """Use `binding` for the current request (or task); returns the token for `unbind`."""
+    return _bound.set(binding)
+
+
+def unbind(token) -> None:
+    _bound.reset(token)
 
 
 def configure(store) -> None:
-    """The store used outside a Flask app (scripts, tests)."""
+    """The store used outside a portal request (scripts, tests)."""
     global _default
     _default = store
 
 
 def store():
-    try:
-        from flask import current_app
-
-        found = current_app.extensions.get("artifacts")
-        if found is not None:
-            return found
-    except (RuntimeError, ImportError):
-        pass
+    found = _bound.get()
+    if found is not None:
+        return found.store
     global _default
     if _default is None:
         _default = from_env()
     return _default
+
+
+def read_link(token: str, secret: str, target=None):
+    """(ref, download name) of a signed local download link; PermissionError when it is forged or
+    expired, LookupError when the object is gone."""
+    from itsdangerous import BadSignature
+
+    try:
+        payload = _signer(secret).loads(token)
+    except BadSignature:
+        payload = None
+    if not isinstance(payload, dict) or payload.get("e", 0) < time.time():
+        raise PermissionError("This download link has expired: open the download again from the portal.")
+    ref = ArtifactRef(**payload["r"])
+    current = target or store()
+    if current.backend != ref.backend or not current.exists(ref):
+        raise LookupError(ref.object_key)
+    return ref, payload.get("n") or None
 
 
 # --- the interface ----------------------------------------------------------------------------
@@ -438,12 +448,13 @@ def presign_get(ref: ArtifactRef, ttl_seconds: int, filename=None, target=None) 
     ttl = max(1, min(int(ttl_seconds), 7 * 24 * 3600))
     if target.backend == "s3":
         return target.presign_get(ref, ttl, filename)
-    from flask import current_app, has_request_context, url_for
-
+    binding = _bound.get()
+    if binding is None or binding.link is None:
+        raise ArtifactError("A local download link needs a running portal.")
     fields = {k: v for k, v in ref.as_dict().items() if k != "id"}
-    token = _signer(current_app.secret_key).dumps({"r": fields, "e": int(time.time()) + ttl,
-                                                    "n": _safe_name(filename) if filename else None})
-    return url_for("artifact_download", token=token, _external=has_request_context())
+    token = _signer(binding.secret).dumps({"r": fields, "e": int(time.time()) + ttl,
+                                           "n": _safe_name(filename) if filename else None})
+    return binding.link(token)
 
 
 # --- refs in the database ---------------------------------------------------------------------

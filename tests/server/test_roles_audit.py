@@ -7,7 +7,6 @@ import io
 import json
 import os
 from pathlib import Path
-import re
 import struct
 import tempfile
 import unittest
@@ -15,12 +14,14 @@ from unittest import mock
 import zlib
 from zipfile import ZipFile
 
-from twinlab2 import auth
+from fastapi.testclient import TestClient
+
+from twinlab2 import rest
 from twinlab2.portal import create_app
 from twinlab2 import redact
 from test_registry import eid
 from twinlab2.db import Error as database_errors
-from support import connect, new_database
+from support import Client, connect, new_database
 
 RECORDING_LOG = b'{"seq":1,"action":"submit","url":"http://billing.local/?customer=jane@corp.com"}\n' \
                 b'{"seq":2,"action":"click","url":"http://billing.local/"}\n'
@@ -65,17 +66,17 @@ class Base(unittest.TestCase):
         self.database = new_database(self.work.name)
         with mock.patch.dict(os.environ, {"TWINLAB2_TRUST_PROXY_USER": "1", "TWINLAB2_ADMINS": "root"}):
             self.app = create_app(self.database)
-        self.app.testing = True
-        self.client = self.app.test_client()
-        self.assertEqual(self.get("/", "alice").status_code, 200)
-        with self.client.session_transaction() as session:
-            self.token = session["form_token"]
+        self.client = Client(self.app)
+        self.assertEqual(self.get("/api/v1/apps", "alice").status_code, 200)
+
+    def as_(self, who):
+        return self.client.as_user(who)
 
     def get(self, path, who):
-        return self.client.get(path, headers={"X-Forwarded-User": who})
+        return self.as_(who).get(path)
 
     def post(self, path, who, **values):
-        return self.client.post(path, data={"token": self.token, **values}, headers={"X-Forwarded-User": who})
+        return self.as_(who).post(path, json=values)
 
     def rows(self, sql, *args):
         with closing(connect(self.database)) as db:
@@ -85,55 +86,82 @@ class Base(unittest.TestCase):
         return [r[0] for r in self.rows("SELECT action FROM audit_log WHERE app_id = ? ORDER BY id", app_id)]
 
     def make_app(self, name="Billing", user="alice"):
-        location = self.post("/apps", user, name=name).location
-        return int(location.rsplit("/", 1)[1])
+        response = self.post("/api/v1/apps", user, name=name)
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["id"]
+
+    def import_recording(self, name, user="alice"):
+        response = self.as_(user).post("/api/v1/recordings", data={"name": name},
+                                       files={"log": ("steps.jsonl", RECORDING_LOG, "application/x-ndjson")})
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["id"]
+
+    def scenario(self, app_id, user="alice", **values):
+        response = self.post(f"/api/v1/apps/{app_id}/scenarios", user, **values)
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["id"]
+
+    def attach(self, app_id, title, kind, name, content, share=None, user="alice"):
+        data = {"title": title, "kind": kind}
+        if share:
+            data["share"] = share
+        response = self.as_(user).post(f"/api/v1/apps/{app_id}/attachments", data=data,
+                                       files={"file": (name, content, "application/octet-stream")})
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["id"]
+
+    def draft(self, app_id, user="alice"):
+        response = self.get(f"/api/v1/apps/{app_id}/package-draft", user)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
 
     def as_owner_freeze(self, app_id, user="alice", summary=""):
-        headers = {"X-Forwarded-User": user}
-        page = self.client.get(f"/apps/{app_id}/build-pack/preview", headers=headers)
-        sha = re.search(r'id="archive-sha256">([0-9a-f]{64})<', page.data.decode()).group(1)
-        return self.client.post(f"/apps/{app_id}/packages", headers=headers, data={
-            "token": self.token, "approve": "yes", "sha256": sha, "summary": summary})
+        sha = self.draft(app_id, user)["sha256"]
+        return self.as_(user).post(f"/api/v1/apps/{app_id}/packages",
+                                   json={"approve": True, "sha256": sha, "summary": summary})
 
 
 class EveryRouteHasAPolicyTest(Base):
     def test_every_endpoint_is_marked(self):
-        unmarked = [rule.rule for rule in self.app.url_map.iter_rules()
-                    if rule.endpoint != "static" and auth.policy_of(self.app.view_functions[rule.endpoint]) is None]
+        unmarked = [route.path for route in rest.all_routes(self.app)
+                    if getattr(route, "endpoint", None) is not None and rest.policy_of(route) is None
+                    and route.path not in ("/openapi.json",)]
         self.assertEqual(unmarked, [])
 
     def test_a_route_without_a_policy_is_refused(self):
         with mock.patch.dict(os.environ, {"TWINLAB2_TRUST_PROXY_USER": "1", "TWINLAB2_ADMINS": "root"}):
             fresh = create_app(Path(self.work.name) / "other.db")
-        fresh.add_url_rule("/unmarked", "unmarked", lambda: "open")
-        response = fresh.test_client().get("/unmarked", headers={"X-Forwarded-User": "root"})
-        self.assertEqual(response.status_code, 403)
+        # ahead of the portal's fallbacks, as a route of the portal's own route class
+        fresh.router.routes.insert(0, rest.PolicyRoute("/api/v1/unmarked", lambda: {"open": True}, methods=["GET"]))
+        response = TestClient(fresh, base_url="http://localhost").get(
+            "/api/v1/unmarked", headers={"X-Forwarded-User": "root"})
+        self.assertEqual((response.status_code, response.json()["code"]), (403, "role"))
 
     def test_without_the_proxy_header_nobody_is_signed_in(self):
-        self.assertEqual(self.client.get("/").status_code, 401)
+        response = self.client.get("/api/v1/apps")
+        self.assertEqual((response.status_code, response.json()["code"]), (401, "signed_out"))
         self.assertEqual(self.client.get("/healthz").status_code, 200)
 
 
 class RoleRefusalTest(Base):
-    """Every sensitive route refuses (403) a user below its role and admits the role."""
+    """Every sensitive operation refuses (403) a user below its role and admits the role."""
 
     def setUp(self):
         super().setUp()
         self.app_id = self.make_app()  # alice owns it
         self.other = self.make_app("Other")
         for user, role in (("bob", "builder"), ("carol", "viewer")):
-            self.assertEqual(self.post(f"/apps/{self.app_id}/roles", "alice", user=user, role=role).status_code, 302)
-        rec = self.client.post("/recordings", headers={"X-Forwarded-User": "alice"}, data={
-            "token": self.token, "name": "Invoice run", "log": (io.BytesIO(RECORDING_LOG), "steps.jsonl")})
-        self.recording = rec.location.rsplit("/", 1)[1]
+            response = self.as_("alice").put(f"/api/v1/apps/{self.app_id}/roles/{user}", json={"role": role})
+            self.assertEqual(response.status_code, 200, response.text)
+        self.recording = self.import_recording("Invoice run")
         self.event = eid(self.recording, 1)
-        self.assertEqual(self.post(rec.location, "alice", app_id=str(self.app_id), event=self.event).status_code, 302)
-        self.post(f"/apps/{self.app_id}/scenarios", "alice", name="Save an invoice", event=f"{self.recording}#{self.event}")
-        upload = self.client.post(f"/apps/{self.app_id}/attachments", headers={"X-Forwarded-User": "alice"}, data={
-            "token": self.token, "title": "Contract", "kind": "API",
-            "file": (io.BytesIO(b'{"endpoint": "/invoice"}'), "contract.json")})
-        self.assertEqual(upload.status_code, 302)
-        self.assertEqual(self.as_owner_freeze(self.app_id).status_code, 302)
+        assigned = self.as_("alice").put(f"/api/v1/recordings/{self.recording}/assignments/{self.app_id}",
+                                         json={"events": [self.event]})
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        self.scenario_id = self.scenario(self.app_id, name="Save an invoice",
+                                         events=[f"{self.recording}#{self.event}"])
+        self.attachment = self.attach(self.app_id, "Contract", "API", "contract.json", b'{"endpoint": "/invoice"}')
+        self.assertEqual(self.as_owner_freeze(self.app_id).status_code, 201)
         revision = self.rows("SELECT revision FROM builder_packages WHERE app_id = ?", self.app_id)[0][0]
         self.revision = revision
         with closing(connect(self.database)) as db, db:
@@ -148,157 +176,171 @@ class RoleRefusalTest(Base):
                        (self.app_id, revision))
 
     def routes(self):
-        a, r = self.app_id, self.recording
+        a, r, s, t = self.app_id, self.recording, self.scenario_id, self.attachment
+        v = "/api/v1"
         return [
-            ("viewer", "GET", f"/apps/{a}", {}),
-            ("viewer", "GET", "/releases/1", {}),
-            ("builder", "GET", f"/apps/{a}/build-pack", {}),
-            ("builder", "GET", f"/apps/{a}/packages/1", {}),
-            ("builder", "GET", f"/apps/{a}/packages/1/download", {}),
-            ("builder", "GET", f"/apps/{a}/briefs/{self.revision}", {}),
-            ("builder", "GET", "/releases/1/download", {}),
-            ("builder", "POST", "/releases/1/deployments/check", {"environment": "Demo"}),
-            ("builder", "GET", "/releases/1/reports/1", {}),
-            ("builder", "GET", f"/apps/{a}/build", {}),
-            ("builder", "POST", f"/apps/{a}/build", {}),
-            ("builder", "GET", "/builds/1", {}),
-            ("builder", "POST", "/builds/1/answer", {"answer": ""}),
-            ("builder*", "POST", "/builds/1/cancel", {}),
-            ("builder*", "POST", "/builds/1/retry", {}),
-            ("builder*", "POST", "/builds/1/interrupt", {}),
-            ("builder", "POST", "/builds/1/tools/1", {"decision": "approve"}),
-            ("builder", "GET", f"/apps/{a}/sessions/compare", {}),
-            ("owner", "POST", f"/apps/{a}/sessions/compare", {}),
-            ("owner", "POST", f"/apps/{a}/build/freeze", {}),
-            ("owner", "POST", "/releases/1/checks", {}),
-            ("owner*", "POST", "/releases/1/verify", {}),  # * refusals only: admitting it runs Twin Lab
-            ("owner", "POST", f"/apps/{a}/verify-commit", {"repo": "octo/billing", "sha": "not-a-sha"}),
-            ("owner", "POST", f"/apps/{a}/verification", {"target_platform": "web"}),
-            ("owner", "GET", f"/recordings/{r}", {}),
-            ("owner", "POST", f"/recordings/{r}", {"app_id": str(a), "event": self.event}),
-            ("owner", "POST", f"/recordings/{r}/completeness/accept", {}),
-            ("owner", "GET", f"/api/recordings/{r}/upload", {}),
-            ("owner", "GET", f"/apps/{a}/setup", {}),
-            ("owner", "GET", f"/apps/{a}/history", {}),
-            ("owner", "GET", f"/apps/{a}/build-pack/preview", {}),
-            ("owner", "POST", f"/apps/{a}/packages", {"approve": "yes", "sha256": "0" * 64}),
-            ("owner", "POST", f"/apps/{a}", {"purpose": "Demo"}),
-            ("owner", "POST", f"/apps/{a}/roles", {"user": "zed", "role": "viewer"}),
-            ("owner", "POST", f"/apps/{a}/scenarios", {"name": "Another"}),
-            ("owner", "POST", f"/apps/{a}/scenarios/1", {"name": "Save an invoice", "event": f"{r}#{self.event}"}),
-            ("owner", "POST", f"/apps/{a}/attachments/1/share", {"share": "reviewed"}),
-            ("owner", "POST", f"/apps/{a}/identity", {"key": "Billing.exe"}),
-            ("owner", "POST", f"/apps/{a}/status", {"status": "known"}),
-            ("owner", "POST", f"/apps/{a}/url-match", {"url_match": "path"}),
-            ("owner", "GET", f"/apps/{a}/merge?into={self.other}", {}),
-            ("owner", "POST", f"/apps/{a}/merge", {"into": str(self.other)}),
-            ("owner", "POST", "/releases/1", {"environment": "Demo", "url": "http://127.0.0.1:9/"}),
-            ("owner", "POST", "/releases/1/test", {"commit": "a" * 40}),
-            ("owner", "POST", "/automations", {"name": "Bot", "app": str(a)}),
-            ("owner", "POST", f"/apps/{a}/attachments/1/remove", {}),
-            ("owner", "POST", f"/apps/{a}/scenarios/1/remove", {}),
-            ("owner", "POST", "/releases/1/publish", {}),
+            ("viewer", "GET", f"{v}/apps/{a}", None),
+            ("viewer", "GET", f"{v}/releases/1", None),
+            ("builder", "GET", f"{v}/apps/{a}/build-pack", None),
+            ("builder", "GET", f"{v}/apps/{a}/packages/1", None),
+            ("builder", "GET", f"{v}/apps/{a}/packages/1/download", None),
+            ("builder", "GET", f"{v}/apps/{a}/briefs/{self.revision}/download", None),
+            ("builder", "GET", f"{v}/releases/1/download", None),
+            ("builder", "POST", f"{v}/releases/1/deployments/check", {"environment": "Demo"}),
+            ("builder", "GET", f"{v}/releases/1/reports/1", None),
+            ("builder", "GET", f"{v}/apps/{a}/builds", None),
+            ("builder", "POST", f"{v}/apps/{a}/builds", {}),
+            ("builder", "GET", f"{v}/builds/1", None),
+            ("builder", "POST", f"{v}/builds/1/messages", {"answer": "", "request_key": "k"}),
+            ("builder*", "POST", f"{v}/builds/1/cancel", None),
+            ("builder*", "POST", f"{v}/builds/1/retry", {"request_key": "k-retry"}),
+            ("builder*", "POST", f"{v}/builds/1/interrupt", None),
+            ("builder", "POST", f"{v}/builds/1/tool-decisions/1", {"decision": "approve", "request_key": "k"}),
+            ("builder", "GET", f"{v}/apps/{a}/builds/compare", None),
+            ("owner", "POST", f"{v}/apps/{a}/builds/compare", {"sessions": []}),
+            ("owner", "POST", f"{v}/releases/1/checks/refresh", None),
+            ("owner*", "POST", f"{v}/releases/1/verify", None),  # * refusals only: admitting it runs Twin Lab
+            ("owner", "POST", f"{v}/apps/{a}/verify-commit", {"repo": "octo/billing", "sha": "not-a-sha"}),
+            ("owner", "PUT", f"{v}/apps/{a}/verification-settings", {"required_checks": "", "target_platform": "web"}),
+            ("owner", "GET", f"{v}/recordings/{r}", None),
+            ("owner", "GET", f"{v}/recordings/{r}/assignments/{a}", None),
+            ("owner", "PUT", f"{v}/recordings/{r}/assignments/{a}", {"events": [self.event]}),
+            ("owner", "POST", f"{v}/recordings/{r}/completeness/accept", None),
+            ("owner", "GET", f"/api/recordings/{r}/upload", None),
+            ("owner", "GET", f"{v}/apps/{a}/setup", None),
+            ("owner", "GET", f"{v}/apps/{a}/history", None),
+            ("owner", "GET", f"{v}/apps/{a}/evidence", None),
+            ("owner", "GET", f"{v}/apps/{a}/scenarios", None),
+            ("owner", "GET", f"{v}/apps/{a}/package-draft", None),
+            ("owner", "POST", f"{v}/apps/{a}/packages", {"approve": True, "sha256": "0" * 64}),
+            ("owner", "PATCH", f"{v}/apps/{a}", {"purpose": "Demo"}),
+            ("owner", "PUT", f"{v}/apps/{a}/roles/zed", {"role": "viewer"}),
+            ("owner", "POST", f"{v}/apps/{a}/scenarios", {"name": "Another"}),
+            ("owner", "PUT", f"{v}/apps/{a}/scenarios/{s}", {"name": "Save an invoice", "events": [f"{r}#{self.event}"]}),
+            ("owner", "PATCH", f"{v}/apps/{a}/attachments/{t}", {"share": "reviewed"}),
+            ("owner", "POST", f"{v}/apps/{a}/identities", {"key": "Billing.exe"}),
+            ("owner", "PATCH", f"{v}/apps/{a}", {"status": "known"}),
+            ("owner", "PUT", f"{v}/apps/{a}/url-match", {"url_match": "path"}),
+            ("owner", "GET", f"{v}/apps/{a}/merge-plan?into={self.other}", None),
+            ("owner", "POST", f"{v}/apps/{a}/merge", {"into": self.other, "confirm": "0" * 16}),
+            ("owner", "PUT", f"{v}/releases/1/deployments", {"environment": "Demo", "url": "http://127.0.0.1:9/"}),
+            ("owner", "POST", f"{v}/releases/1/tests", {"commit": "a" * 40}),
+            ("owner", "POST", f"{v}/automations", {"name": "Bot", "apps": [a]}),
+            ("owner", "DELETE", f"{v}/apps/{a}/attachments/{t}", None),
+            ("owner", "DELETE", f"{v}/apps/{a}/scenarios/{s}", None),
+            ("owner", "POST", f"{v}/releases/1/publish", None),
         ]
 
-    def call(self, method, path, user, values):
-        return self.get(path, user) if method == "GET" else self.post(path, user, **values)
+    def call(self, method, path, user, body):
+        return self.as_(user).request(method, path, json=body)
 
     def test_each_role_is_refused_below_and_admitted_at_its_level(self):
         people = {"dave": 0, "carol": 1, "bob": 2, "alice": 3}
         rank = {"viewer": 1, "builder": 2, "owner": 3}
-        for needed, method, path, values in self.routes():
+        for needed, method, path, body in self.routes():
             needed = needed.rstrip("*")
             for user, level in people.items():
                 if level < rank[needed]:
-                    response = self.call(method, path, user, values)
+                    response = self.call(method, path, user, body)
                     self.assertEqual(response.status_code, 403, f"{user} {method} {path}")
-        for needed, method, path, values in self.routes():
+        for needed, method, path, body in self.routes():
             if needed.endswith("*"):
                 continue
             user = {"viewer": "carol", "builder": "bob", "owner": "alice"}[needed]
-            response = self.call(method, path, user, values)
-            self.assertNotEqual(response.status_code, 403, f"{user} {method} {path}: {response.data[:300]}")
+            response = self.call(method, path, user, body)
+            self.assertNotEqual(response.status_code, 403, f"{user} {method} {path}: {response.text[:300]}")
 
     def test_a_published_release_downloads_for_viewers(self):
-        self.assertEqual(self.get("/releases/1/download", "carol").status_code, 403)
-        self.assertEqual(self.post("/releases/1/publish", "alice").status_code, 302)
-        self.assertEqual(self.get("/releases/1/download", "carol").status_code, 200)
-        self.assertEqual(self.get("/releases/1/download", "dave").status_code, 403)
+        self.assertEqual(self.get("/api/v1/releases/1/download", "carol").status_code, 403)
+        published = self.post("/api/v1/releases/1/publish", "alice")
+        self.assertEqual(published.status_code, 200, published.text)
+        self.assertEqual(published.json()["release"]["state"], "published")
+        self.assertEqual(self.get("/api/v1/releases/1/download", "carol").status_code, 200)
+        self.assertEqual(self.get("/api/v1/releases/1/download", "dave").status_code, 403)
 
     def test_viewers_see_no_restricted_evidence(self):
-        page = self.get(f"/apps/{self.app_id}", "carol").data.decode()
-        self.assertNotIn("Invoice run", page)
-        self.assertNotIn("Contract", page)
-        self.assertNotIn("Save an invoice", page)
-        self.assertNotIn("Invoice run", self.get("/recordings", "carol").data.decode())
-        self.assertNotIn("Billing", self.get("/", "dave").data.decode())
-        self.assertIn("Billing", self.get("/", "carol").data.decode())
-        owner_page = self.get(f"/apps/{self.app_id}", "alice").data.decode()
-        self.assertIn("Invoice run", owner_page)
+        page = self.get(f"/api/v1/apps/{self.app_id}", "carol")
+        self.assertEqual(page.status_code, 200)
+        for text in ("Invoice run", "Contract", "Save an invoice"):
+            self.assertNotIn(text, page.text)
+        for path in (f"/api/v1/apps/{self.app_id}/evidence", f"/api/v1/apps/{self.app_id}/scenarios"):
+            self.assertEqual(self.get(path, "carol").status_code, 403, path)
+        self.assertNotIn("Invoice run", self.get("/api/v1/recordings", "carol").text)
+        self.assertNotIn("Billing", self.get("/api/v1/apps", "dave").text)
+        self.assertIn("Billing", [a["name"] for a in self.get("/api/v1/apps", "carol").json()["apps"]])
+        evidence = self.get(f"/api/v1/apps/{self.app_id}/evidence", "alice").json()
+        self.assertIn("Invoice run", [link["name"] for link in evidence["links"]])
+        self.assertIn("Contract", [a["title"] for a in evidence["attachments"]])
+        self.assertIn("Invoice run", self.get("/api/v1/recordings", "alice").text)
 
     def test_the_admin_manages_roles_but_does_not_read_evidence(self):
-        self.assertEqual(self.get(f"/apps/{self.app_id}", "root").status_code, 200)
-        self.assertEqual(self.get("/admin/users", "root").status_code, 200)
-        self.assertEqual(self.get("/admin/users", "alice").status_code, 403)
-        for path in ("/setup/builds",):
-            self.assertEqual(self.get(path, "alice").status_code, 403)
-            self.assertEqual(self.get(path, "root").status_code, 200)
-        for path in ("/setup/builds/settings", "/setup/builds/check", "/setup/builds/repos",
-                     "/setup/builds/repos/remove", "/setup/builds/worker"):
-            self.assertEqual(self.post(path, "alice").status_code, 403, path)
-        self.assertEqual(self.post("/admin/users", "alice", name="x").status_code, 403)
-        self.assertEqual(self.get(f"/apps/{self.app_id}/history", "root").status_code, 200)
-        for path in (f"/recordings/{self.recording}", f"/apps/{self.app_id}/build-pack/preview",
-                     f"/apps/{self.app_id}/build-pack"):
+        self.assertEqual(self.get(f"/api/v1/apps/{self.app_id}", "root").status_code, 200)
+        self.assertEqual(self.get("/api/v1/admin/users", "root").status_code, 200)
+        self.assertEqual(self.get("/api/v1/admin/users", "alice").status_code, 403)
+        self.assertEqual(self.get("/api/v1/setup/builds", "alice").status_code, 403)
+        self.assertEqual(self.get("/api/v1/setup/builds", "root").status_code, 200)
+        alice = self.as_("alice")
+        for method, path, body in (("PUT", "/api/v1/setup/builds/settings", {"settings": {}}),
+                                   ("POST", "/api/v1/setup/builds/check", None),
+                                   ("POST", "/api/v1/setup/builds/repos", {"repo": "a/b"}),
+                                   ("DELETE", "/api/v1/setup/builds/repos?repo=a/b", None),
+                                   ("POST", "/api/v1/setup/builds/worker", None),
+                                   ("PUT", "/api/v1/admin/users/x", {"is_admin": False})):
+            self.assertEqual(alice.request(method, path, json=body).status_code, 403, path)
+        self.assertEqual(self.get(f"/api/v1/apps/{self.app_id}/history", "root").status_code, 200)
+        for path in (f"/api/v1/recordings/{self.recording}", f"/api/v1/apps/{self.app_id}/package-draft",
+                     f"/api/v1/apps/{self.app_id}/build-pack", f"/api/v1/apps/{self.app_id}/evidence"):
             self.assertEqual(self.get(path, "root").status_code, 403, path)
-        self.assertEqual(self.post(f"/apps/{self.app_id}/roles", "root", user="root", role="owner").status_code, 302)
-        self.assertEqual(self.get(f"/recordings/{self.recording}", "root").status_code, 200)
+        made = self.as_("root").put(f"/api/v1/apps/{self.app_id}/roles/root", json={"role": "owner"})
+        self.assertEqual(made.status_code, 200, made.text)
+        self.assertEqual(self.get(f"/api/v1/recordings/{self.recording}", "root").status_code, 200)
         self.assertIn("role.assign", self.actions(self.app_id))
 
     def test_an_application_keeps_an_owner(self):
-        response = self.post(f"/apps/{self.app_id}/roles", "alice", user="alice", remove="yes")
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(self.post(f"/apps/{self.app_id}/roles", "alice", user="alice", role="viewer").status_code, 400)
+        alice = self.as_("alice")
+        self.assertEqual(alice.delete(f"/api/v1/apps/{self.app_id}/roles/alice").status_code, 400)
+        self.assertEqual(alice.put(f"/api/v1/apps/{self.app_id}/roles/alice", json={"role": "viewer"}).status_code, 400)
 
     def test_machines_and_sessions_belong_to_their_user(self):
-        self.post("/machines/pair", "dave")
-        self.assertIn("pair-code", self.get("/machines", "dave").data.decode())
-        code = re.search(r'id="pair-code">([A-Z0-9-]+)<', self.get("/machines", "dave").data.decode())
-        self.assertIsNone(code)  # shown once
+        code = self.post("/api/v1/machines/pairing-codes", "dave")
+        self.assertEqual(code.status_code, 201)
+        self.assertTrue(code.json()["code"])
+        self.assertNotIn(code.json()["code"], self.get("/api/v1/machines", "dave").text)  # shown once
         with closing(connect(self.database)) as db, db:
             db.execute("INSERT INTO machines(id, name, token_sha, paired_by, paired_at) VALUES (9, 'PC', 'x', 'dave', '')")
             db.execute("INSERT INTO app_identities VALUES ('exe:billing.exe', ?, 'desktop', '{}')", (self.app_id,))
-        self.assertEqual(self.post("/machines/9/revoke", "carol").status_code, 403)
+        self.assertEqual(self.post("/api/v1/machines/9/revoke", "carol").status_code, 403)
         # dave may not request a recording of an application he does not own
-        response = self.post("/sessions", "dave", name="Run", machine_id="9", app=str(self.app_id))
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(self.post("/machines/9/revoke", "dave").status_code, 302)
+        response = self.post("/api/v1/capture-sessions", "dave", name="Run", machine_id=9,
+                             targets=[{"app_id": self.app_id, "level": "full"}])
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(self.post("/api/v1/machines/9/revoke", "dave").status_code, 200)
 
 
 class AuditTest(Base):
     def test_actions_are_written_and_cannot_be_changed(self):
         app_id = self.make_app()
         other = self.make_app("Duplicate")
-        rec = self.client.post("/recordings", headers={"X-Forwarded-User": "alice"}, data={
-            "token": self.token, "name": "Run", "log": (io.BytesIO(RECORDING_LOG), "steps.jsonl")})
-        self.post(rec.location, "alice", app_id=str(app_id), event=eid(rec.location.rsplit("/", 1)[1], 1),
-                  notes="Saves the invoice")
-        self.post(f"/apps/{app_id}/scenarios", "alice", name="Save")
-        self.client.post(f"/apps/{app_id}/attachments", headers={"X-Forwarded-User": "alice"}, data={
-            "token": self.token, "title": "Shot", "kind": "Screen", "file": (io.BytesIO(png()), "shot.png")})
-        self.post(f"/apps/{app_id}/attachments/1/share", "alice", share="reviewed")
-        self.post(f"/apps/{app_id}/roles", "alice", user="bob", role="builder")
-        self.assertEqual(self.as_owner_freeze(app_id).status_code, 302)
-        self.get(f"/apps/{app_id}/build-pack", "bob")
+        recording = self.import_recording("Run")
+        assigned = self.as_("alice").put(f"/api/v1/recordings/{recording}/assignments/{app_id}",
+                                         json={"events": [eid(recording, 1)], "notes": "Saves the invoice"})
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        self.scenario(app_id, name="Save")
+        shot = self.attach(app_id, "Shot", "Screen", "shot.png", png())
+        self.assertEqual(self.as_("alice").patch(f"/api/v1/apps/{app_id}/attachments/{shot}",
+                                                 json={"share": "reviewed"}).status_code, 200)
+        self.assertEqual(self.as_("alice").put(f"/api/v1/apps/{app_id}/roles/bob", json={"role": "builder"}).status_code, 200)
+        self.assertEqual(self.as_owner_freeze(app_id).status_code, 201)
+        self.assertEqual(self.get(f"/api/v1/apps/{app_id}/build-pack", "bob").status_code, 200)
         revision = self.rows("SELECT revision FROM builder_packages")[0][0]
         with closing(connect(self.database)) as db, db:
             db.execute("""INSERT INTO releases(id, app_id, version, revision, commit_sha, archive, archive_sha, state)
                           VALUES (1, ?, '1.0', ?, ?, ?, '', 'tested')""", (app_id, revision, "b" * 40, b"\x00"))
-        self.assertEqual(self.post("/releases/1/publish", "alice").status_code, 302)
+        self.assertEqual(self.post("/api/v1/releases/1/publish", "alice").status_code, 200)
         # a merge is written to both applications' history
-        merge = self.get(f"/apps/{other}/merge?into={app_id}", "alice").data.decode()
-        fingerprint = re.search(r'name="confirm" value="([0-9a-f]+)"', merge).group(1)
-        self.assertEqual(self.post(f"/apps/{other}/merge", "alice", into=str(app_id), confirm=fingerprint).status_code, 302)
+        plan = self.get(f"/api/v1/apps/{other}/merge-plan?into={app_id}", "alice").json()
+        merged = self.post(f"/api/v1/apps/{other}/merge", "alice", into=app_id, confirm=plan["fingerprint"])
+        self.assertEqual(merged.status_code, 200, merged.text)
         actions = self.actions(app_id)
         for action in ("app.create", "role.assign", "evidence.review", "evidence.upload", "evidence.share",
                        "package.freeze", "package.download", "release.publish", "app.merge"):
@@ -307,11 +349,13 @@ class AuditTest(Base):
         who = dict(self.rows("SELECT action, actor FROM audit_log WHERE app_id = ? AND action = 'package.download'", app_id))
         self.assertEqual(who["package.download"], "bob")
         freeze_row = self.rows("SELECT details FROM audit_log WHERE action = 'package.freeze'")[0][0]
-        self.assertIn(hashlib.sha256(self.get(f"/apps/{app_id}/build-pack", "alice").data).hexdigest(), freeze_row)
-        page = self.get(f"/apps/{app_id}/history", "alice").data.decode()
-        self.assertIn("package.freeze", page)
-        self.assertIn("evidence.review", page)
-        self.assertEqual(self.get(f"/apps/{app_id}/history", "bob").status_code, 403)
+        self.assertIn(hashlib.sha256(self.get(f"/api/v1/apps/{app_id}/build-pack", "alice").content).hexdigest(),
+                      freeze_row)
+        history = self.get(f"/api/v1/apps/{app_id}/history", "alice").json()
+        listed = [e["action"] for e in history["entries"]]
+        self.assertIn("package.freeze", listed)
+        self.assertIn("evidence.review", listed)
+        self.assertEqual(self.get(f"/api/v1/apps/{app_id}/history", "bob").status_code, 403)
         with closing(connect(self.database)) as db:
             for sql in ("UPDATE audit_log SET actor = 'mallory'", "DELETE FROM audit_log"):
                 with self.assertRaises(database_errors):
@@ -323,39 +367,43 @@ class PackageTest(Base):
     def setUp(self):
         super().setUp()
         self.app_id = self.make_app()
-        self.post(f"/apps/{self.app_id}/scenarios", "alice", name="Save an invoice", expected="Saved.")
+        self.scenario_id = self.scenario(self.app_id, name="Save an invoice", expected="Saved.")
 
     def test_freezing_needs_the_owners_approval_of_the_previewed_bytes(self):
-        self.assertEqual(self.get(f"/apps/{self.app_id}/build-pack", "alice").status_code, 400)
-        page = self.get(f"/apps/{self.app_id}/build-pack/preview", "alice").data.decode()
-        sha = re.search(r'id="archive-sha256">([0-9a-f]{64})<', page).group(1)
-        path = f"/apps/{self.app_id}/packages"
+        self.assertEqual(self.get(f"/api/v1/apps/{self.app_id}/build-pack", "alice").status_code, 400)
+        sha = self.draft(self.app_id)["sha256"]
+        path = f"/api/v1/apps/{self.app_id}/packages"
         self.assertEqual(self.post(path, "alice", sha256=sha).status_code, 400)  # not approved
-        self.assertEqual(self.post(path, "alice", approve="yes", sha256="0" * 64).status_code, 409)
-        self.assertEqual(self.post(path, "alice", approve="yes", sha256=sha).status_code, 302)
-        self.assertEqual(self.post(path, "alice", approve="yes", sha256=sha).status_code, 409)  # unchanged
+        self.assertEqual(self.post(path, "alice", approve=False, sha256=sha).status_code, 400)
+        stale = self.post(path, "alice", approve=True, sha256="0" * 64)
+        self.assertEqual((stale.status_code, stale.json()["code"]), (409, "draft_changed"))
+        self.assertEqual(self.post(path, "alice", approve=True, sha256=sha).status_code, 201)
+        again = self.post(path, "alice", approve=True, sha256=sha)
+        self.assertEqual((again.status_code, again.json()["code"]), (409, "unchanged"))
         row = self.rows("SELECT rev, approved_by, sha256 FROM builder_packages")
         self.assertEqual(row, [(1, "alice", sha)])
-        data = self.get(f"/apps/{self.app_id}/packages/1/download", "alice").data
+        data = self.get(f"/api/v1/apps/{self.app_id}/packages/1/download", "alice").content
         self.assertEqual(hashlib.sha256(data).hexdigest(), sha)
-        self.assertIn("alice", self.get(f"/apps/{self.app_id}/packages/1", "alice").data.decode())
+        self.assertEqual(self.get(f"/api/v1/apps/{self.app_id}/packages/1", "alice").json()["approved_by"], "alice")
 
     def test_a_change_makes_a_new_revision_with_a_diff_and_the_old_one_stays(self):
-        self.assertEqual(self.as_owner_freeze(self.app_id).status_code, 302)
-        first = self.get(f"/apps/{self.app_id}/packages/1/download", "alice").data
-        self.post(f"/apps/{self.app_id}/scenarios/1", "alice", name="Save an invoice", expected="Saved with a number.")
-        self.post(f"/apps/{self.app_id}/scenarios", "alice", name="Reject an empty invoice")
-        self.assertEqual(self.as_owner_freeze(self.app_id, summary="Clarified the result").status_code, 302)
+        self.assertEqual(self.as_owner_freeze(self.app_id).status_code, 201)
+        first = self.get(f"/api/v1/apps/{self.app_id}/packages/1/download", "alice").content
+        changed = self.as_("alice").put(f"/api/v1/apps/{self.app_id}/scenarios/{self.scenario_id}",
+                                        json={"name": "Save an invoice", "expected": "Saved with a number."})
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.scenario(self.app_id, name="Reject an empty invoice")
+        self.assertEqual(self.as_owner_freeze(self.app_id, summary="Clarified the result").status_code, 201)
         rev, summary, diff = self.rows("SELECT rev, summary, diff FROM builder_packages WHERE rev = 2")[0]
         self.assertIn("Clarified the result", summary)
         self.assertIn("Scenario changed: Save an invoice", summary)
         self.assertIn("Scenario added: Reject an empty invoice", summary)
         self.assertIn("+", diff)
         self.assertIn("Saved with a number.", diff)
-        self.assertEqual(self.get(f"/apps/{self.app_id}/packages/1/download", "alice").data, first)
-        self.assertNotEqual(self.get(f"/apps/{self.app_id}/build-pack", "alice").data, first)
-        page = self.get(f"/apps/{self.app_id}/packages/2", "alice").data.decode()
-        self.assertIn("Diff against revision 1", page)
+        self.assertEqual(self.get(f"/api/v1/apps/{self.app_id}/packages/1/download", "alice").content, first)
+        self.assertNotEqual(self.get(f"/api/v1/apps/{self.app_id}/build-pack", "alice").content, first)
+        detail = self.get(f"/api/v1/apps/{self.app_id}/packages/2", "alice").json()
+        self.assertEqual((detail["rev"], detail["diff"], detail["summary"]), (2, diff, summary))
         with closing(connect(self.database)) as db:
             for sql in ("UPDATE builder_packages SET approved_by = 'mallory'", "DELETE FROM builder_packages"):
                 with self.assertRaises(database_errors):
@@ -366,37 +414,37 @@ class PackageTest(Base):
         with closing(connect(self.database)) as db, db:
             other = db.execute("SELECT artifact_id FROM brief_packages WHERE revision = ?", (second_rev,)).fetchone()[0]
             db.execute("UPDATE brief_packages SET artifact_id = ? WHERE revision = ?", (other, first_rev))
-        self.assertEqual(self.get(f"/apps/{self.app_id}/packages/1/download", "alice").status_code, 500)
+        self.assertEqual(self.get(f"/api/v1/apps/{self.app_id}/packages/1/download", "alice").status_code, 500)
 
 
 class RedactionTest(Base):
     def setUp(self):
         super().setUp()
         self.app_id = self.make_app()
-        self.post(f"/apps/{self.app_id}/scenarios", "alice", name="Log in",
-                  notes=f"Customer {EMAIL} paid with {CARD}; ssn 078-05-1120; synthetic: demo@example.com")
+        self.scenario(self.app_id, name="Log in",
+                      notes=f"Customer {EMAIL} paid with {CARD}; ssn 078-05-1120; synthetic: demo@example.com")
 
     def upload(self, title, kind, name, content, share=None):
-        data = {"token": self.token, "title": title, "kind": kind, "file": (io.BytesIO(content), name)}
-        if share:
-            data["share"] = share
-        response = self.client.post(f"/apps/{self.app_id}/attachments", headers={"X-Forwarded-User": "alice"},
-                                    data=data)
-        self.assertEqual(response.status_code, 302, response.data)
+        return self.attach(self.app_id, title, kind, name, content, share=share)
 
     def package(self):
-        self.assertIn(self.as_owner_freeze(self.app_id).status_code, (302, 409))
-        response = self.get(f"/apps/{self.app_id}/build-pack", "alice")
-        with ZipFile(io.BytesIO(response.data)) as archive:
+        self.assertIn(self.as_owner_freeze(self.app_id).status_code, (201, 409))
+        response = self.get(f"/api/v1/apps/{self.app_id}/build-pack", "alice")
+        with ZipFile(io.BytesIO(response.content)) as archive:
             return {name: archive.read(name) for name in archive.namelist()}
+
+    def excluded(self, draft):
+        return [entry for entry in draft["report"] if entry["outcome"] == "excluded"]
 
     def test_uploads_are_restricted_until_marked_and_the_report_says_why(self):
         self.upload("Login screen", "Screen", "login.png", png())
         self.upload("Traffic", "API", "login.har", har())
-        page = self.get(f"/apps/{self.app_id}/build-pack/preview", "alice").data.decode()
-        self.assertIn("2 items excluded", page)
-        self.assertIn("restricted evidence: the owner has not marked this screenshot reviewed or synthetic", page)
-        self.assertIn("restricted evidence: the owner has not marked this attachment reviewed or synthetic", page)
+        draft = self.draft(self.app_id)
+        self.assertIn("2 items excluded", draft["summary"])
+        reasons = [reason for entry in self.excluded(draft) for reason in entry["reasons"]]
+        self.assertEqual(len(self.excluded(draft)), 2)
+        self.assertIn("restricted evidence: the owner has not marked this screenshot reviewed or synthetic", reasons)
+        self.assertIn("restricted evidence: the owner has not marked this attachment reviewed or synthetic", reasons)
         files = self.package()
         self.assertEqual([p for p in files if p.startswith("attachments/")], [])
 
@@ -407,9 +455,11 @@ class RedactionTest(Base):
                     json.dumps({"rows": [{"id": 1, "ssn": "078-05-1120", "Email": EMAIL, "city": "Leeds"}]}).encode(),
                     share="synthetic")
         self.upload("Broken capture", "API", "broken.har", b"{not json", share="reviewed")
-        page = self.get(f"/apps/{self.app_id}/build-pack/preview", "alice").data.decode()
-        self.assertIn("1 item excluded", page)
-        self.assertIn("could not be checked for sensitive data", page)
+        draft = self.draft(self.app_id)
+        self.assertIn("1 item excluded", draft["summary"])
+        self.assertEqual(len(self.excluded(draft)), 1)
+        self.assertTrue(any("could not be checked for sensitive data" in reason
+                            for reason in self.excluded(draft)[0]["reasons"]))
         files = self.package()
         blob = b"\n".join(files.values())
         for secret in (SECRET.encode(), EMAIL.encode(), b"078-05-1120", CARD.encode(), b"Jane Doe",
@@ -483,24 +533,23 @@ class SignInTest(unittest.TestCase):
                 if name not in (env or {}):
                     os.environ.pop(name, None)
             app = create_app(self.database)
-        app.testing = True
-        client = app.test_client()
-        client.get("/")
-        with client.session_transaction() as session:
-            token = session.get("form_token")
-        return client, token
+        client = Client(app)
+        client.get("/api/v1/session")
+        return client
 
     def test_local_users_sign_in_with_their_own_password(self):
-        client, token = self.client()
+        client = self.client()
         # the machine user is the portal admin when the portal serves only this machine
-        self.assertEqual(client.post("/admin/users", data={"token": token, "name": "erin", "password": "s3cret-pass"}).status_code, 302)
-        self.assertEqual(client.post("/apps", data={"token": token, "name": "Orders"}).status_code, 302)
-        wrong = client.post("/login", data={"token": token, "user": "erin", "password": "nope"})
-        self.assertEqual(wrong.status_code, 401)
-        self.assertEqual(client.post("/login", data={"token": token, "user": "erin", "password": "s3cret-pass"}).status_code, 302)
-        self.assertIn("erin", client.get("/").data.decode())
-        self.assertEqual(client.get("/admin/users").status_code, 403)
-        self.assertEqual(client.get("/apps/1").status_code, 403)  # no role on Orders
+        made = client.put("/api/v1/admin/users/erin", json={"is_admin": False, "password": "s3cret-pass"})
+        self.assertEqual(made.status_code, 200, made.text)
+        self.assertEqual(client.post("/api/v1/apps", json={"name": "Orders"}).status_code, 201)
+        wrong = client.post("/api/v1/session", json={"user": "erin", "password": "nope"})
+        self.assertEqual((wrong.status_code, wrong.json()["code"]), (401, "wrong_credentials"))
+        signed = client.post("/api/v1/session", json={"user": "erin", "password": "s3cret-pass"})
+        self.assertEqual(signed.status_code, 200, signed.text)
+        self.assertEqual(client.get("/api/v1/session").json()["user"], "erin")
+        self.assertEqual(client.get("/api/v1/admin/users").status_code, 403)
+        self.assertEqual(client.get("/api/v1/apps/1").status_code, 403)  # no role on Orders
         stored = self.query("SELECT password_hash FROM users").fetchone()[0]
         self.assertNotIn("s3cret-pass", stored)
         self.assertTrue(stored.startswith("pbkdf2_sha256$"))
@@ -513,15 +562,15 @@ class SignInTest(unittest.TestCase):
                 INSERT INTO apps VALUES (1, 'Orders', '', '', 'Ops team');
                 INSERT INTO apps VALUES (2, 'Billing', '', '', '');
             """)
-        client, token = self.client({"TWINLAB2_PASSWORD": "shared"})
+        self.client({"TWINLAB2_PASSWORD": "shared"})
         rows = self.query("SELECT app_id, user_name, role FROM app_roles").fetchall()
         self.assertEqual(rows, [(1, "Ops team", "owner")])  # Billing waits for an admin
         actor = self.query("SELECT actor, action FROM audit_log").fetchall()
         self.assertEqual(actor, [("migration", "role.assign")])
 
     def test_a_named_owner_on_a_new_application_is_assigned(self):
-        client, token = self.client()
-        client.post("/apps", data={"token": token, "name": "Orders", "owner": "Ops team"})
+        client = self.client()
+        self.assertEqual(client.post("/api/v1/apps", json={"name": "Orders", "owner": "Ops team"}).status_code, 201)
         rows = self.query("SELECT user_name, role FROM app_roles ORDER BY user_name").fetchall()
         self.assertEqual(rows, [("Ops team", "owner"), ("local", "owner")])
 

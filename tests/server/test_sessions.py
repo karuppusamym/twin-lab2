@@ -6,9 +6,7 @@ here talks to Devin, Anthropic, GitHub or Copilot, and nothing spends money.
 
 from contextlib import closing
 import hashlib
-import json
 import os
-import re
 import tempfile
 import unittest
 from unittest import mock
@@ -21,7 +19,7 @@ from twinlab2 import migrations
 from twinlab2 import packages
 from twinlab2.portal import create_app
 from twinlab2 import portal
-from support import connect, freeze as freeze_package, new_database
+from support import Client, connect, freeze as freeze_package, new_database
 import test_verification
 from twinlab2 import verification
 from twinlab2 import worker
@@ -48,27 +46,25 @@ class SessionTest(unittest.TestCase):
         self.world = fake_provider.reset()
         self.ctx = builds.Context(poll_seconds=0, reconcile_delay=0, reconcile_checks=1, timeout=2)
         self.app = create_app(self.database)
-        self.app.testing = True
-        self.client = self.app.test_client()
-        self.client.get("/")
-        with self.client.session_transaction() as session:
-            self.token = session["form_token"]
-        self.app_id = int(self.post("/apps", name="Orders").location.rstrip("/").rsplit("/", 1)[-1])
-        self.post(f"/apps/{self.app_id}/scenarios", name="Show the order screen.")
-        self.post("/setup/builds/repos", repo=REPO)
-        self.assertEqual(freeze_package(self.client, self.token, f"/apps/{self.app_id}").status_code, 200)
+        self.client = Client(self.app)
+        response = self.post("/api/v1/apps", name="Orders")
+        self.assertEqual(response.status_code, 201, response.text)
+        self.app_id = response.json()["id"]
+        self.post(f"/api/v1/apps/{self.app_id}/scenarios", name="Show the order screen.")
+        self.post("/api/v1/setup/builds/repos", repo=REPO)
+        self.assertEqual(freeze_package(self.client, self.app_id).status_code, 200)
         with closing(self.db()) as db:
             self.revision = packages.latest(db, self.app_id)["revision"]
 
     # --- helpers ---
 
     def post(self, path, **values):
-        return self.client.post(path, data={"token": self.token, **values})
+        return self.client.post(path, json=values)
 
     def page(self, path):
         response = self.client.get(path)
-        self.assertEqual(response.status_code, 200, response.data[:500])
-        return response.data.decode()
+        self.assertEqual(response.status_code, 200, response.text[:500])
+        return response.json()
 
     def db(self):
         return builds.connect(self.database)
@@ -82,16 +78,23 @@ class SessionTest(unittest.TestCase):
             return [dict(m) for m in builds.messages(db, build_id)]
 
     def start(self, key, **values):
-        values = {"revision": self.revision, "repo": REPO, "provider": "fake", "budget": "5", "request_key": key,
+        values = {"revision": self.revision, "repo": REPO, "provider": "fake", "budget": 5, "request_key": key,
                   **values}
-        return self.post(f"/apps/{self.app_id}/build", **values)
+        return self.post(f"/api/v1/apps/{self.app_id}/builds", **values)
+
+    def started(self, response):
+        """The session id a start answered."""
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["build"]["id"]
+
+    def answer(self, build_id, answer, request_key, **values):
+        return self.post(f"/api/v1/builds/{build_id}/messages", answer=answer, request_key=request_key, **values)
 
     def run_worker(self, jobs=1):
         return worker.run(self.database, once=True, ctx=self.ctx, max_jobs=jobs, lease=5)
 
     def running(self, key="one"):
-        location = self.start(key).location
-        build_id = int(location.rsplit("/", 1)[-1])
+        build_id = self.started(self.start(key))
         for _ in range(6):  # other sessions' polls are due too
             self.run_worker()
             if self.build(build_id)["state"] != "queued":
@@ -104,9 +107,10 @@ class SessionTest(unittest.TestCase):
 
     def test_duplicate_clicks_return_the_request_and_new_session_starts_another(self):
         first, second = self.start("click"), self.start("click")
-        self.assertEqual(first.location, second.location)
-        self.assertIn("already started session #1", self.page(second.location))
-        self.assertEqual(self.start("new-session").location, "/builds/2")  # New session: a fresh key
+        self.assertEqual(self.started(first), self.started(second))
+        self.assertFalse(second.json()["created"])
+        self.assertIn("already started session #1", second.json()["notice"])
+        self.assertEqual(self.started(self.start("new-session")), 2)  # New session: a fresh key
         self.run_worker(jobs=4)
         self.assertEqual(self.world.starts, 2)
 
@@ -122,13 +126,12 @@ class SessionTest(unittest.TestCase):
         self.assertIn(one["branch"], self.world.sessions[sid_a]["prompt"])
         self.world.ask(sid_a, "Only for A?")
         self.run_worker(jobs=2)
-        self.post(f"/builds/{a}/answer", answer="Yes, only A.", request_key="m1")
+        self.assertEqual(self.answer(a, "Yes, only A.", "m1").status_code, 201)
         self.run_worker(jobs=3)
         self.assertEqual([r for r in self.world.replies], [(sid_a, "clarification", "Yes, only A.")])
         self.assertEqual(self.messages(b), [])  # separate conversations
-        page = self.page(f"/apps/{self.app_id}/build")
-        self.assertIn(one["branch"], page)
-        self.assertIn(two["branch"], page)
+        sessions = self.page(f"/api/v1/apps/{self.app_id}/builds")["sessions"]
+        self.assertEqual({s["id"]: s["branch"] for s in sessions}, {a: one["branch"], b: two["branch"]})
 
     def test_an_improvement_session_starts_from_another_sessions_commit(self):
         a, sid = self.running("a")
@@ -137,9 +140,9 @@ class SessionTest(unittest.TestCase):
         self.world.finish(sid, head)
         self.run_worker()
         self.assertEqual(self.build(a)["state"], "ready_for_verification")
-        self.assertIn(f'value="session:{a}"', self.page(f"/apps/{self.app_id}/build"))
-        response = self.start("improve", start_commit=f"session:{a}", provider="fake")
-        build = self.build(int(response.location.rsplit("/", 1)[-1]))
+        points = self.page(f"/api/v1/apps/{self.app_id}/builds")["starting_points"]
+        self.assertEqual([(p["id"], p["head_sha"]) for p in points], [(a, head)])
+        build = self.build(self.started(self.start("improve", start_from_build=a, provider="fake")))
         self.assertEqual((build["base_sha"], build["parent_build"]), (head, a))
         self.run_worker()
         prompt = [s for s in self.world.sessions.values() if s["id"] != sid][0]["prompt"]
@@ -152,21 +155,24 @@ class SessionTest(unittest.TestCase):
         self.world.ask(sid, "Zero quantity allowed?")
         self.run_worker()
         self.assertEqual(self.build(build_id)["state"], "waiting_for_answer")
-        self.assertIn("Zero quantity allowed?", self.page(f"/builds/{build_id}"))
+        detail = self.page(f"/api/v1/builds/{build_id}")
+        self.assertIn("Zero quantity allowed?", detail["questions"] + [m["body"] for m in detail["messages"]])
         self.world.reply_plan = ["lost"]
-        self.post(f"/builds/{build_id}/answer", answer="No.", request_key="k1")
-        self.post(f"/builds/{build_id}/answer", answer="No.", request_key="k1")  # a double click
+        first = self.answer(build_id, "No.", "k1")
+        second = self.answer(build_id, "No.", "k1")  # a double click
+        self.assertEqual((first.json()["created"], second.json()["created"]), (True, False))
         self.run_worker(jobs=5)
         sent = [m for m in self.messages(build_id) if m["direction"] == "to_provider"]
         self.assertEqual([m["state"] for m in sent], ["delivery_uncertain"])
         self.assertEqual(len(self.world.replies), 1)
-        self.assertIn("Delivery uncertain", self.page(f"/builds/{build_id}"))
+        shown = [m for m in self.page(f"/api/v1/builds/{build_id}")["messages"] if m["direction"] == "to_provider"]
+        self.assertEqual([m["state_label"] for m in shown], ["Delivery uncertain"])
 
     def test_a_worker_that_died_mid_send_leaves_delivery_uncertain(self):
         build_id, sid = self.running()
         self.world.ask(sid, "Which currency?")
         self.run_worker()
-        self.post(f"/builds/{build_id}/answer", answer="EUR", request_key="k")
+        self.answer(build_id, "EUR", "k")
         with closing(self.db()) as db:  # the worker marked it sending, then died before the answer
             db.execute("UPDATE build_messages SET state = 'sending', sent_at = ? WHERE direction = 'to_provider'",
                        (builds.now(),))
@@ -180,7 +186,7 @@ class SessionTest(unittest.TestCase):
         self.world.ask(sid, "Q?")
         self.run_worker()
         self.world.reply_plan = ["silent", "ok"]
-        self.post(f"/builds/{build_id}/answer", answer="first", request_key="k1")
+        self.answer(build_id, "first", "k1")
         self.run_worker(jobs=2)
         self.assertEqual(self.messages(build_id)[-1]["state"], "sent")
         with mock.patch.object(builds, "ACK_TIMEOUT_SECONDS", -1):
@@ -188,7 +194,7 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(self.messages(build_id)[-1]["state"], "delivery_uncertain")
         self.world.ask(sid, "Q2?")
         self.run_worker()
-        self.post(f"/builds/{build_id}/answer", answer="second", request_key="k2")
+        self.answer(build_id, "second", "k2")
         self.run_worker(jobs=3)
         self.assertEqual(self.messages(build_id)[-1]["state"], "acknowledged")
 
@@ -196,16 +202,18 @@ class SessionTest(unittest.TestCase):
         build_id, sid = self.running()
         self.world.ask(sid, "Should cancelled orders be listed?")
         self.run_worker()
-        self.post(f"/builds/{build_id}/answer", answer="Yes, and they can be restored.", scope_change="1",
-                  request_key="scope")
+        response = self.answer(build_id, "Yes, and they can be restored.", "scope", scope_change=True)
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertIn("Not sent", response.json()["notice"])
         self.run_worker(jobs=2)
         message = self.messages(build_id)[-1]
         self.assertEqual((message["kind"], message["state"]), ("scope_change", "held_for_review"))
         self.assertEqual(self.world.replies, [])
         self.assertEqual(self.build(build_id)["revision"], self.revision)  # the session's revision is untouched
-        preview = self.page(f"/apps/{self.app_id}/build-pack/preview")
-        self.assertIn(f"Agreed in build session #{build_id}", preview)
-        self.assertEqual(freeze_package(self.client, self.token, f"/apps/{self.app_id}").status_code, 200)
+        preview = self.client.get(f"/api/v1/apps/{self.app_id}/package-draft")
+        self.assertEqual(preview.status_code, 200)
+        self.assertIn(f"Agreed in build session #{build_id}", preview.text)
+        self.assertEqual(freeze_package(self.client, self.app_id).status_code, 200)
         with closing(self.db()) as db:
             revs = packages.revisions(db, self.app_id)
             self.assertEqual([r["rev"] for r in revs], [2, 1])
@@ -218,14 +226,16 @@ class SessionTest(unittest.TestCase):
         build_id, sid = self.running()
         self.world.ask_tool(sid, "Bash", {"command": "npm test"})
         self.run_worker()
-        page = self.page(f"/builds/{build_id}")
-        self.assertIn("Approve", page)
         asked = [m for m in self.messages(build_id) if m["kind"] == "tool_approval"][0]
-        self.post(f"/builds/{build_id}/tools/{asked['id']}", decision="approve", request_key=f"tool:{asked['id']}")
-        self.post(f"/builds/{build_id}/tools/{asked['id']}", decision="deny")  # already decided: ignored
+        detail = self.page(f"/api/v1/builds/{build_id}")
+        self.assertIn({"id": asked["id"], "kind": "tool_approval"}, detail["outstanding"])  # Approve / Deny
+        path = f"/api/v1/builds/{build_id}/tool-decisions/{asked['id']}"
+        self.assertEqual(self.post(path, decision="approve", request_key=f"tool:{asked['id']}").status_code, 200)
+        self.post(path, decision="deny", request_key="")  # already decided: ignored
         self.run_worker(jobs=3)
         self.assertEqual(self.world.replies, [(sid, "tool_approval", "approve")])
-        self.assertIn("You chose approve", self.page(f"/builds/{build_id}"))
+        shown = [m for m in self.page(f"/api/v1/builds/{build_id}")["messages"] if m["id"] == asked["id"]][0]
+        self.assertEqual(shown["decision"], "approve")
 
     # --- start, cancel, restart ---
 
@@ -263,14 +273,15 @@ class SessionTest(unittest.TestCase):
 
     def test_cancel_and_interrupt(self):
         build_id, sid = self.running()
-        self.post(f"/builds/{build_id}/interrupt")
+        self.assertEqual(self.post(f"/api/v1/builds/{build_id}/interrupt").json()["notice"], "Interrupt requested.")
         self.run_worker(jobs=2)
         self.assertTrue(self.world.sessions[sid]["interrupted"])
-        self.post(f"/builds/{build_id}/cancel")
+        self.assertEqual(self.post(f"/api/v1/builds/{build_id}/cancel").json()["notice"], "Cancel requested.")
         self.run_worker(jobs=3)
         self.assertTrue(self.world.sessions[sid]["cancelled"])
         self.assertEqual(self.build(build_id)["state"], "cancelled")
-        self.assertIn("Retry", self.page(f"/builds/{build_id}"))
+        shown = self.page(f"/api/v1/builds/{build_id}")["build"]
+        self.assertEqual((shown["state"], shown["final"]), ("cancelled", True))  # it can be retried
 
     # --- publication stays coordinated ---
 
@@ -289,18 +300,21 @@ class SessionTest(unittest.TestCase):
             portal.acquire_publish(db, self.app_id, 2, "someone-else")
             with self.assertRaises(portal.PublishConflict):
                 portal.acquire_publish(db, self.app_id, 1, "me")
-        response = self.post("/releases/1/publish")
+        response = self.post("/api/v1/releases/1/publish")
         self.assertEqual(response.status_code, 409)
-        self.assertIn(b"being published", response.data)
+        self.assertEqual(response.json()["code"], "publish_locked")
+        self.assertIn("being published", response.json()["detail"])
         with closing(self.db()) as db:
             self.assertEqual(db.execute("SELECT state FROM releases WHERE id = 1").fetchone()[0], "tested")
             db.execute("UPDATE publish_locks SET expires_at = ?", (jobqueue.later(-1),))  # the holder died
             db.commit()
-        self.assertEqual(self.post("/releases/1/publish").status_code, 302)
+        response = self.post("/api/v1/releases/1/publish")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["release"]["state"], "published")
         with closing(self.db()) as db:
             self.assertEqual(db.execute("SELECT state FROM releases WHERE id = 1").fetchone()[0], "published")
             self.assertEqual(db.execute("SELECT COUNT(*) FROM publish_locks").fetchone()[0], 0)
-        self.assertEqual(self.post("/releases/1/publish").status_code, 400)  # final
+        self.assertEqual(self.post("/api/v1/releases/1/publish").status_code, 400)  # final
 
     def test_a_session_cannot_take_over_another_sessions_release(self):
         a, _ = self.running("a")
@@ -324,18 +338,14 @@ class CompareTest(unittest.TestCase):
         self.addCleanup(self.gh.close)
         self.database = new_database(self.work.name)
         self.app = create_app(self.database)
-        self.app.testing = True
         self.app.config.update(GITHUB=verification.GitHub(token="test-token", api=self.gh.url),
                                TWINLAB_RUNNER=test_verification.FakeTwinLab())
-        self.client = self.app.test_client()
-        self.client.get("/")
-        with self.client.session_transaction() as session:
-            self.token = session["form_token"]
-        post = lambda path, **v: self.client.post(path, data={"token": self.token, **v})  # noqa: E731
-        self.post = post
-        self.app_id = int(post("/apps", name="Billing").location.rstrip("/").rsplit("/", 1)[-1])
-        post(f"/apps/{self.app_id}/scenarios", name="Save an invoice.")
-        freeze_package(self.client, self.token, f"/apps/{self.app_id}")
+        self.client = Client(self.app)
+        response = self.client.post("/api/v1/apps", json={"name": "Billing"})
+        self.assertEqual(response.status_code, 201, response.text)
+        self.app_id = response.json()["id"]
+        self.client.post(f"/api/v1/apps/{self.app_id}/scenarios", json={"name": "Save an invoice."})
+        freeze_package(self.client, self.app_id)
         with closing(connect(self.database)) as db:
             revision = packages.latest(db, self.app_id)["revision"]
             for build_id, (provider, head) in enumerate((("devin", "1" * 40), ("claude", "2" * 40)), 1):
@@ -354,20 +364,26 @@ class CompareTest(unittest.TestCase):
             self.gh.branch_heads[f"twinlab2%2Fapp-1%2Fsession-{build_id}-{provider}"] = head
 
     def test_the_same_checks_run_against_each_candidate(self):
-        page = self.client.get(f"/apps/{self.app_id}/sessions/compare?ids=1,2").data.decode()
-        self.assertIn("not verified yet", page)
-        response = self.post(f"/apps/{self.app_id}/sessions/compare", session=["1", "2"])
-        self.assertEqual(response.status_code, 302, response.data[:400])
+        before = self.client.get(f"/api/v1/apps/{self.app_id}/builds/compare?session=1&session=2")
+        self.assertEqual(before.status_code, 200, before.text)
+        self.assertEqual([(c["build"]["id"], c["release"], c["tested"]) for c in before.json()["results"]],
+                         [(1, None, False), (2, None, False)])  # not verified yet
+        response = self.client.post(f"/api/v1/apps/{self.app_id}/builds/compare", json={"sessions": [1, 2]})
+        self.assertEqual(response.status_code, 200, response.text[:400])
+        self.assertEqual(response.json().get("errors"), [])
         with closing(connect(self.database)) as db:
             rows = db.execute("SELECT build_id, commit_sha, state FROM releases ORDER BY build_id").fetchall()
             self.assertEqual([(r[0], r[1]) for r in rows], [(1, "1" * 40), (2, "2" * 40)])
             reports = db.execute("SELECT COUNT(*) FROM release_artifacts WHERE kind = 'verification_report'").fetchone()[0]
         self.assertEqual(reports, 2)
-        page = self.client.get(response.location).data.decode()
-        self.assertIn("candidate-1", page)
-        self.assertIn("candidate-2", page)
-        self.assertIn("build: success", page)
-        self.assertIn("No deployment reports", page)  # no deployment of either commit yet: both stay Packaged
+        results = self.client.get(f"/api/v1/apps/{self.app_id}/builds/compare?session=1&session=2").json()["results"]
+        self.assertEqual([c["build"]["id"] for c in results], [1, 2])  # both candidates
+        for candidate in results:
+            self.assertIn({"name": "build", "conclusion": "success"}, candidate["checks"])
+            # no deployment of either commit yet: both stay Packaged
+            self.assertFalse(candidate["tested"])
+            self.assertEqual(candidate["release"]["state"], "packaged")
+            self.assertTrue(any("No deployment reports" in r for r in candidate["reasons"]), candidate["reasons"])
 
 
 class MigrationTest(unittest.TestCase):

@@ -13,7 +13,7 @@ TwinLab2 no longer downloads Twin Lab: the code it runs was copied from twin-lab
 | Replay copy against the milestone v3 build | Locally tested | `judge-recordings/ws-20261120T173343Z-fa325a22` against Orders 3.0.0 on its clean-machine image: the pinned labctl and `python -m twinlab2.replay` both give **PASS WITHIN DECLARED SCOPE**, 8/8 acceptance cases, 65 steps, the same report but for artifact paths. `independent.run` with the copy: scenario pass, outcome MET, reset pass ("reset restored the baseline (1 table(s))"), as Verify reported on 2026-11-20. |
 | Built program | Locally tested | `python recorder/build.py` (208 MB, unsigned); `_build.json` names Twin Lab 90bdd91 and the source commit. `--help` runs; a `--portable-data record` with a mainframe target ran its collector in a spawned process (ready, ended, complete, no restarts), and one with `--exe notepad.exe` passed preflight (UI Automation answers) and recorded 2 Notepad steps. |
 | CaseDesk end to end | Locally tested | `TWINLAB_AGENT_E2E=1 python -m pytest tests/recorder/test_agent_e2e.py`: passed (36 s). CaseDesk's sources still come from `../twin-lab`; its steps run with the copied desktop Driver (`tests/recorder/desktop_drive.py`). |
-| Portal image | Locally tested | `docker build -f deploy/Dockerfile .`, then gunicorn `twinlab2.portal:wsgi()`: `/` redirects to sign-in, `/static/portal.css` 200, signed in with the password the Applications page renders (templates from the installed package). The image does not have the browser replay. |
+| Portal image | Locally tested; CI builds it | `docker build -f deploy/Dockerfile .` (node stage builds `web/dist`, the Python stage copies it in), then gunicorn with uvicorn workers `twinlab2.app:asgi()` as an arbitrary UID: `X-Forwarded-User` signs in (`GET /api/v1/session`), `/api/v1/apps` is 401 without it, `/apps/1` answers the web app's `index.html` and its assets load. The `image` workflow repeats this on every pull request. The image does not have the browser replay. |
 
 ## Orders-to-Billing milestone: record, freeze, blind rebuild, clean container, Tested (2026-11-20)
 
@@ -126,7 +126,7 @@ Not checked: a real UiPath robot, a real mainframe or emulator, a second PC, a s
 
 ## Release states and deployment verification (2026-11-20)
 
-Locally tested by `tests/test_release_states.py` (unit tests against the Flask test client, a temporary Git repo and SQLite catalog):
+Locally tested by `tests/test_release_states.py` (unit tests against the portal's test client (FastAPI TestClient), a temporary Git repo and SQLite catalog):
 
 | Check | Result |
 |---|---|

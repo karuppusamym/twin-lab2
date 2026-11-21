@@ -172,28 +172,29 @@ class FixtureRecordingTest(unittest.TestCase):
 class PortalContractTest(unittest.TestCase):
     """The portal's checks on pairing and upload (a portal and sign-in as in test_registry)."""
 
-    setUp, post, pair, agent = RegistryTest.setUp, RegistryTest.post, RegistryTest.pair, RegistryTest.agent
+    setUp, ok, pair, agent = RegistryTest.setUp, RegistryTest.ok, RegistryTest.pair, RegistryTest.agent
 
     def code(self):
-        import re
+        return self.ok(self.client.post("/api/v1/machines/pairing-codes"), 201)["display"]
 
-        self.post("/machines/pair")
-        return re.search(r'id="pair-code">([A-Z0-9-]+)<', self.client.get("/machines").data.decode()).group(1)
+    def upload(self, doc, token):
+        return self.client.http.post("/api/agent/references", json=doc, headers=self.agent(token))
 
     def test_pairing_refuses_an_old_or_newer_contract_without_using_the_code(self):
         code = self.code()
         for version, update in ((None, "recorder"), ("0.9.0", "recorder"), ("2.0.0", "portal")):
             body = {"code": code, "name": "PC"} | ({"contract_version": version} if version else {})
-            response = self.client.post("/api/agent/pair", json=body)
+            response = self.client.http.post("/api/agent/pair", json=body)
             self.assertEqual(response.status_code, 426, version)
-            self.assertEqual(response.json["update"], update)
-            self.assertEqual(response.json["contract"]["portal"], CV)
-            self.assertIn("pdate", response.json["error"])
-        response = self.client.post("/api/agent/pair", json={"contract_version": CV, "code": code, "name": "PC",
+            self.assertEqual(response.json()["update"], update)
+            self.assertEqual(response.json()["contract"]["portal"], CV)
+            self.assertIn("pdate", response.json()["error"])
+        response = self.client.http.post("/api/agent/pair", json={"contract_version": CV, "code": code, "name": "PC",
                                                              "recorder": {"name": "TwinLabRecorder", "version": "0.2.0"}})
-        self.assertEqual(response.status_code, 200, response.data)  # the code still worked
-        self.assertEqual(response.json["contract_version"], CV)
-        self.assertIn(f"contract {CV}", self.client.get("/machines").data.decode())
+        self.assertEqual(response.status_code, 200, response.text)  # the code still worked
+        self.assertEqual(response.json()["contract_version"], CV)
+        [machine] = self.ok(self.client.get("/api/v1/machines"))["machines"]
+        self.assertEqual(machine["contract_version"], CV)
         with closing(connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM pairing_failures").fetchone()[0], 0)
 
@@ -202,34 +203,34 @@ class PortalContractTest(unittest.TestCase):
         old = {k: v for k, v in references().items() if k != "contract_version"}
         for doc, update in ((old, "recorder"), (dict(references(), contract_version="0.3.1"), "recorder"),
                             (dict(references(), contract_version="2.0.0"), "portal")):  # fmt: skip
-            response = self.client.post("/api/agent/references", json=doc, headers=self.agent(token))
+            response = self.upload(doc, token)
             self.assertEqual(response.status_code, 426, doc.get("contract_version"))
-            self.assertEqual(response.json["update"], update)
+            self.assertEqual(response.json()["update"], update)
         with closing(connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM recordings").fetchone()[0], 0)
         shape = dict(references(), apps=[{"key": "desktop:X", "level": "admin"}])
-        response = self.client.post("/api/agent/references", json=shape, headers=self.agent(token))
+        response = self.upload(shape, token)
         self.assertEqual(response.status_code, 400)
-        self.assertTrue(response.json["errors"])
+        self.assertTrue(response.json()["errors"])
 
     def test_each_recording_keeps_the_recorder_and_contract_versions(self):
         _, token = self.pair()
         doc = agent_main.contract_references(json.loads(BUILT.read_text(encoding="utf-8")))
         doc["contract_version"] = "1.0.3"  # a newer patch of the 1.0 shape is accepted
-        response = self.client.post("/api/agent/references", json=doc, headers=self.agent(token))
-        self.assertEqual(response.status_code, 200, response.data)
+        response = self.upload(doc, token)
+        self.assertEqual(response.status_code, 200, response.text)
         doc = dict(references_1_1(), contract_version="1.2.0", recorder={  # a newer minor is accepted
             "name": "TwinLabRecorder", "version": "0.2.0", "twinlab_commit": "430dfe538965b46ccbe824f8f2b4f415c5576483"})
-        response = self.client.post("/api/agent/references", json=doc, headers=self.agent(token))
-        self.assertEqual(response.status_code, 200, response.data)
-        recording_id = response.json["recording_id"]
+        response = self.upload(doc, token)
+        self.assertEqual(response.status_code, 200, response.text)
+        recording_id = response.json()["recording_id"]
         with closing(connect(self.database)) as db:
             row = db.execute("SELECT contract_version, recorder, recorder_version, twinlab_commit "
                              "FROM recording_contracts WHERE recording_id = ?", (recording_id,)).fetchone()  # fmt: skip
         self.assertEqual(row, ("1.2.0", "TwinLabRecorder", "0.2.0", "430dfe538965b46ccbe824f8f2b4f415c5576483"))
-        page = self.client.get(f"/recordings/{recording_id}").data.decode()
-        self.assertIn("recorder contract 1.2.0", page)
-        self.assertIn("430dfe538965", page)
+        shown = self.ok(self.client.get(f"/api/v1/recordings/{recording_id}"))
+        self.assertEqual(shown["refs"]["contract"]["contract_version"], "1.2.0")
+        self.assertEqual(shown["refs"]["contract"]["twinlab_commit"], "430dfe538965b46ccbe824f8f2b4f415c5576483")
 
 
 class RecorderStampTest(unittest.TestCase):

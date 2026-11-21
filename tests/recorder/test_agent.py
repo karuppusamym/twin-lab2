@@ -3,18 +3,15 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-import threading
 import unittest
 from unittest import mock
-
-from werkzeug.serving import make_server
 
 from twinlab2_recorder import settings as st
 from twinlab2_recorder.client import Portal, PortalError, check_portal, clean_targets
 from twinlab2_recorder import main as agent_main
 from twinlab2.portal import create_app
 from test_registry import references
-from support import new_database
+from support import Client, Server, new_database
 
 
 class AgentUnitTest(unittest.TestCase):
@@ -49,32 +46,25 @@ class AgentPortalTest(unittest.TestCase):
         self.addCleanup(self.work.cleanup)
         self.root = Path(self.work.name)
         self.app = create_app(new_database(self.root))
-        self.server = make_server("127.0.0.1", 0, self.app, threaded=True)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.addCleanup(self.server.shutdown)
-        self.url = f"http://127.0.0.1:{self.server.server_port}"
-        self.ui = self.app.test_client()
-        self.ui.get("/")
-        with self.ui.session_transaction() as session:
-            self.token = session["form_token"]
+        self.server = Server(self.app)
+        self.addCleanup(self.server.stop)
+        self.url = self.server.url
+        self.ui = Client(self.app)
         env = mock.patch.dict(os.environ, {"LOCALAPPDATA": str(self.root / "local")})
         env.start()
         self.addCleanup(env.stop)
 
     def code(self):
-        import re
-
-        self.ui.post("/machines/pair", data={"token": self.token})
-        return re.search(r'id="pair-code">([A-Z0-9-]+)<', self.ui.get("/machines").data.decode()).group(1)
+        return self.ui.post("/api/v1/machines/pairing-codes").json()["display"]
 
     def test_pair_list_sessions_and_send_references(self):
         self.assertEqual(agent_main.main(["pair", "--portal", self.url, "--code", self.code(), "--name", "PC 7"]), 0)
         cfg = st.Settings(st.data_dir())
         self.assertEqual(cfg.values["machine"], "PC 7")
-        self.ui.post("/apps", data={"token": self.token, "name": "Orders"})
-        self.ui.post("/apps/1/identity", data={"token": self.token, "key": "http://127.0.0.1:8080"})
-        self.ui.post("/sessions", data={"token": self.token, "name": "Trial", "machine_id": "1", "app": "1",
-                                        "level_1": "full"})
+        self.ui.post("/api/v1/apps", json={"name": "Orders"})
+        self.ui.post("/api/v1/apps/1/identities", json={"key": "http://127.0.0.1:8080"})
+        self.ui.post("/api/v1/capture-sessions", json={"name": "Trial", "machine_id": 1,
+                                                       "targets": [{"app_id": 1, "level": "full"}]})
         offered = agent_main._portal(cfg, None).sessions()
         self.assertEqual(offered["sessions"][0]["targets"],
                          [{"level": "full", "origin": "http://127.0.0.1:8080", "name": "Orders", "app_id": 1}])
@@ -84,9 +74,9 @@ class AgentPortalTest(unittest.TestCase):
         result = agent_main.send(cfg, folder.name)
         self.assertEqual(result["recording_id"], "ws-20261119T100000Z-0a1b2c3d")
         self.assertTrue((folder / "sent.json").is_file())
-        page = self.ui.get("/apps/1").data.decode()
-        self.assertIn("btnSave", page)
-        self.assertIn("recorded", self.ui.get("/sessions").data.decode())
+        flows = self.ui.get("/api/v1/apps/1/evidence").json()["recorded_flows"]
+        self.assertIn("btnSave", [step.get("label") for flow in flows for step in flow["steps"]])
+        self.assertEqual(self.ui.get("/api/v1/capture-sessions").json()["sessions"][0]["status"], "recorded")
         with self.assertRaises(PortalError):
             Portal(self.url, "wrong" * 10).sessions()
 

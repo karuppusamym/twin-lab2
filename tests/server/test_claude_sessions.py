@@ -21,7 +21,7 @@ from fakes import FakeAnthropic, FakeGitHub
 from twinlab2 import packages
 from twinlab2.portal import create_app
 from twinlab2.providers import local_runner
-from support import freeze as freeze_package, new_database
+from support import Client, freeze as freeze_package, new_database
 from twinlab2 import worker
 
 REPO = "acme/orders-demo"
@@ -77,15 +77,13 @@ class ClaudeSessionTest(unittest.TestCase):
             self.assertTrue(url.startswith("http://127.0.0.1:"), url)
         self.ctx = builds.Context(poll_seconds=0, reconcile_delay=0, reconcile_checks=1, timeout=2)
         self.app = create_app(self.database)
-        self.app.testing = True
-        self.client = self.app.test_client()
-        self.client.get("/")
-        with self.client.session_transaction() as session:
-            self.token = session["form_token"]
-        self.app_id = int(self.post("/apps", name="Orders").location.rstrip("/").rsplit("/", 1)[-1])
-        self.post(f"/apps/{self.app_id}/scenarios", name="Show the order screen.")
-        self.post("/setup/builds/repos", repo=REPO)
-        freeze_package(self.client, self.token, f"/apps/{self.app_id}")
+        self.client = Client(self.app)
+        response = self.post("/api/v1/apps", name="Orders")
+        self.assertEqual(response.status_code, 201, response.text)
+        self.app_id = response.json()["id"]
+        self.post(f"/api/v1/apps/{self.app_id}/scenarios", name="Show the order screen.")
+        self.post("/api/v1/setup/builds/repos", repo=REPO)
+        freeze_package(self.client, self.app_id)
         with closing(builds.connect(self.database)) as db:
             self.revision = packages.latest(db, self.app_id)["revision"]
         self.addCleanup(self.stop_runners)
@@ -93,12 +91,20 @@ class ClaudeSessionTest(unittest.TestCase):
     # --- helpers ---
 
     def post(self, path, **values):
-        return self.client.post(path, data={"token": self.token, **values})
+        return self.client.post(path, json=values)
 
     def page(self, path):
         response = self.client.get(path)
-        self.assertEqual(response.status_code, 200, response.data[:500])
-        return response.data.decode()
+        self.assertEqual(response.status_code, 200, response.text[:500])
+        return response.json()
+
+    def detail(self, build_id=1):
+        return self.page(f"/api/v1/builds/{build_id}")
+
+    def shown_text(self, build_id=1):
+        """The questions and the chat of the session as the person sees them."""
+        detail = self.detail(build_id)
+        return "\n".join(detail["questions"] + [m["body"] for m in detail["messages"]])
 
     def build(self, build_id=1):
         with closing(builds.connect(self.database)) as db:
@@ -108,14 +114,16 @@ class ClaudeSessionTest(unittest.TestCase):
         with closing(builds.connect(self.database)) as db:
             return [dict(m) for m in builds.messages(db, build_id)]
 
+    def request(self, **values):
+        values = {"revision": self.revision, "repo": REPO, "provider": self.provider, "budget": 5,
+                  "request_key": "k1", **values}
+        return self.post(f"/api/v1/apps/{self.app_id}/builds", **values)
+
     def start(self, **values):
         os.environ["TWINLAB2_FAKE_AGENT"] = json.dumps(self.plan)
-        values = {"revision": self.revision, "repo": REPO, "provider": self.provider, "budget": "5",
-                  "request_key": "k1", **values}
-        response = self.post(f"/apps/{self.app_id}/build", **values)
-        self.assertEqual(response.status_code, 302)
-        return int(response.location.rsplit("/", 1)[-1])
-
+        response = self.request(**values)
+        self.assertEqual(response.status_code, 201, response.text)
+        return response.json()["build"]["id"]
     def until(self, check, timeout=60, what="the session"):
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -157,7 +165,9 @@ class ClaudeSessionTest(unittest.TestCase):
             time.sleep(0.2)
 
     def answer(self, text, key, build_id=1, **values):
-        self.post(f"/builds/{build_id}/answer", answer=text, request_key=key, **values)
+        response = self.post(f"/api/v1/builds/{build_id}/messages", answer=text, request_key=key, **values)
+        self.assertEqual(response.status_code, 201, response.text)
+        return response
 
     # --- tests ---
 
@@ -165,8 +175,7 @@ class ClaudeSessionTest(unittest.TestCase):
         self.anthropic.plan = ["QUESTION: Is a zero quantity allowed?", "Zero is refused.\nREADY TO BUILD"]
         build_id = self.start()
         self.until(lambda: self.build()["state"] == "waiting_for_answer", what="the review question")
-        page = self.page(f"/builds/{build_id}")
-        self.assertIn("Is a zero quantity allowed?", page)
+        self.assertIn("Is a zero quantity allowed?", self.shown_text(build_id))
         first = self.anthropic.bodies[0]
         self.assertEqual(first["model"], "claude-opus-5-5")  # the default model
         sent = json.dumps(first)
@@ -193,7 +202,7 @@ class ClaudeSessionTest(unittest.TestCase):
         self.assertFalse(prompt["env_github"])  # the agent never gets the GitHub token
         self.assertEqual(len(self.anthropic.bodies), 2)
         self.assertEqual([m["role"] for m in self.anthropic.bodies[1]["messages"]], ["user", "assistant", "user"])
-        self.assertIn("Ready for verification", self.page(f"/builds/{build_id}"))
+        self.assertEqual(self.detail(build_id)["build"]["state_label"], "Ready for verification")
 
     def test_a_lost_clarification_answer_is_delivery_uncertain_and_not_resent(self):
         self.anthropic.plan = ["QUESTION: Currency?", "drop", "EUR it is.\nREADY TO BUILD"]
@@ -205,7 +214,7 @@ class ClaudeSessionTest(unittest.TestCase):
         time.sleep(1)
         self.until(lambda: True)
         self.assertEqual(len(self.anthropic.bodies), 2)  # never sent again by itself
-        self.assertIn("Delivery uncertain", self.page("/builds/1"))
+        self.assertIn("Delivery uncertain", [m["state_label"] for m in self.detail()["messages"]])
         self.answer("EUR, as I said.", "a2")  # the person answers again, deliberately
         self.until(lambda: self.build()["state"] == "ready_for_verification")
         self.assertEqual(len(self.anthropic.bodies), 3)
@@ -214,12 +223,14 @@ class ClaudeSessionTest(unittest.TestCase):
         self.anthropic.plan = ["Nothing open.\nREADY TO BUILD"]
         self.plan = {"ask": "Keep the old order numbers?", "tool": "Bash"}
         self.start()
-        self.until(lambda: "Keep the old order numbers?" in self.page("/builds/1"), what="the agent's question")
+        self.until(lambda: "Keep the old order numbers?" in self.shown_text(), what="the agent's question")
         self.answer("Yes, keep them.", "a1")
         self.until(lambda: any(m["kind"] == "tool_approval" for m in self.messages()), what="the tool request")
         asked = [m for m in self.messages() if m["kind"] == "tool_approval"][0]
         self.assertEqual(json.loads(asked["data"])["tool"], "Bash")
-        self.post(f"/builds/1/tools/{asked['id']}", decision="deny", request_key=f"tool:{asked['id']}")
+        response = self.post(f"/api/v1/builds/1/tool-decisions/{asked['id']}", decision="deny",
+                             request_key=f"tool:{asked['id']}")
+        self.assertEqual(response.status_code, 200, response.text)
         self.until(lambda: self.build()["state"] == "ready_for_verification")
         head = self.build()["head_sha"]
         self.assertEqual(git("show", f"{head}:TOOL.txt", cwd=self.remote), "denied")
@@ -231,7 +242,7 @@ class ClaudeSessionTest(unittest.TestCase):
         self.plan = {"hold": True}
         self.start()
         self.until(lambda: self.state().get("phase") == "implement", what="the agent")
-        self.post("/builds/1/interrupt")
+        self.assertEqual(self.post("/api/v1/builds/1/interrupt").status_code, 200)
         self.until(lambda: self.build()["state"] == "waiting_for_answer", what="the interrupt")
         self.answer("Carry on, please.", "a1")
         self.until(lambda: self.build()["state"] == "ready_for_verification")
@@ -240,7 +251,7 @@ class ClaudeSessionTest(unittest.TestCase):
         self.plan = {"hold": True}
         self.start()
         self.until(lambda: self.state().get("phase") == "implement", what="the agent")
-        self.post("/builds/1/cancel")
+        self.assertEqual(self.post("/api/v1/builds/1/cancel").status_code, 200)
         self.until(lambda: self.state().get("phase") == "cancelled", what="the runner to stop")
         self.until(lambda: self.state().get("exited"), what="the runner to exit")
         self.assertEqual(self.build()["state"], "cancelled")
@@ -261,12 +272,11 @@ class ClaudeSessionTest(unittest.TestCase):
         self.assertIn("Build the TwinLab2 application", self.prompts()[-1]["prompt"])  # no agent session yet: again
 
     def test_budget_and_model_are_the_sessions(self):
-        response = self.post(f"/apps/{self.app_id}/build", revision=self.revision, repo=REPO, provider="claude",
-                             budget="0.2", request_key="k0")  # below the minimum
-        self.assertEqual(response.location, f"/apps/{self.app_id}/build")
-        self.assertIn("between 0.5 and 500", self.page(f"/apps/{self.app_id}/build"))
+        response = self.request(provider="claude", budget=0.2, request_key="k0")  # below the minimum
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("between 0.5 and 500", response.json()["detail"])
         os.environ["CLAUDE_MODEL"] = "claude-sonnet-5-5"
-        self.start(budget="2.5", request_key="k2", model="")
+        self.start(budget=2.5, request_key="k2", model="")
         self.until(lambda: len(self.anthropic.bodies) == 1, what="the review")
         self.assertEqual(self.anthropic.bodies[0]["model"], "claude-sonnet-5-5")
 
@@ -276,19 +286,19 @@ class CopilotSessionTest(ClaudeSessionTest):
     provider = "copilot"
 
     def test_clarification_then_code_then_branch_and_pull_request(self):
-        build_id = self.start(budget="10")
+        build_id = self.start(budget=10)
         self.until(lambda: self.build()["state"] == "ready_for_verification")
         build = self.build()
         self.assertEqual(self.anthropic.bodies, [])  # no Messages API clarification for Copilot
         self.assertEqual(build["head_sha"], git("rev-parse", f"refs/heads/{build['branch']}", cwd=self.remote))
         self.assertEqual((build["budget_unit"], build["pr_number"]), ("premium requests", 1))
-        self.assertIn("GitHub Copilot", self.page(f"/builds/{build_id}"))
+        self.assertEqual(self.detail(build_id)["build"]["provider_label"], "GitHub Copilot")
 
     def test_copilot_is_off_without_its_flag(self):
         os.environ.pop("TWINLAB2_ENABLE_COPILOT")
-        self.post(f"/apps/{self.app_id}/build", revision=self.revision, repo=REPO, provider="copilot", budget="10",
-                  request_key="k0")
-        self.assertIn("not enabled", self.page(f"/apps/{self.app_id}/build"))
+        response = self.request(provider="copilot", budget=10, request_key="k0")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("not enabled", response.json()["detail"])
         with closing(builds.connect(self.database)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM builds").fetchone()[0], 0)
 
@@ -297,17 +307,19 @@ class CopilotSessionTest(ClaudeSessionTest):
 
     def test_an_agent_question_and_a_tool_approval_go_through_the_chat(self):
         self.plan = {"ask": "Keep the old order numbers?", "tool": "shell"}
-        self.start(budget="10")
-        self.until(lambda: "Keep the old order numbers?" in self.page("/builds/1"), what="the agent's question")
+        self.start(budget=10)
+        self.until(lambda: "Keep the old order numbers?" in self.shown_text(), what="the agent's question")
         self.answer("Yes.", "a1")
         self.until(lambda: any(m["kind"] == "tool_approval" for m in self.messages()), what="the tool request")
         asked = [m for m in self.messages() if m["kind"] == "tool_approval"][0]
-        self.post(f"/builds/1/tools/{asked['id']}", decision="approve", request_key=f"tool:{asked['id']}")
+        response = self.post(f"/api/v1/builds/1/tool-decisions/{asked['id']}", decision="approve",
+                             request_key=f"tool:{asked['id']}")
+        self.assertEqual(response.status_code, 200, response.text)
         self.until(lambda: self.build()["state"] == "ready_for_verification")
         self.assertEqual(git("show", f"{self.build()['head_sha']}:TOOL.txt", cwd=self.remote), "approved")
 
     def start(self, **values):
-        values.setdefault("budget", "10")
+        values.setdefault("budget", 10)
         return super().start(**values)
 
     def test_a_runner_that_died_is_started_again_and_resumes(self):

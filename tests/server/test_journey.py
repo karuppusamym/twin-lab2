@@ -1,14 +1,17 @@
 """The journey: Choose application -> Add examples -> Review required behaviour -> Build ->
 Verify -> Open or download, and the one next action the pages show."""
 
-import re
+import io
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from zipfile import ZipFile
 
 from twinlab2.journey import JOURNEY, STATUS_LABELS, app_journey
-from twinlab2.portal import create_app
-from support import new_database
+from twinlab2.portal import add_release, create_app
+from support import Client, freeze, new_database
+from test_registry import eid
 
 
 def facts(**changes):
@@ -60,81 +63,111 @@ class JourneyTest(unittest.TestCase):
 
 
 class JourneyPagesTest(unittest.TestCase):
+    """The journey as the API gives it to the web app: the catalog's cards and the setup."""
+
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
         self.app = create_app(new_database(self.work.name))
-        self.app.testing = True
-        self.client = self.app.test_client()
-        self.client.get("/")
-        with self.client.session_transaction() as session:
-            self.token = session["form_token"]
+        self.client = Client(self.app)
 
-    def post(self, path, **values):
-        return self.client.post(path, data={"token": self.token, **values})
+    def ok(self, response, status=200):
+        self.assertEqual(response.status_code, status, response.text[:800])
+        return response.json()
 
     def test_catalog_card_shows_owner_purpose_stage_missing_and_one_action(self):
-        self.post("/apps", name="Orders", owner="Ops team", purpose="Order to invoice demo")
-        page = self.client.get("/").data.decode()
-        for text in ("Ops team", "Order to invoice demo", "Add examples", STATUS_LABELS["known"],
-                     "Identity (to request a recording)"):
-            self.assertIn(text, page)
-        card = page.split('<article class="card">')[1].split("</article>")[0]
-        self.assertEqual(len(re.findall(r'class="button"', card)), 1)
-        self.assertIn('href="/apps/1/setup#identity"', card)
+        self.ok(self.client.post("/api/v1/apps", json={"name": "Orders", "owner": "Ops team",
+                                                       "purpose": "Order to invoice demo"}), 201)
+        [card] = self.ok(self.client.get("/api/v1/apps"))["apps"]
+        self.assertIn("Ops team", card["owner"])
+        self.assertEqual(card["purpose"], "Order to invoice demo")
+        self.assertEqual(card["status_label"], STATUS_LABELS["known"])
+        journey = card["journey"]
+        self.assertEqual(journey["stage"], "Add examples")
+        self.assertIn("Identity (to request a recording)", journey["missing"])
+        # one next action
+        self.assertEqual([s["state"] for s in journey["steps"]].count("next"), 1)
+        self.assertEqual(journey["next"]["href"], "/apps/1/setup#identity")
 
     def test_application_page_forms_keep_each_others_fields(self):
-        self.post("/apps", name="Orders")
-        self.post("/apps/1", git_url="https://git.example.test/orders.git", next="setup")
-        self.post("/apps/1", owner="Ops team", purpose="Demo")
-        self.post("/apps/1/scenarios", name="Show the order screen.")
-        setup = self.client.get("/apps/1/setup").data.decode()
-        self.assertIn("https://git.example.test/orders.git", setup)
-        page = self.client.get("/apps/1").data.decode()
-        self.assertIn("Ops team", page)
-        self.assertIn("Show the order screen.", page)
-        self.assertNotIn("git.example.test", page)  # Git details are in Setup / Advanced
-        self.assertIn("Preview and approve a builder package", page)
+        self.ok(self.client.post("/api/v1/apps", json={"name": "Orders"}), 201)
+        self.ok(self.client.patch("/api/v1/apps/1", json={"git_url": "https://git.example.test/orders.git"}))
+        self.ok(self.client.patch("/api/v1/apps/1", json={"owner": "Ops team", "purpose": "Demo"}))
+        self.ok(self.client.post("/api/v1/apps/1/scenarios", json={"name": "Show the order screen."}), 201)
+        setup = self.ok(self.client.get("/api/v1/apps/1/setup"))
+        self.assertEqual(setup["app"]["git_url"], "https://git.example.test/orders.git")
+        detail = self.ok(self.client.get("/api/v1/apps/1"))
+        self.assertIn("Ops team", detail["owner"])
+        self.assertEqual(detail["purpose"], "Demo")
+        self.assertEqual(detail["git_url"], "https://git.example.test/orders.git")  # kept by the other change
+        scenarios = self.ok(self.client.get("/api/v1/apps/1/scenarios"))["scenarios"]
+        self.assertEqual([s["name"] for s in scenarios], ["Show the order screen."])
+        build = next(s for s in detail["journey"]["steps"] if s["id"] == "build")
+        self.assertIn("Preview the builder package", build["hint"])
+        self.assertEqual(build["action"], "Freeze builder package")
 
-    def test_identity_and_machines_live_in_setup(self):
-        self.post("/apps", name="Orders")
-        response = self.post("/apps/1/identity", key="CaseDesk.exe")
-        self.assertEqual(response.location, "/apps/1/setup")
-        self.assertIn("exe:casedesk.exe", self.client.get("/apps/1/setup").data.decode())
-        nav = self.client.get("/").data.decode().split("</nav>")[0]
-        self.assertNotIn("/machines", nav)
-        self.assertIn("Setup / Advanced", nav)
-        self.assertIn("/machines", self.client.get("/setup").data.decode())
-
-    def test_request_a_recording_wording(self):
-        page = self.client.get("/sessions").data.decode()
-        self.assertIn("Request a recording", page)
-        self.assertNotIn("Offer a session", page)
-        self.assertIn("pair a recorder machine", page)
+    def test_identity_lives_in_setup(self):
+        self.ok(self.client.post("/api/v1/apps", json={"name": "Orders"}), 201)
+        self.ok(self.client.post("/api/v1/apps/1/identities", json={"key": "CaseDesk.exe"}), 201)
+        setup = self.ok(self.client.get("/api/v1/apps/1/setup"))
+        self.assertIn("exe:casedesk.exe", [i["key"] for i in setup["identities"]])
 
 
 class JourneyThroughReleaseStatesTest(unittest.TestCase):
     """Build, Verify and Open or download follow the release states of the real portal."""
-    from test_release_states import ReleaseStatesTest as _R
-    setUp, git, post, evidence = _R.setUp, _R.git, _R.post, _R.evidence
-    del _R
+
+    def setUp(self):
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        root = Path(self.work.name)
+        self.database = new_database(root)
+        self.client = Client(create_app(self.database))
+        self.ok(self.client.post("/api/v1/apps", json={"name": "Billing"}), 201)
+        recording = self.ok(self.client.post("/api/v1/recordings", data={"name": "Invoice"}, files={"log": (
+            "steps.jsonl", b'{"seq":1,"action":"submit","url":"http://billing.local/"}\n', "application/x-ndjson")}), 201)
+        rid = recording["id"]
+        self.ok(self.client.put(f"/api/v1/recordings/{rid}/assignments/1",
+                                json={"events": [eid(rid, 1)], "notes": "Invoice is saved"}))
+        self.ok(self.client.post("/api/v1/apps/1/scenarios", json={
+            "name": "Invoice is saved", "expected": "The invoice has its number.", "events": [f"{rid}#{eid(rid, 1)}"]}), 201)
+        with ZipFile(io.BytesIO(freeze(self.client, 1).content)) as archive:
+            revision = archive.read("BUILD_TASK.md").decode().split("`")[1]
+        repo = root / "demo"
+        repo.mkdir()
+        git = lambda *args: subprocess.check_output(["git", "-C", str(repo), *args], text=True)  # noqa: E731
+        git("init", "-q")
+        git("config", "user.email", "demo@example.invalid")
+        git("config", "user.name", "TwinLab2 test")
+        (repo / "run.py").write_text('print("ready")\n', encoding="utf-8")
+        git("add", "run.py")
+        git("commit", "-qm", "Release")
+        self.commit = add_release(self.database, 1, "1.0", revision, repo, "HEAD")
+
+    def ok(self, response, status=200):
+        self.assertEqual(response.status_code, status, response.text[:800])
+        return response.json()
 
     def card(self):
-        page = self.client.get("/").data.decode()
-        return page.split('<article class="card">')[1].split("</article>")[0]
+        return self.ok(self.client.get("/api/v1/apps"))["apps"][0]
 
     def test_tested_then_published(self):
-        self.post(self.app_path, owner="Finance IT", purpose="Invoice demo")
-        self.assertIn("<dd>Verify</dd>", self.card())
-        self.assertIn(">Verify release<", self.card())
-        self.assertEqual(self.post("/releases/1/test", **self.evidence()).status_code, 302)
+        self.ok(self.client.patch("/api/v1/apps/1", json={"owner": "Finance IT", "purpose": "Invoice demo"}))
         card = self.card()
-        self.assertIn("<dd>Open or download</dd>", card)
-        self.assertIn(">Publish release<", card)
-        self.assertIn("Download tested release", card)  # the release session's buttons stay
-        self.assertEqual(self.post("/releases/1/publish").status_code, 302)
+        self.assertEqual(card["journey"]["stage"], "Verify")
+        self.assertEqual(card["journey"]["next"]["action"], "Verify release")
+        self.assertIsNone(card["tested_release"])
+        self.ok(self.client.post("/api/v1/releases/1/tests", json={
+            "commit": self.commit, "results": {"scenario-1": "pass"}, "platform": "Windows 11, Python 3.13",
+            "launch": "python run.py", "reset_result": "pass", "reset_notes": "seed restored"}))
         card = self.card()
-        self.assertIn("<dd>Ready to open or download</dd>", card)
-        self.assertNotIn(">Publish release<", card)
-        self.assertIn("Download tested release", card)
-        self.assertIn("Ready", self.client.get(self.app_path).data.decode())
+        self.assertEqual(card["journey"]["stage"], "Open or download")
+        self.assertEqual(card["journey"]["next"]["action"], "Publish release")
+        self.assertEqual(card["tested_release"]["state"], "tested")  # Download tested release
+        self.ok(self.client.post("/api/v1/releases/1/publish"))
+        card = self.card()
+        self.assertEqual(card["journey"]["stage"], "Ready to open or download")
+        self.assertIsNone(card["journey"]["next"])
+        self.assertEqual(card["tested_release"]["state"], "published")
+        self.assertIn("Ready", self.ok(self.client.get("/api/v1/apps/1"))["journey"]["stage"])
+
+

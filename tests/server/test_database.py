@@ -8,7 +8,7 @@ import unittest
 from twinlab2 import db
 from twinlab2 import migrations
 from twinlab2.portal import create_app
-from support import ENGINE, connect, new_database
+from support import ENGINE, Client, connect, new_database
 
 
 class TranslationTest(unittest.TestCase):
@@ -75,14 +75,13 @@ class CopyTest(unittest.TestCase):
     def test_copy_keeps_every_row_and_new_ids_follow(self):
         with tempfile.TemporaryDirectory() as work:
             source = Path(work) / "old.db"
-            app = create_app(source)
-            app.testing = True
-            client = app.test_client()
-            client.get("/")
-            with client.session_transaction() as session:
-                token = session["form_token"]
+            client = Client(create_app(source))
             for name in ("Orders", "Billing"):
-                client.post("/apps", data={"token": token, "name": name, "git_url": "", "requirements": "Do it."})
+                created = client.post("/api/v1/apps", json={"name": name})
+                self.assertEqual(created.status_code, 201, created.text)
+                # one scenario each (the old form's requirements text became one)
+                scenario = client.post(f"/api/v1/apps/{created.json()['id']}/scenarios", json={"name": "Do it."})
+                self.assertEqual(scenario.status_code, 201, scenario.text)
             with closing(connect(source)) as c, c:
                 c.execute("INSERT INTO attachments(app_id, title, kind, extension, content) VALUES (1, 'x', 'API', '.txt', ?)",
                           (b"\x00\xffbytes",))

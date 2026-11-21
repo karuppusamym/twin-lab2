@@ -31,7 +31,7 @@ from twinlab2.portal import VERSION_PATH, create_app
 from twinlab2 import artifacts, auth, buildpack, packages, redact, registry, scenarios
 from twinlab2_recorder import main as agent_main
 from twinlab2_contract import recorder_contract as contract
-from support import connect, new_database
+from support import Client, connect, new_database
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 sys.path.insert(0, str(FIXTURES / "ten-app-session"))
@@ -80,11 +80,10 @@ class TenAppRecordingTest(unittest.TestCase):
         self.addCleanup(self.work.cleanup)
         self.database = new_database(self.work.name)
         self.app = create_app(self.database)
-        self.app.testing = True
-        self.client = self.app.test_client()
-        self.context = self.app.app_context()
-        self.context.push()
-        self.addCleanup(self.context.pop)
+        self.client = Client(self.app).http  # the recorder's agent API (no CSRF, no session)
+        # the portal's artifact store for the domain calls made directly below
+        bound = artifacts.bind(artifacts.Binding(self.app.state.artifacts))
+        self.addCleanup(artifacts.unbind, bound)
         self.db = connect(self.database)
         self.addCleanup(self.db.close)
 
@@ -110,8 +109,8 @@ class TenAppRecordingTest(unittest.TestCase):
                             (registry.sha(code), OWNER, NOW, "2999-01-01T00:00:00+00:00"))
         response = self.client.post("/api/agent/pair", json={"contract_version": contract.CONTRACT_VERSION,
                                                              "code": code, "name": "Workstation 10"})
-        self.assertEqual(response.status_code, 200, response.data)
-        return {"Authorization": f"Bearer {response.json['token']}"}
+        self.assertEqual(response.status_code, 200, response.text)
+        return {"Authorization": f"Bearer {response.json()['token']}"}
 
     def offer(self, machine_id):
         """The portal session the recorder is offered: the catalog applications as targets."""
@@ -128,15 +127,15 @@ class TenAppRecordingTest(unittest.TestCase):
     def send(self, headers, doc):
         self.assertEqual(contract.errors(doc, "references"), [])
         response = self.client.post("/api/agent/references", json=doc, headers=headers)
-        self.assertEqual(response.status_code, 200, response.data)
-        return response.json
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
 
     def record(self):
         """Pair, take the offered session, send the references in parts; returns {tag: app_id}."""
         self.catalog()
         headers = self.pair()
         self.offer(1)
-        offered = self.client.get("/api/agent/sessions", headers=headers).json["sessions"]
+        offered = self.client.get("/api/agent/sessions", headers=headers).json()["sessions"]
         self.assertEqual([s["id"] for s in offered], [1])
         paths = {(t.get("origin"), t.get("path")) for t in offered[0]["targets"]}
         self.assertTrue({("https://erp.example.test", "/billing"), ("https://erp.example.test", "/billing-admin")} <= paths)
@@ -279,14 +278,56 @@ class TenAppRecordingTest(unittest.TestCase):
         app_id = by_tag["meter"]
         self.prepare(app_id, "meter")
         row = self.freeze(app_id)
-        with self.client.session_transaction() as session:
-            session["user"] = OWNER
-        response = self.client.get(f"/apps/{app_id}/build-pack")
-        self.assertEqual(response.status_code, 200, response.data[:300])
+        owner = self.signed_in(OWNER)
+        response = owner.get(f"/api/v1/apps/{app_id}/build-pack")
+        self.assertEqual(response.status_code, 200, response.text[:300])
         name = packages.download_name(self.db.execute("SELECT * FROM apps WHERE id = ?", (app_id,)).fetchone(), row)
         self.assertIn(f"filename={name}", response.headers["Content-Disposition"])
-        with ZipFile(io.BytesIO(response.data)) as archive:
+        with ZipFile(io.BytesIO(response.content)) as archive:
             self.assertIn("evidence.json", archive.namelist())
+
+    def signed_in(self, user):
+        """A client signed in as `user` (a local user with a password: the sign-in page)."""
+        with self.db:
+            auth.save_user(self.db, user, password=f"{user}-pw", by="test", now=NOW)
+        client = Client(self.app)
+        response = client.post("/api/v1/session", json={"user": user, "password": f"{user}-pw"})
+        self.assertEqual(response.status_code, 200, response.text)
+        return client
+
+    def test_the_recording_export_holds_the_packages_the_caller_builds(self):
+        """GET /api/v1/recordings/{id}/packages/download: one ZIP, the packages of the applications
+        the caller builds, the others listed in the manifest only; each included one audited."""
+        by_tag = self.record()
+        for tag in ("meter", "invoice"):
+            self.prepare(by_tag[tag], tag)
+            self.freeze(by_tag[tag])
+        with self.db:  # an owner of one application of the ten (so a reviewer of the recording), nothing else
+            auth.assign(self.db, by_tag["meter"], "bea", "owner", "test", NOW)
+        bea = self.signed_in("bea")
+        response = bea.get(f"/api/v1/recordings/{RECORDING}/packages/download")
+        self.assertEqual((response.status_code, response.headers["content-type"]), (200, "application/zip"))
+        self.assertIn(f"{RECORDING.lower()}-packages-", response.headers["Content-Disposition"])
+        with ZipFile(io.BytesIO(response.content)) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            included = [a for a in manifest["applications"] if a["status"] == "included"]
+            self.assertEqual([a["app_id"] for a in included], [by_tag["meter"]])
+            self.assertIn(included[0]["path"], archive.namelist())
+            self.assertEqual(len(manifest["applications"]), 10)
+            self.assertEqual({a["status"] for a in manifest["applications"] if a["app_id"] != by_tag["meter"]},
+                             {"not_available"})
+        audited = self.db.execute("SELECT app_id, details FROM audit_log WHERE action = 'package.download' "
+                                  "AND actor = 'bea'").fetchall()
+        self.assertEqual([r["app_id"] for r in audited], [by_tag["meter"]])
+        # the owner gets both frozen packages; someone who may not see the recording gets nothing
+        owner = self.signed_in(OWNER).get(f"/api/v1/recordings/{RECORDING}/packages/download")
+        with ZipFile(io.BytesIO(owner.content)) as archive:
+            statuses = {a["app_id"]: a["status"] for a in json.loads(archive.read("manifest.json"))["applications"]}
+        self.assertEqual(statuses[by_tag["meter"]], "included")
+        self.assertEqual(statuses[by_tag["invoice"]], "included")
+        stranger = self.signed_in("sam").get(f"/api/v1/recordings/{RECORDING}/packages/download")
+        self.assertEqual((stranger.status_code, stranger.json()["code"]), (403, "restricted"))
+        self.assertEqual(self.signed_in("bea").get("/api/v1/recordings/nope/packages/download").status_code, 404)
 
 
 def step(n, label, screen, channel="web"):
@@ -305,6 +346,7 @@ def refs(apps, flows, session_id="20261120T160000Z-0b1c2d3e"):
 
 
 class SeparationFixesTest(TenAppRecordingTest):
+    test_the_recording_export_holds_the_packages_the_caller_builds = None  # runs in the base class
     """One test per separation bug the ten-application recording found."""
 
     test_ten_applications_get_ten_separate_packages = None
