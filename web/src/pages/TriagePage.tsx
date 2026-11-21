@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
+import { Combobox } from "../components/Combobox";
 import { SurfaceBadge } from "../components/Workboard";
 import { Badge, Crumbs, ErrorText, Notice, QueryView, useAction, useTitle } from "../components/ui";
 import { plural } from "../lib/format";
@@ -128,13 +129,9 @@ function TriageCard({ card, sameAs, chosen, onToggle, onDecide, busy }: {
         <button type="button" disabled={busy} onClick={() => onDecide("replicate")} aria-label={`Replicate ${card.name}`}>Replicate</button>
         {(ranked.length > 0 || others.length > 0) && (
           <form className="inline" aria-label={`${card.name} is the same as`} onSubmit={(e) => { e.preventDefault(); if (into) navigate(`/apps/${card.app_id}/merge?into=${into}`); }}>
-            <label>Same as
-              <select value={into} onChange={(e) => setInto(e.target.value)}>
-                {!ranked.length && <option value="">Choose an application</option>}
-                {ranked.map((s) => <option key={s.app_id} value={s.app_id}>{s.name} (suggested)</option>)}
-                {others.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
-            </label>{" "}
+            <Combobox label="Same as" value={into} onChange={setInto} placeholder="Type an application's name"
+              options={[...ranked.map((s) => ({ value: String(s.app_id), label: s.name, hint: "(suggested)" })),
+                        ...others.map((a) => ({ value: String(a.id), label: a.name }))]} />{" "}
             <button className="secondary" disabled={!into}>Preview merge</button>
           </form>
         )}

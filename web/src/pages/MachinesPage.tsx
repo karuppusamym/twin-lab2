@@ -33,7 +33,7 @@ export function MachinesPage() {
                 <strong>{m.name}</strong>
                 <span className="muted">paired {when(m.paired_at)} by {m.paired_by}{m.last_seen && ` · seen ${when(m.last_seen)}`}{m.recorder && ` · ${m.recorder}`}{m.contract_version && ` · contract ${m.contract_version}`}</span>
                 {m.revoked_at ? <Badge kind="not_replicated">revoked</Badge> : (
-                  <ActionButton secondary label="Revoke" confirm={`Revoke ${m.name}? Its recorder can no longer send recordings.`}
+                  <ActionButton secondary label="Revoke" name={`Revoke ${m.name}`} confirm={`Revoke ${m.name}? Its recorder can no longer send recordings.`}
                     run={async () => data(await api.POST("/api/v1/machines/{machine_id}/revoke", { params: { path: { machine_id: m.id } } }))} />
                 )}
               </div>

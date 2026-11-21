@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, data, newRequestKey, type Schemas } from "../api/client";
 import { ActionButton, Badge, Crumbs, ErrorText, Notice, QueryView, useAction, useTitle } from "../components/ui";
-import { amount, short, when, words } from "../lib/format";
+import { amount, commitUrl, short, when, words } from "../lib/format";
 import { useCan } from "../session";
 
 /** One build session: its state, the conversation with the provider, what is being built. */
@@ -75,7 +75,7 @@ function SessionView({ detail }: { detail: Schemas["BuildDetail"] }) {
         <dl className="about">
           <dt>Package</dt><dd>Revision {build.package_rev && `${build.package_rev}, `}<code>{short(build.revision)}</code>, SHA-256 <code>{build.pack_sha256}</code>{" "}
             {detail.frozen && <Badge kind="verified">Frozen</Badge>}{" · "}
-            <a href={`/api/v1/apps/${app.id}/briefs/${build.revision}/download`}>download</a></dd>
+            <a href={`/api/v1/apps/${app.id}/briefs/${build.revision}/download`} aria-label={`Download package ${short(build.revision)} of ${app.name}`}>download</a></dd>
           <dt>Repository</dt><dd><a href={`https://github.com/${build.repo}`}>{build.repo}</a>, from <code>{build.base_branch}</code> at <code>{short(build.base_sha)}</code>
             {detail.parent && <> (the commit of <Link to={`/builds/${detail.parent.id}`}>session #{detail.parent.id}</Link>)</>}</dd>
           <dt>Branch</dt><dd><code id="branch">{build.branch}</code></dd>
@@ -86,9 +86,11 @@ function SessionView({ detail }: { detail: Schemas["BuildDetail"] }) {
             ? <a href={build.provider_url} id="devin-link">{build.provider_session_id}</a>
             : build.provider_session_id ?? "not started yet"}
             {build.provider_status && <span className="muted"> ({build.provider_status}{build.provider_detail && `/${build.provider_detail}`})</span>}</dd>
-          <dt>Pull request</dt><dd>{build.pr_number
-            ? <><a href={build.pr_url ?? undefined} id="pr-link">#{build.pr_number}</a>{build.head_sha && <> head <code id="head-sha">{build.head_sha}</code></>}</>
-            : build.head_sha ? <>commit <code id="head-sha">{build.head_sha}</code></> : "none yet"}</dd>
+          <dt>Pull request</dt><dd id="pull-request">{build.pr_number
+            ? <><a href={build.pr_url ?? undefined} id="pr-link">#{build.pr_number}</a>{build.head_sha && <> at commit <CommitLink repo={build.repo} sha={build.head_sha} /></>}</>
+            : build.head_sha
+              ? <>No pull request: {who} pushed commit <CommitLink repo={build.repo} sha={build.head_sha} /> to <code>{build.branch}</code>.</>
+              : <>No pull request yet: {who} has not pushed a commit.</>}</dd>
           <dt>Requested</dt><dd>by {build.requested_by} at {when(build.created_at, 19)} UTC</dd>
         </dl>
       </section>
@@ -216,4 +218,10 @@ function ToolApproval({ build, message }: { build: Schemas["BuildFull"]; message
       )}
     </>
   );
+}
+
+/** A commit: the short SHA linked to GitHub, the full SHA kept for copying. */
+function CommitLink({ repo, sha }: { repo: string; sha: string }) {
+  const url = commitUrl(repo, sha);
+  return <>{url ? <a href={url} id="commit-link"><code>{short(sha, 7)}</code></a> : <code>{short(sha, 7)}</code>} <code id="head-sha" className="muted">{sha}</code></>;
 }
