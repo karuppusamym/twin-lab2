@@ -69,10 +69,11 @@ def pack_session(folder: Path, out: Path) -> Path:
 
 
 class UploadQueue:
-    def __init__(self, data_folder: Path, clock=time.time) -> None:
+    def __init__(self, data_folder: Path, clock=time.time, on_change=None) -> None:
         self.folder = Path(data_folder) / "upload-queue"
         self.folder.mkdir(parents=True, exist_ok=True)
         self.clock = clock
+        self.on_change = on_change  # called with a copy of each job saved (the window's progress)
 
     # -- jobs on disk ---------------------------------------------------------------------------
 
@@ -93,6 +94,8 @@ class UploadQueue:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
+        if self.on_change is not None:
+            self.on_change(dict(job))
         return job
 
     def get(self, job_id: str) -> dict | None:
@@ -138,6 +141,20 @@ class UploadQueue:
             "chunk_size": None, "received_bytes": 0, "attempts": 0, "rejections": 0, "last_error": None,
             "next_try": 0, "queued_at": _stamp(), "confirmed_at": None, "recording_id": None,
         })
+
+    def retry(self, job_id: str) -> dict | None:
+        """Make a job due now: a failed one whose file is still queued goes back to the queue
+        (it resumes where the portal stopped; a changed file fails again), a waiting one is tried
+        at the next run. A confirmed job, or one without its file, is left as it is."""
+        job = self.get(job_id)
+        if job is None or job["state"] == "confirmed":
+            return job
+        if job["state"] == "failed":
+            if not self.file_of(job).is_file():
+                return job
+            job.update(state="uploading" if job.get("upload_id") else "queued", rejections=0)
+        job["next_try"] = 0
+        return self.save(job)
 
     # -- running ------------------------------------------------------------------------------------
 

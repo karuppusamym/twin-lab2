@@ -39,6 +39,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 if __package__ in (None, ""):  # run as a script: python recorder/twinlab2_recorder/main.py
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -46,6 +47,9 @@ if __package__ in (None, ""):  # run as a script: python recorder/twinlab2_recor
         sys.path.insert(1, str(Path(__file__).resolve().parents[2] / "contract"))
 
 from twinlab2_recorder import settings as st  # noqa: E402
+from twinlab2_recorder import ui_model as ui  # noqa: E402
+from twinlab2_recorder.uithread import (Dispatcher, Job, Jobs, clear_ui_thread, mark_ui_thread,  # noqa: E402
+                                        wait_process)
 from twinlab2_recorder.client import Portal, PortalError, check_portal  # noqa: E402
 from twinlab2_recorder.upload_queue import UploadQueue, describe as describe_upload  # noqa: E402
 from twinlab2_contract import recorder_contract as contract  # noqa: E402
@@ -303,50 +307,88 @@ def _hide_own_console() -> None:
             ctypes.windll.user32.ShowWindow(window, 0)
 
 
-def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one window
+STOP_WAIT_S = 120  # how long closing the window waits for a recording to finish
+
+
+def gui(cfg: st.Settings, ca_bundle: str | None) -> None:
+    import tkinter as tk
+
+    _hide_own_console()
+    root = tk.Tk()
+    build_window(cfg, ca_bundle, root)
+    root.mainloop()
+
+
+def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespace:  # noqa: C901 - one window
+    """The recorder's window in `root`. Nothing here waits: portal calls, sending, uploads and
+    finishing a recording run as background jobs (twinlab2_recorder.uithread), whose results come
+    back through the dispatcher drained on this thread. Returns the window's parts (tests)."""
     import tkinter as tk
     from tkinter import messagebox, simpledialog, ttk
 
-    _hide_own_console()
-
-    root = tk.Tk()
+    mark_ui_thread()
+    dispatcher = Dispatcher()
     root.title("TwinLab Recorder")
-    root.geometry("720x560")
-    root.minsize(560, 420)
-    state = {"proc": None, "session": None, "offered": [], "apps": [], "deny": []}
+    root.geometry("760x620")
+    root.minsize(600, 460)
+    state = {"proc": None, "session": None, "deny": [], "apps": [], "polling": False, "closing": False,
+             "recording": None, "watcher": None, "details": False, "box": None, "stop_asked": None}  # fmt: skip
+    offered_model = ui.OfferedList()
 
     top = ttk.Frame(root, padding=10)
     top.pack(fill="x")
     status = tk.StringVar()
+    activity = tk.StringVar()
     pair_btn = ttk.Button(top, text="Pair with portal…")
     pair_btn.pack(side="right", anchor="n")
-    status_label = ttk.Label(top, textvariable=status, font=("Segoe UI", 10, "bold"), wraplength=520,
+    heads = ttk.Frame(top)
+    heads.pack(side="left", fill="x", expand=True)
+    status_label = ttk.Label(heads, textvariable=status, font=("Segoe UI", 10, "bold"), wraplength=520,
                              justify="left")  # fmt: skip
-    status_label.pack(side="left", fill="x", expand=True)
-    top.bind("<Configure>", lambda e: status_label.configure(wraplength=max(200, e.width - 180)))
+    status_label.pack(anchor="w", fill="x")
+    activity_label = ttk.Label(heads, textvariable=activity, wraplength=520, justify="left")
+    activity_label.pack(anchor="w", fill="x")
+
+    def rewrap(e):
+        for label in (status_label, activity_label):
+            label.configure(wraplength=max(200, e.width - 180))
+
+    top.bind("<Configure>", rewrap)
+
+    # the recording indicator: always visible while a session records
+    indicator = tk.StringVar(value="Not recording.")
+    rec_frame = ttk.Frame(root, padding=(10, 0))
+    rec_frame.pack(fill="x")
+    rec_label = tk.Label(rec_frame, textvariable=indicator, anchor="w", justify="left", font=("Segoe UI", 10))
+    rec_label.pack(side="left", fill="x", expand=True)
+    stop_btn = ttk.Button(rec_frame, text="Stop recording", state="disabled")
+    stop_btn.pack(side="right")
+    idle_fg = rec_label.cget("fg")
 
     body = ttk.Notebook(root)
-    body.pack(fill="both", expand=True, padx=10)
-    tab_offered, tab_own, tab_done = ttk.Frame(body, padding=8), ttk.Frame(body, padding=8), ttk.Frame(body, padding=8)
-    body.add(tab_offered, text="Offered sessions")
-    body.add(tab_own, text="My own session")
-    body.add(tab_done, text="Recordings on this PC")
+    body.pack(fill="both", expand=True, padx=10, pady=(6, 0))
+    tabs = {name: ttk.Frame(body, padding=8) for name in ("offered", "own", "done", "uploads")}
+    body.add(tabs["offered"], text="Offered sessions")
+    body.add(tabs["own"], text="My own session")
+    body.add(tabs["done"], text="Recordings on this PC")
+    body.add(tabs["uploads"], text="Uploads")
 
-    offered_list = tk.Listbox(tab_offered, height=8)
+    offered_list = tk.Listbox(tabs["offered"], height=8, exportselection=False)
     offered_list.pack(fill="both", expand=True)
-    ttk.Label(tab_offered, text="Recording starts only when you press Start. The session's target "
+    ttk.Label(tabs["offered"], text="Recording starts only when you press Start. The session's target "
               "applications are recorded in full; other applications only as having been used.",
               wraplength=640).pack(fill="x", pady=4)  # fmt: skip
-    start_offered = ttk.Button(tab_offered, text="Start selected session")
+    start_offered = ttk.Button(tabs["offered"], text="Start selected session")
     start_offered.pack(anchor="w")
 
+    tab_own = tabs["own"]
     name_var = tk.StringVar(value="My session")
     ttk.Label(tab_own, text="Session name").pack(anchor="w")
     ttk.Entry(tab_own, textvariable=name_var).pack(fill="x")
     ttk.Label(tab_own, text="Target applications (from the portal's catalog)").pack(anchor="w", pady=(8, 0))
     own_frame = ttk.Frame(tab_own)
     own_frame.pack(fill="both", expand=True)
-    own_vars: list[tuple[tk.BooleanVar, dict]] = []
+    own_vars: list[list] = []  # [BooleanVar, app, Checkbutton]
     ttk.Label(tab_own, text="Or one per line: an executable (CaseDesk.exe), a web address "
               "(https://...), a mainframe host (tn3270://host:port):").pack(anchor="w")  # fmt: skip
     extra = tk.Text(tab_own, height=3)
@@ -380,22 +422,53 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
     ttk.Checkbutton(more, text="Pictures of desktop windows (uses much memory on long runs)",
                     variable=pictures_var).pack(side="left", padx=8)  # fmt: skip
 
-    done_list = tk.Listbox(tab_done, height=8)
+    tab_done = tabs["done"]
+    done_list = tk.Listbox(tab_done, height=6, exportselection=False)
     done_list.pack(fill="both", expand=True)
-    review = tk.Text(tab_done, height=10, wrap="word")
+    review = tk.Text(tab_done, height=12, wrap="word")
     review.pack(fill="both", expand=True, pady=4)
     row = ttk.Frame(tab_done)
     row.pack(fill="x")
     send_btn = ttk.Button(row, text="Send references to the portal")
     send_btn.pack(side="left")
-    ttk.Label(row, text="Only what is shown above is sent; the recording stays on this PC.").pack(side="left", padx=8)
+    details_btn = ttk.Button(row, text="Details (JSON)")
+    details_btn.pack(side="left", padx=6)
+    upload_btn = ttk.Button(row, text="Upload the recording…")
+    upload_btn.pack(side="left")
+    ttk.Label(tab_done, text="Sending gives the portal only the references summarised above; the "
+              "recording stays on this PC unless you upload it.", wraplength=640).pack(fill="x")  # fmt: skip
 
-    bottom = ttk.Frame(root, padding=10)
-    bottom.pack(fill="x")
-    rec_status = tk.StringVar(value="Not recording.")
-    ttk.Label(bottom, textvariable=rec_status).pack(side="left")
-    stop_btn = ttk.Button(bottom, text="Stop recording", state="disabled")
-    stop_btn.pack(side="right")
+    tab_up = tabs["uploads"]
+    uploads = ttk.Treeview(tab_up, columns=("session", "state", "progress", "detail"), show="headings", height=8)
+    for col, text, width in (("session", "Session", 210), ("state", "State", 80), ("progress", "Progress", 70),
+                             ("detail", "Detail", 320)):  # fmt: skip
+        uploads.heading(col, text=text)
+        uploads.column(col, width=width, stretch=col == "detail")
+    uploads.pack(fill="both", expand=True)
+    up_row = ttk.Frame(tab_up)
+    up_row.pack(fill="x", pady=4)
+    retry_btn = ttk.Button(up_row, text="Retry selected")
+    retry_btn.pack(side="left")
+    upload_now_btn = ttk.Button(up_row, text="Try all now")
+    upload_now_btn.pack(side="left", padx=6)
+    upload_note = tk.StringVar(value="Uploads continue in the background and resume after a restart.")
+    ttk.Label(up_row, textvariable=upload_note, wraplength=440).pack(side="left", padx=8)
+
+    # -- jobs and their states ---------------------------------------------------------------------
+
+    def show_job(job: Job):
+        if job.kind == "poll" and job.state != "retrying":
+            return  # polls show through the paired status line
+        activity.set(job.describe())
+
+    jobs = Jobs(dispatcher, show_job)
+
+    def pump():
+        dispatcher.drain()
+        if not state.get("destroyed"):
+            root.after(50, pump)
+
+    root.after(50, pump)
 
     def refresh_status():
         if cfg.values.get("portal") and cfg.values.get("token"):
@@ -404,55 +477,100 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
             status.set("Not paired: pair with the portal to receive sessions and send references.")
 
     def refresh_done():
+        keep = None
+        sel = done_list.curselection()
+        if sel and sel[0] < len(state.get("done") or []):
+            keep = state["done"][sel[0]]["id"]
         done_list.delete(0, "end")
         state["done"] = sessions_list(cfg)
-        for s in state["done"]:
+        for i, s in enumerate(state["done"]):
             done_list.insert("end", f"{s['name']}  ·  {s['state']}  ·  {'sent' if s['sent'] else 'not sent'}")
+            if s["id"] == keep:
+                done_list.selection_set(i)
+
+    def selected_done() -> dict | None:
+        sel = done_list.curselection()
+        return state["done"][sel[0]] if sel and sel[0] < len(state.get("done") or []) else None
+
+    def render_review():
+        review.configure(state="normal")
+        review.delete("1.0", "end")
+        box, s = state.get("box"), selected_done()
+        if s is None:
+            pass
+        elif box is None:
+            review.insert("end", state.get("box_error") or "")
+        else:
+            review.insert("end", ui.review_summary(box, session_notes(cfg, s["id"]), cfg.values.get("portal"),
+                                                   cfg.values.get("machine")))  # fmt: skip
+            if state["details"]:
+                review.insert("end", "\n\nDetails: the references as sent (JSON)\n" + json.dumps(box, indent=1))
+        details_btn.configure(text="Hide details" if state["details"] else "Details (JSON)")
+        review.configure(state="disabled")
 
     def show_done(_event=None):
-        sel = done_list.curselection()
-        review.delete("1.0", "end")
-        if not sel:
+        s = selected_done()
+        state["box"], state["box_error"] = None, None
+        if s is not None:
+            try:
+                state["box"] = outbox(cfg, s["id"])
+            except SystemExit as exc:
+                state["box_error"] = str(exc)
+        render_review()
+
+    def on_details():
+        state["details"] = not state["details"]
+        render_review()
+
+    # -- polling the portal ----------------------------------------------------------------------------
+
+    def poll_loop():
+        if state.get("destroyed"):
             return
-        s = state["done"][sel[0]]
-        try:
-            box = outbox(cfg, s["id"])
-        except SystemExit as exc:
-            review.insert("end", str(exc))
-            return
-        review.insert("end", describe(box, session_notes(cfg, s["id"])) + "\n\n" + json.dumps(box, indent=1))
+        root.after(int((15 + random.uniform(0, 5)) * 1000), poll_loop)
+        poll_portal()
 
     def poll_portal():
-        def work():
-            try:
-                p = _portal(cfg, ca_bundle)
-                offered, apps = p.sessions(), p.apps()
-                root.after(0, lambda: apply(offered, apps, None))
-            except PortalError as exc:
-                root.after(0, lambda: apply(None, None, str(exc)))
+        if state["polling"] or not cfg.values.get("token") or state.get("destroyed"):
+            return
+        state["polling"] = True
 
-        threading.Thread(target=work, daemon=True).start()
-        root.after(int((15 + random.uniform(0, 5)) * 1000), poll_portal)
+        def work(_report):
+            p = _portal(cfg, ca_bundle)
+            return p.sessions(), p.apps()
+
+        # The error arrives as a bound argument (the reason string), never as a closure over the
+        # handler's exception name, which Python deletes when the handler ends.
+        jobs.run("poll", work, label="the portal", on_done=lambda got: apply(got[0], got[1], None),
+                 on_failed=lambda reason: apply(None, None, reason))  # fmt: skip
 
     def apply(offered, apps, error):
+        state["polling"] = False
         if error:
             if cfg.values.get("portal"):
                 status.set(f"Paired as {cfg.values.get('machine')}: {error}")
             return
         refresh_status()
-        state["offered"], state["deny"] = offered["sessions"], offered["deny_keys"]
-        offered_list.delete(0, "end")
-        for s in state["offered"]:
-            names = ", ".join(sorted({t.get("name") or t.get("exe") or t.get("origin") or "" for t in s["targets"]}))
-            offered_list.insert("end", f"{s['name']}  ·  {names}")
-        if [a["app_id"] for a in apps["apps"]] != [a["app_id"] for _, a in own_vars]:
+        state["deny"] = offered["deny_keys"]
+        offered_model.sync(offered_list, offered["sessions"])
+        new = apps["apps"]
+        how = ui.app_choices([a for _, a, _ in own_vars], new)
+        if how == "relabel":
+            for item, a in zip(own_vars, new):
+                item[1] = a
+                item[2].configure(text=a["name"])
+        elif how == "rebuild":
+            ticked = {a["app_id"] for var, a, _ in own_vars if var.get()}
             for child in own_frame.winfo_children():
                 child.destroy()
             own_vars.clear()
-            for a in apps["apps"]:
-                var = tk.BooleanVar()
-                ttk.Checkbutton(own_frame, text=a["name"], variable=var).pack(anchor="w")
-                own_vars.append((var, a))
+            for a in new:
+                var = tk.BooleanVar(value=a["app_id"] in ticked)
+                box = ttk.Checkbutton(own_frame, text=a["name"], variable=var)
+                box.pack(anchor="w")
+                own_vars.append([var, a, box])
+
+    # -- recording -----------------------------------------------------------------------------------
 
     def options() -> dict:
         cdp = cdp_var.get().strip()
@@ -466,11 +584,11 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
 
     def set_start_buttons(enabled: bool):
         for b in (start_offered, start_own):
-            b.configure(state="normal" if enabled else "disabled")
+            b.configure(state="normal" if enabled and not state["closing"] else "disabled")
 
     def start(conf):
         """Preflight first (in a worker thread: a check may wait a few seconds), then record."""
-        if state["proc"] is not None or state.get("checking"):
+        if state["proc"] is not None or state.get("checking") or state["closing"]:
             return
         try:
             conf.update(options())
@@ -479,28 +597,30 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
             return
         state["checking"] = True
         set_start_buttons(False)
-        rec_status.set("Checking that each channel can start…")
+        indicator.set("Checking that each channel can start…")
 
         def work():
             try:
                 block, error = preflight_checks(cfg, conf), None
             except Exception as exc:  # noqa: BLE001 - shown to the person
                 block, error = None, f"{type(exc).__name__}: {exc}"
-            root.after(0, lambda: checked(conf, block, error))
+            dispatcher.post(checked, conf, block, error)
 
-        threading.Thread(target=work, daemon=True).start()
+        threading.Thread(target=work, name="tl-preflight", daemon=True).start()
 
     def checked(conf, block, error):
         state["checking"] = False
+        if state["closing"]:
+            return
         if error:
-            rec_status.set("Not recording: the checks could not run.")
+            indicator.set("Not recording: the checks could not run.")
             set_start_buttons(True)
             messagebox.showerror("TwinLab Recorder", f"The checks before recording could not run: {error}")
             return
         conf["preflight"] = block
         if not block["ready"]:
             failed = "\n".join("• " + f for f in failed_checks(block))
-            rec_status.set("Not ready:\n" + failed)
+            indicator.set("Not ready:\n" + failed)
             if not messagebox.askyesno("TwinLab Recorder — not ready",
                                        f"These checks failed:\n\n{failed}\n\nFix them and press Start "
                                        "again. Or record anyway? The recording will say it started with "
@@ -523,59 +643,85 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
                                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # fmt: skip
         log.close()
         state["session"] = conf["id"]
-        state["ready"] = False
-        lines = mainframe_addresses(conf)
-        checks = "Ready: every check passed." if conf["preflight"]["ready"] else \
-            "Recording anyway, with failed checks."  # fmt: skip
-        rec_status.set(f"{checks}\nRecording {conf['name']}…" + ("\n" + "\n".join(lines) if lines else ""))
+        rec = ui.RecordingStatus(conf["name"], conf["targets"], time.monotonic())
+        state["recording"] = rec
+        state["extra_lines"] = (["Ready: every check passed."] if conf["preflight"]["ready"] else
+                                ["Recording anyway, with failed checks."]) + mainframe_addresses(conf)  # fmt: skip
+        state["watcher"] = ui.JournalWatcher(cfg.recordings / conf["id"] / "journal.jsonl", dispatcher.post,
+                                             lambda rows: [rec.feed(r) for r in rows]).start()  # fmt: skip
         stop_btn.configure(state="normal")
         set_start_buttons(False)
+        tick()
         root.after(1000, watch)
+
+    def tick():
+        rec = state["recording"]
+        if rec is None:
+            rec_label.configure(fg=idle_fg)
+            return
+        lines = rec.lines(time.monotonic()) + state.get("extra_lines", [])
+        if state.get("stop_asked") is not None:
+            lines.append(f"Finishing the recording… ({int(time.monotonic() - state['stop_asked'])} s"
+                         + (f" of {STOP_WAIT_S} s before the window closes)" if state["closing"] else ")"))  # fmt: skip
+        indicator.set("\n".join(lines))
+        rec_label.configure(fg={"ok": "#b00020", "starting": "#b00020", "trouble": "#c25e00"}[rec.health()])
+        root.after(1000, tick)
 
     def watch():
         proc = state["proc"]
         if proc is None:
             return
         if proc.poll() is None:
-            journal = cfg.recordings / state["session"] / "journal.jsonl"
-            if not state.get("ready") and journal.is_file() and '"kind": "browser"' in journal.read_text(
-                    encoding="utf-8", errors="replace"):  # fmt: skip
-                state["ready"] = True
-                rec_status.set(rec_status.get() + "\nThe browser is ready: start the process now.")
             root.after(1000, watch)
             return
+        recorded(proc.returncode)
+
+    def recorded(code):
+        """The recording process ended (by itself, Stop, or the window closing)."""
+        if state["proc"] is None:
+            return
         state["proc"] = None
-        if proc.returncode != 0:
-            rec_status.set(f"The recording ended with an error (see {state.get('log')}). What was "
-                           "recorded until then is kept.")  # fmt: skip
+        if state["watcher"]:
+            state["watcher"].stop()
+        state["recording"], state["stop_asked"] = None, None
+        rec_label.configure(fg=idle_fg)
+        stop_btn.configure(state="disabled")
+        if state["closing"]:
+            return
+        if code != 0:
+            indicator.set(f"The recording ended with an error (see {state.get('log')}). What was "
+                          "recorded until then is kept.")  # fmt: skip
             messagebox.showerror("TwinLab Recorder", f"The recording ended with an error. The log is "
                                  f"{state.get('log')}")  # fmt: skip
         else:
-            rec_status.set("Recording saved on this PC. Review it before sending.")
-        stop_btn.configure(state="disabled")
+            indicator.set("Recording saved on this PC. Review it before sending.")
         set_start_buttons(True)
         refresh_done()
         body.select(tab_done)
         for i, s in enumerate(state.get("done") or []):
             if s["id"] == state["session"]:
+                done_list.selection_clear(0, "end")
                 done_list.selection_set(i)
                 show_done()
 
     def on_stop():
-        if state["session"]:
+        if state["session"] and state["proc"] is not None:
             (cfg.recordings / state["session"] / "stop").touch()
-            rec_status.set("Stopping: the recording is being finished…")
+            if state["stop_asked"] is None:
+                state["stop_asked"] = time.monotonic()
+            if state["recording"]:
+                state["recording"].stopping = True
+            stop_btn.configure(state="disabled")
 
     def on_start_offered():
-        sel = offered_list.curselection()
-        if not sel:
+        s = offered_model.selected(offered_list)
+        if s is None:
             messagebox.showinfo("TwinLab Recorder", "Choose a session first.")
             return
-        s = state["offered"][sel[0]]
         start(session_config(s["targets"], state["deny"], s["name"], s["id"], s["automation_id"]))
 
     def on_start_own():
-        targets = [dict(a["target"]) for var, a in own_vars if var.get()]
+        targets = [dict(a["target"]) for var, a, _ in own_vars if var.get()]
         for line in extra.get("1.0", "end").splitlines():
             line = line.strip()
             if line.lower().startswith(("http://", "https://")):
@@ -589,25 +735,46 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
             return
         start(session_config(targets, state["deny"], name_var.get().strip() or "My session"))
 
+    # -- sending references -----------------------------------------------------------------------------
+
     def on_send():
-        sel = done_list.curselection()
-        if not sel:
+        s = selected_done()
+        if s is None or state.get("sending"):
             return
-        s = state["done"][sel[0]]
-        if not messagebox.askyesno("TwinLab Recorder", "Send the references shown to the portal? "
-                                   "The recording itself stays on this PC."):  # fmt: skip
+        if not messagebox.askyesno("TwinLab Recorder", f"Send the references summarised here to "
+                                   f"{cfg.values.get('portal') or 'the portal'}? The recording itself stays "
+                                   "on this PC."):  # fmt: skip
             return
-        try:
-            result = send(cfg, s["id"], ca_bundle)
-        except (PortalError, SystemExit) as exc:
-            messagebox.showerror("TwinLab Recorder", str(exc))
-            return
-        messagebox.showinfo("TwinLab Recorder", f"Sent. The portal mapped it as {result.get('recording_id')}.")
-        refresh_done()
+        state["sending"] = True
+        send_btn.configure(state="disabled")
+        session_id = s["id"]
+
+        def sent(result):
+            state["sending"] = False
+            send_btn.configure(state="normal")
+            messagebox.showinfo("TwinLab Recorder", f"Sent. The portal mapped it as {result.get('recording_id')}.")
+            refresh_done()
+
+        def not_sent(reason):
+            state["sending"] = False
+            send_btn.configure(state="normal")
+            messagebox.showerror("TwinLab Recorder", f"The references were not sent: {reason}")
+
+        jobs.run("send", lambda _r: send(cfg, session_id, ca_bundle), state="sending",
+                 label=f"references of {s['name']}", retries=3, on_done=sent, on_failed=not_sent)  # fmt: skip
+
+    # -- pairing ------------------------------------------------------------------------------------
 
     def on_pair():
+        if state.get("pairing"):
+            return
         url = simpledialog.askstring("Pair", "Portal address", initialvalue=cfg.values.get("portal") or "https://")
         if not url:
+            return
+        try:
+            url = check_portal(url)
+        except PortalError as exc:
+            messagebox.showerror("TwinLab Recorder", str(exc))
             return
         code = simpledialog.askstring("Pair", "Pairing code from the portal's Machines page")
         if not code:
@@ -615,14 +782,66 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
         name = simpledialog.askstring("Pair", "A name for this machine", initialvalue=os.environ.get("COMPUTERNAME", ""))
         if not name:
             return
-        try:
-            doc = Portal(url, ca_bundle=ca_bundle).pair(code, name)
-        except PortalError as exc:
-            messagebox.showerror("TwinLab Recorder", str(exc))
+        state["pairing"] = True
+        pair_btn.configure(state="disabled")
+
+        def paired(doc):
+            state["pairing"] = False
+            pair_btn.configure(state="normal")
+            cfg.paired(url, doc["machine_id"], doc["name"], doc["token"])
+            refresh_status()
+            poll_portal()
+            upload_worker.kick()
+
+        def failed(reason):
+            state["pairing"] = False
+            pair_btn.configure(state="normal")
+            messagebox.showerror("TwinLab Recorder", f"Not paired: {reason}")
+
+        jobs.run("pair", lambda _r: Portal(url, ca_bundle=ca_bundle).pair(code, name), state="connecting",
+                 label=f"pairing with {url}", retries=2, on_done=paired, on_failed=failed)  # fmt: skip
+
+    # -- uploads --------------------------------------------------------------------------------------
+
+    def show_uploads(found, active, error):
+        now = time.time()
+        rows = [ui.upload_row(j, now, active) for j in found]
+        seen = set()
+        for r in rows:
+            values = (r["session"], r["state"], f"{r['percent']}%", r["detail"])
+            seen.add(r["id"])
+            if uploads.exists(r["id"]):
+                uploads.item(r["id"], values=values)
+            else:
+                uploads.insert("", "end", iid=r["id"], values=values)
+        for iid in uploads.get_children():
+            if iid not in seen:
+                uploads.delete(iid)
+        busy = sum(r["state"] in ("sending", "queued", "retrying") for r in rows)
+        upload_note.set((f"Not sending: {error}. " if error else "") +
+                        (f"{busy} upload(s) waiting or in progress; they continue in the background and "
+                         "resume after a restart." if busy else "Nothing waiting to upload."))  # fmt: skip
+
+    upload_worker = ui.UploadWorker(lambda on_change: UploadQueue(cfg.folder, on_change=on_change),
+                                    lambda: _portal(cfg, ca_bundle), dispatcher.post, show_uploads)  # fmt: skip
+
+    def on_upload():
+        s = selected_done()
+        if s is None:
             return
-        cfg.paired(check_portal(url), doc["machine_id"], doc["name"], doc["token"])
-        refresh_status()
-        poll_portal()
+        if not messagebox.askyesno("TwinLab Recorder", f"Upload the whole recording of {s['name']} (its "
+                                   "folder, with what it captured) to "
+                                   f"{cfg.values.get('portal') or 'the portal'}? It is queued and sent in "
+                                   "the background."):  # fmt: skip
+            return
+        upload_worker.add(cfg.recordings / s["id"], s["id"])
+        body.select(tab_up)
+
+    def on_retry():
+        for iid in uploads.selection():
+            upload_worker.retry(iid)
+
+    # -- other buttons ----------------------------------------------------------------------------------
 
     def on_profile():
         if state["proc"] is not None:
@@ -669,6 +888,46 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
                             + ("\n\n" + "\n".join(got["notes"]) if got["notes"] else "")
                             + "\n\nCheck them before you start.")  # fmt: skip
 
+    # -- closing ------------------------------------------------------------------------------------
+
+    def destroy():
+        state["destroyed"] = True
+        upload_worker.stop()
+        jobs.cancelled.set()
+        if state["watcher"]:
+            state["watcher"].stop()
+        clear_ui_thread()
+        root.destroy()
+
+    def on_close():
+        if state["closing"]:
+            activity.set("Still finishing the recording: the window closes when it is done "
+                         f"(at most {STOP_WAIT_S} s).")  # fmt: skip
+            return
+        proc = state["proc"]
+        if proc is None:
+            destroy()
+            return
+        if not messagebox.askyesno("TwinLab Recorder", "A recording is running. Stop it and close? The "
+                                   "window stays open until the recording is finished."):  # fmt: skip
+            return
+        state["closing"] = True
+        on_stop()
+        set_start_buttons(False)
+        for b in (pair_btn, send_btn, upload_btn):
+            b.configure(state="disabled")
+
+        def finished(code):
+            recorded(code if code is not None else -1)
+            message = ui.close_message(code, STOP_WAIT_S)
+            if message:
+                messagebox.showwarning("TwinLab Recorder", message)
+            destroy()
+
+        jobs.run("stop", lambda _r: wait_process(proc, STOP_WAIT_S), state="stopping",
+                 label="finishing the recording before the window closes", on_done=finished,
+                 on_failed=lambda reason: finished(None))  # fmt: skip
+
     propose_btn.configure(command=on_propose)
     profile_btn.configure(command=on_profile)
     pair_btn.configure(command=on_pair)
@@ -676,26 +935,17 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
     start_offered.configure(command=on_start_offered)
     start_own.configure(command=on_start_own)
     send_btn.configure(command=on_send)
+    details_btn.configure(command=on_details)
+    upload_btn.configure(command=on_upload)
+    retry_btn.configure(command=on_retry)
+    upload_now_btn.configure(command=lambda: upload_worker.kick(force=True))
     done_list.bind("<<ListboxSelect>>", show_done)
     refresh_status()
     refresh_done()
-    if cfg.values.get("token"):
-        root.after(200, poll_portal)
-
-    def on_close():
-        if state["proc"] is not None and not messagebox.askyesno(
-            "TwinLab Recorder", "A recording is running. Stop it and close?"):  # fmt: skip
-            return
-        on_stop()
-        if state["proc"] is not None:
-            try:
-                state["proc"].wait(120)
-            except subprocess.TimeoutExpired:
-                pass
-        root.destroy()
-
+    upload_worker.start()
+    root.after(200, poll_loop)
     root.protocol("WM_DELETE_WINDOW", on_close)
-    root.mainloop()
+    return SimpleNamespace(**{k: v for k, v in locals().items() if not k.startswith("_")})
 
 
 # --- command line ---------------------------------------------------------------------------------
