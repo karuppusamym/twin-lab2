@@ -54,6 +54,11 @@ CASES = {
                    ("Account Inquiry", "Mainframe account inquiry: sign on, look up accounts", "tn3270://127.0.0.1:13270")],
           "desktop": ("CaseDesk", "Case handling: find a case, update its summary and status",
                       "desktop:Twin Lab reference/CaseDesk")},
+    # w: Orders and Billing on one host, recorded in the recorder's OWN browser (launched Edge,
+    # `record --headless`: no window), not attached; web only
+    "w": {"name": "Order to invoice (launched browser)", "refapps": ["web-c"], "launched": True,
+          "apps": [("Orders", "Customer orders: search, new orders with their items", "http://127.0.0.1:18761"),
+                   ("Billing", "Invoices for orders", "http://127.0.0.1:18761/billing")]},
     # e: the desktop batch only ("go desktop"): CaseDesk recorded LIVE by the desktop collector
     "e": {"name": "CaseDesk: a case is resolved (live desktop recording)", "refapps": [],
           "apps": [("CaseDesk", "Case handling: find a case, update its summary and status",
@@ -95,6 +100,15 @@ def start_chromium(case: str) -> subprocess.Popen:
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=no_window())
     wait_port(CDP_PORT, timeout=30)
     return proc
+
+
+def launched_cdp(folder: Path) -> str:
+    """The DevTools address of the browser the recorder started (its journal's `browser` row)."""
+    for line in (folder / "journal.jsonl").read_text(encoding="utf-8").splitlines():
+        row = json.loads(line) if line.strip() else {}
+        if row.get("kind") == "browser" and row.get("cdp"):
+            return row["cdp"]
+    raise SystemExit("the recorder did not say where its browser listens")
 
 
 def stop(procs) -> None:
@@ -236,7 +250,9 @@ def main(argv) -> int:
             if case == "e" and "--go-desktop" not in argv:
                 raise SystemExit("case e opens windows and hooks input: only desktop_batch.ps1 runs it")
             args = ["record", "--session", str(number), "--minutes", "20"]
-            if web:
+            if web and spec.get("launched"):
+                args += ["--headless"]  # the recorder starts Edge itself, headless
+            elif web:
                 chrome = start_chromium(case)
                 args += ["--cdp", f"http://127.0.0.1:{CDP_PORT}"]
             log = base / "logs" / "recorder-record.log"
@@ -263,7 +279,7 @@ def main(argv) -> int:
             while time.monotonic() < end:
                 j = (folder / "journal.jsonl").read_text(encoding="utf-8") if (folder / "journal.jsonl").is_file() else ""
                 ready_web = not web or '"browser"' in j
-                ready_mf = case in ("a", "e") or not port_free(PORTS["proxy"])
+                ready_mf = case in ("a", "e", "w") or not port_free(PORTS["proxy"])
                 if ready_web and ready_mf:
                     break
                 time.sleep(0.5)
@@ -284,6 +300,9 @@ def main(argv) -> int:
                     result["desktop"] = "reference CaseDesk driven by Twin Lab's flow.py"
                 elif case == "a":
                     result.update(drive.case_a(f"http://127.0.0.1:{CDP_PORT}", "http://127.0.0.1:18751"))
+                elif case == "w":
+                    result["cdp"] = launched_cdp(folder)
+                    result.update(drive.case_w(result["cdp"], "http://127.0.0.1:18761"))
                 elif case == "b":
                     result.update(drive.case_b(PORTS["proxy"]))
                 else:

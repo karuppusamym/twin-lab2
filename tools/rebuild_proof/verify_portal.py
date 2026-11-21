@@ -48,7 +48,7 @@ from common import EVIDENCE, ROOT, env, read_json, spawn, write_json  # noqa: E4
 import portal_api  # noqa: E402
 import replay  # noqa: E402
 
-LAB_PORT = {"a": 19281, "b": 19282, "c": 19283}
+LAB_PORT = {"a": 19281, "b": 19282, "c": 19283, "w": 19284}
 
 
 def judge_mainframe(case: str) -> Path:
@@ -173,6 +173,10 @@ CASES = {
     "c": {"app": "Orders", "build": "c-orders", "port": replay.WEB_APPS["c"]["orders"]["port"], "platform": "web",
           "extra": {"BILLING_URL": f"http://127.0.0.1:{replay.WEB_APPS['c']['billing']['port']}"},
           "others": [{"app": "Billing", "build": "c-billing", "port": replay.WEB_APPS["c"]["billing"]["port"]}]},
+    # w: as c, recorded in the recorder's own headless Edge (record.py w)
+    "w": {"app": "Orders", "build": "w-orders", "port": replay.WEB_APPS["w"]["orders"]["port"], "platform": "web",
+          "extra": {"BILLING_URL": f"http://127.0.0.1:{replay.WEB_APPS['w']['billing']['port']}"},
+          "others": [{"app": "Billing", "build": "w-billing", "port": replay.WEB_APPS["w"]["billing"]["port"]}]},
 }
 
 

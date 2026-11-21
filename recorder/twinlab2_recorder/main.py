@@ -1300,6 +1300,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="use the kept browser profile (UiPath's extension installed once)")
     r.add_argument("--cdp", help="attach to a running browser at this DevTools address")
     r.add_argument("--browser", choices=["edge", "chrome"], help="the browser the session starts")
+    r.add_argument("--headless", action="store_true",
+                   help="start the session's browser headless, pages at 1280x720 (proofs and tests: no window)")
     r.add_argument("--pictures", action="store_true", help="pictures of desktop windows (memory)")
     r.add_argument("--no-robot", action="store_true",
                    help="ignore values set without the keyboard focus (a person, not a robot)")
@@ -1348,6 +1350,12 @@ def main(argv: list[str] | None = None) -> int:
             if not doc["sessions"]:
                 print("no session is offered to this machine")
         elif args.command == "record":
+            if args.headless:
+                if args.cdp:
+                    raise SystemExit("--headless is for the browser the session starts, not one at --cdp")
+                from twinlab2_recorder.workstation.session import HEADLESS_ENV
+
+                os.environ[HEADLESS_ENV] = "1"  # read by the web collector, in its own process too
             deny: list[str] = []
             targets = [{"exe": e} for e in args.exe] + [{"origin": o} for o in args.origin]
             targets += [{"exe": e, "level": "steps"} for e in args.steps_exe]

@@ -199,7 +199,7 @@ def main(argv) -> int:
     base = EVIDENCE / case
     driver = read_json(base / "record" / "driver.json")
     order_no = driver.get("order_number", "ORD-1026")
-    procs = record.start_refapps(case) if case in ("a", "c") else []
+    procs = record.start_refapps(case) if case in ("a", "c", "w") else []
     portal = Portal(case).start()
     summary = {}
     try:
@@ -222,7 +222,7 @@ def main(argv) -> int:
                 portal.put(f"/api/v1/recordings/{rec_id}/assignments/{app_id}", json={
                     "events": events, "notes": f"{name}: every recorded step of this session belongs to it (reviewed)."})
                 if name == "Orders":
-                    scen = scenarios_orders(order_no, case == "c")
+                    scen = scenarios_orders(order_no, case in ("c", "w"))
                     first, second = split_at(events, steps, lambda s: "/orders/new" in (s.get("url") or ""))
                     links = [first, second or events]
                     seed = orders_seed(case)

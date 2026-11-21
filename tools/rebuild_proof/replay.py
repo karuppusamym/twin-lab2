@@ -58,10 +58,12 @@ FIELDS = {  # field (as the bindings template names it) -> the values typed ther
 WEB_APPS = {
     "a": {"orders": {"build": "a-orders", "port": 19201, "source": "http://127.0.0.1:18751"}},
     "c": {"orders": {"build": "c-orders", "port": 19211}, "billing": {"build": "c-billing", "port": 19221}},
+    # w: the same two apps on one host as c, recorded in the recorder's own (launched) browser
+    "w": {"orders": {"build": "w-orders", "port": 19211}, "billing": {"build": "w-billing", "port": 19221}},
 }
 C_PROXY = 19260
 C_SOURCE = "http://127.0.0.1:18761"
-WIDGET = {"a": "http://127.0.0.1:18753", "c": "http://127.0.0.1:18763"}
+WIDGET = {"a": "http://127.0.0.1:18753", "c": "http://127.0.0.1:18763", "w": "http://127.0.0.1:18763"}
 MF = {"b": {"build": "b-account-inquiry", "port": 19231}, "c": {"build": "c-account-inquiry", "port": 19241}}
 
 
@@ -128,7 +130,7 @@ def judge_web(case: str, control: bool = False) -> Path:
         body("order-number", goto_after("/orders/saved"), order, "Orders scenario 2: the next order number."),
         body("order-total", goto_after("/orders/saved"), "149.00", "Orders scenario 2: 2 x Book shelf at 74.50."),
     ]
-    if case == "c":
+    if case in ("c", "w"):
         cases += [
             body("bad-reference-refused", goto_after("/billing/lookup", 2), "An order reference looks like ORD-0000.",
                  "Billing scenario, failure case."),
@@ -267,7 +269,7 @@ def web(case: str) -> int:
             procs.append(launch(app["build"], app["port"], {"BILLING_URL": "http://127.0.0.1:18752"}))
             base = f"http://127.0.0.1:{app['port']}"
         else:
-            o, b = WEB_APPS["c"]["orders"], WEB_APPS["c"]["billing"]
+            o, b = WEB_APPS[case]["orders"], WEB_APPS[case]["billing"]
             procs.append(launch(o["build"], o["port"], {"BILLING_URL": f"http://127.0.0.1:{C_PROXY}"}))
             procs.append(launch(b["build"], b["port"]))
             proxy = PathProxy(C_PROXY, o["port"], b["port"])
@@ -342,7 +344,7 @@ def visual_check(case: str, control: bool) -> int:
             procs.append(launch(app["build"], app["port"], {"BILLING_URL": "http://127.0.0.1:18752"}))
             base = f"http://127.0.0.1:{app['port']}"
         else:
-            o, b = WEB_APPS["c"]["orders"], WEB_APPS["c"]["billing"]
+            o, b = WEB_APPS[case]["orders"], WEB_APPS[case]["billing"]
             procs.append(launch(o["build"], o["port"], {"BILLING_URL": f"http://127.0.0.1:{C_PROXY}"}))
             procs.append(launch(b["build"], b["port"]))
             proxy = PathProxy(C_PROXY, o["port"], b["port"])

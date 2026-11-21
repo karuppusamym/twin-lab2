@@ -158,7 +158,7 @@ def compare(ref: list[dict], new: list[dict]) -> list[dict]:
 
 
 def web(case: str) -> int:
-    probes = [("Orders", orders_probes())] + ([("Billing", billing_probes())] if case == "c" else [])
+    probes = [("Orders", orders_probes())] + ([("Billing", billing_probes())] if case in ("c", "w") else [])
     ref_base = "http://127.0.0.1:18751" if case == "a" else "http://127.0.0.1:18761"
     procs = record.start_refapps(case)
     try:
@@ -172,7 +172,7 @@ def web(case: str) -> int:
             procs.append(replay.launch(app["build"], app["port"], {"BILLING_URL": "http://127.0.0.1:18752"}))
             base = f"http://127.0.0.1:{app['port']}"
         else:
-            o, b = replay.WEB_APPS["c"]["orders"], replay.WEB_APPS["c"]["billing"]
+            o, b = replay.WEB_APPS[case]["orders"], replay.WEB_APPS[case]["billing"]
             procs.append(replay.launch(o["build"], o["port"], {"BILLING_URL": f"http://127.0.0.1:{replay.C_PROXY}"}))
             procs.append(replay.launch(b["build"], b["port"]))
             proxy = replay.PathProxy(replay.C_PROXY, o["port"], b["port"])

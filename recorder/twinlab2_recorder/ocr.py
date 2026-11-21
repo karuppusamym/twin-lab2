@@ -86,6 +86,7 @@ def text(image: Path, timeout: float = 30) -> str | None:
                 ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                  "-File", str(_script()), str(Path(image).resolve())],
                 capture_output=True, timeout=timeout, check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # no console window
             )  # fmt: skip
         except (OSError, subprocess.TimeoutExpired):
             return None
