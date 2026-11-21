@@ -24,6 +24,7 @@ const MAIN_PAGES: [path: string, heading: RegExp, who?: Who][] = [
   ["/sessions", /^Request a recording$/],
   ["/setup", /^Setup$/],
   ["/admin/users", /Users and portal admins/, "admin"],
+  ["/admin/operations", /^Operations$/, "admin"],
 ];
 
 async function violations(root: Element) {
