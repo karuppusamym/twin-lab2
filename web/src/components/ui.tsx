@@ -119,8 +119,10 @@ export function useAction<TVars, TResult>(run: (vars: TVars) => Promise<TResult>
 }
 
 /** A one-button action (the old pages' small POST forms). */
-export function ActionButton({ label, run, secondary, destructive, confirm, disabled, invalidate }: {
+export function ActionButton({ label, name, run, secondary, destructive, confirm, disabled, invalidate }: {
   label: string;
+  /** The accessible name when the label alone is ambiguous (several "Remove" buttons). */
+  name?: string;
   run: () => Promise<unknown>;
   secondary?: boolean;
   destructive?: boolean;
@@ -135,6 +137,7 @@ export function ActionButton({ label, run, secondary, destructive, confirm, disa
         type="button"
         className={destructive ? "destructive" : secondary ? "secondary" : undefined}
         disabled={disabled || action.isPending}
+        aria-label={name}
         onClick={() => {
           if (confirm && !window.confirm(confirm)) return;
           action.mutate(undefined);

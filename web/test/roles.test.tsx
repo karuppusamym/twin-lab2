@@ -33,7 +33,7 @@ describe("role gating on an application's page", () => {
     expect(screen.getByText(/you can open its builder-approved packages below/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Build sessions" })).toHaveAttribute("href", "/apps/1/build");
     expect(screen.getByRole("link", { name: "Revision 2" })).toHaveAttribute("href", "/apps/1/packages/2");
-    expect(screen.getAllByRole("link", { name: "Download" })[0]).toHaveAttribute("href", "/api/v1/apps/1/packages/2/download");
+    expect(screen.getByRole("link", { name: "Download revision 2 of Billing Desk" })).toHaveAttribute("href", "/api/v1/apps/1/packages/2/download");
 
     expect(screen.queryByRole("heading", { name: "2. Add examples" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Preview and approve a builder package" })).not.toBeInTheDocument();
@@ -65,7 +65,7 @@ describe("role gating on an application's page", () => {
 
   it("hides the Users page link from everyone but admins", async () => {
     renderApp("/", "owner");
-    expect(await screen.findByRole("heading", { name: "Applications" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Home" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Users" })).not.toBeInTheDocument();
   });
 });

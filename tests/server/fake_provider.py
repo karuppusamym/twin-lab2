@@ -45,6 +45,7 @@ class World:
 class FakeProvider(base.Provider):
     name = "fake"
     label = "Fake provider"
+    demo_only = True  # offered on the Build page only on a demo portal (TWINLAB2_DEMO=1)
     capabilities = frozenset({base.START, base.READ_EVENTS, base.REPLY, base.INTERRUPT, base.CANCEL,
                               base.COLLECT_RESULTS, base.RECONCILE_START, base.TOOL_APPROVAL, base.ACKNOWLEDGE})
     budget_unit = cost_unit = "USD"

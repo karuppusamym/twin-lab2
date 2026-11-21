@@ -52,6 +52,9 @@ export interface paths {
         /**
          * Add an application
          * @description Whoever creates an application owns it; a named `owner` is assigned the owner role too.
+         *     Who may add one is `TWINLAB2_APP_CREATORS`: `owners` (the default: a portal admin, or anyone
+         *     who owns an application already), `admins`, or `anyone` signed in. Others get 403 `role`;
+         *     `Session.can_create_apps` says which applies to the caller.
          */
         post: operations["createApp"];
         delete?: never;
@@ -275,6 +278,32 @@ export interface paths {
          * @description Owner. Registers or finds the release of the commit and runs the release checks. Audited as `release.verify`.
          */
         post: operations["verifyCommit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{app_id}/releases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register a release from a commit or a build session
+         * @description A Packaged release of a commit, from GitHub: a build session's head commit (`build_id`; its
+         *     repository, pull request, branch and package revision), or `sha` in the demo repository
+         *     (`repo` to name another), answering the latest frozen package. A commit already registered
+         *     is returned (`created` false). Registering does not verify: the release page's
+         *     verification is the next step. Replaces the README's `release` command for the main flow.
+         */
+        post: operations["registerRelease"];
         delete?: never;
         options?: never;
         head?: never;
@@ -950,6 +979,110 @@ export interface paths {
          * @description A reviewer of the recording. Audited as `recording.accept`.
          */
         post: operations["acceptRecording"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/recordings/{recording_id}/workboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                recording_id: components["parameters"]["RecordingId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * A recording's workboard
+         * @description One row per application the recording holds: its identity (surface, host and path or
+         *     program file), scope decision, steps in this recording, events selected and reviewed,
+         *     scenarios, package state with readiness (blockers and warnings of `pack_validator`: of the
+         *     current draft for an owner, of the latest frozen revision for a builder), build session and
+         *     release, and **one** next action. Fields a caller's role does not cover are null (restricted
+         *     evidence stays with owners). Also the timeline as one swim lane per application over the
+         *     recording's time axis, the hosts several applications share (told apart by the longest
+         *     path prefix), and the link to download every approved package of the recording.
+         */
+        get: operations["getRecordingWorkboard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/triage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Scope triage
+         * @description The applications the caller owns that wait for a scope decision (status `discovered`), one
+         *     card each: identity, surface, steps, sample screens and controls, and up to three ranked
+         *     "looks like" suggestions (same host, same or similar name, same vendor, similar program
+         *     file). With `recording_id` (a reviewer of it): that recording's applications; with
+         *     `status=all` the decided ones too, to change a decision. `same_as` lists the applications
+         *     the caller owns (to merge into); `labels` is the one mapping of scope statuses to the words
+         *     the pages use.
+         */
+        get: operations["getTriage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/triage/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide the scope of one or many applications
+         * @description `replicate` (status `known`) or `not_replicated` (recorded as used only), for each listed
+         *     application, all or none; each needs the owner role (else 403). With `expected_revision`, a
+         *     change since then answers 409 `conflict`. Reversible: deciding again changes it back.
+         *     "Same as" is a merge (preview, then confirm: the merge operations), never a bulk decision.
+         */
+        post: operations["decideScope"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/home": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The signed-in user's home
+         * @description What the caller's role needs first. `role` is the highest role held anywhere (`admin` for a
+         *     portal admin, `none` without any role). `published`: the visible applications' latest
+         *     published release (what a viewer opens). `ready_to_build`: applications the caller builds
+         *     that have a frozen package, with the latest build session and release; `waiting`: build
+         *     sessions with questions or tool approvals waiting for an answer. `workboards`: the
+         *     recordings the caller reviews (newest first, at most 20), with how many applications wait
+         *     for a scope decision; `triage_count`: all applications the caller owns that wait for one.
+         */
+        get: operations["getHome"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1710,7 +1843,17 @@ export interface components {
         /** @enum {string} */
         Role: "viewer" | "builder" | "owner";
         /**
-         * @description The scope decision. Labels — known Confirmed application; discovered Discovered, decide scope; not_replicated Not replicated.
+         * @description The scope decision. The one mapping of values to what the pages say (journey.STATUS_LABELS,
+         *     web/src/lib/scope.ts; `Triage.labels` and `Workboard.labels` carry it too):
+         *
+         *     | value | label | triage decision |
+         *     |---|---|---|
+         *     | `known` | Replicate | `replicate` |
+         *     | `discovered` | Needs a scope decision | (none: the state before a decision) |
+         *     | `not_replicated` | Not replicated (used only) | `not_replicated` |
+         *
+         *     "Same as" is not a status: it merges the application into another (the merge operations).
+         *     An owner chooses only `known` or `not_replicated`; `discovered` is set by a recording.
          * @enum {string}
          */
         AppStatus: "known" | "discovered" | "not_replicated";
@@ -1756,7 +1899,15 @@ export interface components {
             csrf_token: string;
             /** @description The caller's role on each application they have one on. */
             roles: components["schemas"]["AppRole"][];
+            /** @description Whether the caller may add an application (`TWINLAB2_APP_CREATORS`). */
+            can_create_apps?: boolean;
+            home_role?: components["schemas"]["HomeRole"];
         };
+        /**
+         * @description The highest role the user holds on any application (`admin` for a portal admin).
+         * @enum {string}
+         */
+        HomeRole: "admin" | "owner" | "builder" | "viewer" | "none";
         AppRole: {
             app_id: number;
             app_name: string;
@@ -1772,7 +1923,7 @@ export interface components {
         };
         JourneyStep: {
             /** @enum {string} */
-            id: "choose" | "examples" | "behaviour" | "build" | "verify" | "open";
+            id: "choose" | "examples" | "behaviour" | "repository" | "build" | "verification" | "verify" | "open";
             title: string;
             /** @enum {string} */
             state: "done" | "next" | "todo";
@@ -1782,6 +1933,8 @@ export interface components {
             href: string;
             /** @description The button's words. */
             action: string;
+            /** @description Why the step cannot be done yet, in one sentence (empty: it can); `href` points at the fix. */
+            blocked?: string;
         };
         Journey: {
             stage: string;
@@ -2869,10 +3022,10 @@ export interface components {
         SetupPage: {
             /** @description Applications the caller owns. */
             apps: components["schemas"]["AppRef"][];
-            /** @description The artifact storage, described without credentials. */
+            /** @description The artifact storage, described without credentials; null for everyone but portal admins. */
             storage: {
                 [key: string]: string | boolean | number | null;
-            };
+            } | null;
         };
         Worker: {
             id: string;
@@ -2967,6 +3120,260 @@ export interface components {
         /** @description A recorder message as RECORDER-CONTRACT.md defines it (with `contract_version`). */
         AgentMessage: {
             [key: string]: unknown;
+        };
+        ScopeLabel: {
+            value: components["schemas"]["AppStatus"];
+            label: string;
+            /**
+             * @description The triage decision that sets it.
+             * @enum {string|null}
+             */
+            decision: "replicate" | "not_replicated" | null;
+        };
+        IdentityView: {
+            key: string;
+            /** @description Host and path, program file, or mainframe host. */
+            display: string;
+            /** @description web, desktop or mainframe. */
+            surface: string;
+            /** @description What the recorder told of a program (exe, company, product, version, toolkit). */
+            facts: {
+                [key: string]: string;
+            };
+        };
+        PackageReadiness: {
+            /**
+             * @description `draft`: changes not frozen yet.
+             * @enum {string}
+             */
+            state: "none" | "draft" | "frozen";
+            /** @description The latest frozen revision. */
+            rev: number | null;
+            /** @description Critical readiness gaps (null: not checked). */
+            blockers: number | null;
+            /** @description Important readiness gaps. */
+            warnings: number | null;
+            /** @description The draft is the latest frozen revision (owners). */
+            up_to_date: boolean | null;
+            reason: string;
+        };
+        BuildBrief: {
+            id: number;
+            state: string;
+            state_label: string;
+            /** @description Questions and tool approvals waiting for an answer. */
+            outstanding: number;
+            head_sha: string | null;
+        };
+        ReleaseBrief: {
+            id: number;
+            version: string;
+            state: components["schemas"]["ReleaseState"];
+        };
+        RowAction: {
+            label: string;
+            /** @description A web-app path. */
+            href: string;
+            /** @description Why it cannot be done yet (empty: it can). */
+            blocked: string;
+        };
+        WorkboardRow: {
+            app_id: number;
+            name: string;
+            my_role: components["schemas"]["Role"] | null;
+            identity: components["schemas"]["IdentityView"] | null;
+            scope: {
+                status: components["schemas"]["AppStatus"];
+                label: string;
+            };
+            /** @description Steps of this application in this recording. */
+            steps: number;
+            /** @description Events selected for its package (owners). */
+            selected: number | null;
+            /** @description Whether an owner reviewed the selection (owners). */
+            reviewed: boolean | null;
+            /** @description Business scenarios (owners). */
+            scenarios: number | null;
+            package: components["schemas"]["PackageReadiness"] | null;
+            build: components["schemas"]["BuildBrief"] | null;
+            release: components["schemas"]["ReleaseBrief"] | null;
+            /** @description The journey stage. */
+            stage: string;
+            action: components["schemas"]["RowAction"] | null;
+        };
+        TimelineRun: {
+            /** @description Position of its first step among all the recording's steps. */
+            from_index: number;
+            to_index: number;
+            start: string | null;
+            end: string | null;
+            steps: number;
+            /** @description Up to five of its steps, as text. */
+            samples: string[];
+        };
+        TimelineLane: {
+            app_id: number;
+            name: string;
+            surface: string;
+            steps: number;
+            runs: components["schemas"]["TimelineRun"][];
+        };
+        Timeline: {
+            /**
+             * @description `order` when some step has no capture time.
+             * @enum {string}
+             */
+            axis: "time" | "order";
+            start: string | null;
+            end: string | null;
+            total: number;
+            lanes: components["schemas"]["TimelineLane"][];
+        };
+        SharedHost: {
+            host: string;
+            apps: {
+                app_id: number;
+                name: string;
+                path: string;
+            }[];
+            /** @description How its steps were told apart (the longest path prefix). */
+            text: string;
+        };
+        Workboard: {
+            recording: {
+                id: string;
+                name: string;
+                status_label: string;
+            };
+            apps: components["schemas"]["WorkboardRow"][];
+            counts: {
+                apps: number;
+                needs_decision: number;
+                replicate: number;
+                not_replicated: number;
+                /** @description Applications with a frozen package the caller builds. */
+                approved_packages: number;
+            };
+            /** @description One ZIP of the approved packages (null: none). */
+            download_href: string | null;
+            timeline: components["schemas"]["Timeline"];
+            shared_hosts: components["schemas"]["SharedHost"][];
+            labels: components["schemas"]["ScopeLabel"][];
+        };
+        Suggestion: {
+            app_id: number;
+            name: string;
+            status: components["schemas"]["AppStatus"];
+            status_label: string;
+            score: number;
+            reasons: string[];
+            /** @description The caller owns it too (a merge needs both). */
+            can_merge: boolean;
+        };
+        TriageCard: {
+            app_id: number;
+            name: string;
+            revision: number;
+            status: components["schemas"]["AppStatus"];
+            status_label: string;
+            surface: string;
+            identities: components["schemas"]["IdentityView"][];
+            recordings: {
+                id: string;
+                name: string;
+                steps: number;
+            }[];
+            steps: number;
+            screens: string[];
+            controls: string[];
+            suggestions: components["schemas"]["Suggestion"][];
+        };
+        Triage: {
+            apps: components["schemas"]["TriageCard"][];
+            same_as: components["schemas"]["AppRef"][];
+            labels: components["schemas"]["ScopeLabel"][];
+            recording: {
+                id: string;
+                name: string;
+            } | null;
+        };
+        TriageDecision: {
+            app_id: number;
+            /** @enum {string} */
+            decision: "replicate" | "not_replicated";
+            expected_revision?: number | null;
+        };
+        TriageDecisions: {
+            decisions: components["schemas"]["TriageDecision"][];
+        };
+        TriageOutcome: {
+            apps: {
+                id: number;
+                name: string;
+                status: components["schemas"]["AppStatus"];
+                status_label: string;
+                previous: components["schemas"]["AppStatus"];
+            }[];
+            /** @description What was decided, and that it can be reversed. */
+            message: string;
+        };
+        PublishedDemo: {
+            app_id: number;
+            name: string;
+            purpose: string;
+            release_id: number;
+            version: string;
+            /** @description Its deployment (a verified one first). */
+            url: string | null;
+            verified: boolean;
+        };
+        ReadyToBuild: {
+            app_id: number;
+            name: string;
+            rev: number;
+            approved_at: string;
+            build: components["schemas"]["BuildBrief"] | null;
+            release: components["schemas"]["ReleaseBrief"] | null;
+        };
+        WaitingQuestion: {
+            build_id: number;
+            app_id: number;
+            name: string;
+            questions: number;
+        };
+        WorkboardLink: {
+            id: string;
+            name: string;
+            received_at: string | null;
+            apps: number;
+            needs_decision: number;
+        };
+        Home: {
+            role: components["schemas"]["HomeRole"];
+            user: string | null;
+            can_create_apps: boolean;
+            published: components["schemas"]["PublishedDemo"][];
+            ready_to_build: components["schemas"]["ReadyToBuild"][];
+            waiting: components["schemas"]["WaitingQuestion"][];
+            workboards: components["schemas"]["WorkboardLink"][];
+            triage_count: number;
+            is_admin: boolean;
+        };
+        ReleaseInput: {
+            /** @description A build session of the application: its head commit. */
+            build_id?: number | null;
+            /** @description The full commit SHA (without `build_id`). */
+            sha?: string | null;
+            /** @description owner/name; default: the demo repository. */
+            repo?: string | null;
+            pr_number?: number | null;
+            ref?: string | null;
+        };
+        ReleaseRegistered: {
+            release: components["schemas"]["ReleaseSummary"];
+            created: boolean;
+            href: string;
+            next: string;
         };
     };
     responses: {
@@ -3227,6 +3634,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     getApp: {
@@ -3550,6 +3958,35 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    registerRelease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReleaseInput"];
+            };
+        };
+        responses: {
+            /** @description Registered (or the existing release of that commit). */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseRegistered"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     getMergePlan: {
@@ -4461,6 +4898,104 @@ export interface operations {
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    getRecordingWorkboard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                recording_id: components["parameters"]["RecordingId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The workboard. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Workboard"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getTriage: {
+        parameters: {
+            query?: {
+                recording_id?: string;
+                status?: "discovered" | "all";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The triage. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Triage"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    decideScope: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TriageDecisions"];
+            };
+        };
+        responses: {
+            /** @description Decided. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TriageOutcome"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    getHome: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The home. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Home"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
         };
     };
     listCaptureSessions: {

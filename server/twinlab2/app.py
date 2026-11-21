@@ -3,7 +3,7 @@
 It serves, from one process and origin:
 
 - `/api/v1/...`: the JSON API of the web app (api/openapi.yaml; routes_portal, routes_registry,
-  routes_builds);
+  routes_builds, routes_workboard);
 - `/api/agent/...`, `/api/uploads...`: the recorder's agent API, unchanged (routes_registry,
   uploads);
 - the downloads (packages, releases, reports under /api/v1, and the signed local artifact links
@@ -139,7 +139,7 @@ def create_app(target, store=None):
     """The portal on the database at `target`: a DATABASE_URL (sqlite:///…, postgresql://…) or a
     SQLite file path. Pending migrations are applied first. `store` is the artifact store
     (default: from the environment)."""
-    from twinlab2 import routes_builds, routes_portal, routes_registry, uploads
+    from twinlab2 import routes_builds, routes_portal, routes_registry, routes_workboard, uploads
 
     target = str(target)
     if database.engine_of(target) == "sqlite":
@@ -158,7 +158,7 @@ def create_app(target, store=None):
     app.state.artifacts = store
     app.state.target = target
     rest.install_errors(app)
-    for module in (routes_portal, routes_registry, routes_builds, uploads):
+    for module in (routes_portal, routes_registry, routes_builds, routes_workboard, uploads):
         app.include_router(module.routes.router)
     app.include_router(web_routes(secret).router)  # last: its fallbacks match every other path
 

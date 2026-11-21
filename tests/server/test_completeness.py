@@ -295,7 +295,7 @@ class AttentionTest(Base):
         self.assertEqual((accepted["status"]["accepted"], accepted["status"]["attention"]), (True, False))
         with closing(connect(self.database)) as db:
             j = journey.for_app(db, db.execute("SELECT * FROM apps WHERE id = 1").fetchone())
-        self.assertEqual(j.stage, "Build")
+        self.assertEqual(j.stage, "Connect repository")  # the next step after the examples and scenarios
         self.assertEqual(self.listed(), "Partial: accepted as it is")
         # a resend with other completeness needs a fresh look
         failed = copy.deepcopy(PARTIAL)
