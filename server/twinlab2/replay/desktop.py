@@ -48,7 +48,7 @@ import threading
 import time
 from pathlib import Path
 
-from twinlab2.replay.fidelity import Difference, FidelityReport, StepReport
+from twinlab2.replay.fidelity import Difference, FidelityReport, StepReport, twin_label_required
 
 try:  # the recorder's UI Automation and tree modules (pure Python except win/winlook)
     from twinlab2_recorder.desktop import locator, privacy
@@ -334,6 +334,55 @@ def picture_difference(a_png: bytes, b_png: bytes, tolerance: int = 16) -> float
     return 100.0 * diff / n if n else 0.0
 
 
+def label_boxes(raw: dict) -> list[list[int]]:
+    """Window-relative `[x, y, w, h]` boxes where the twin's label sits in a live window: the
+    title-bar text (the suffix is part of it) and the `TwinAppLabel` control (footer or status
+    bar). A picture comparison leaves them out, as the structure comparison does."""
+    from twinlab2_contract import package
+
+    boxes: list[list[int]] = []
+
+    def ok(r) -> bool:
+        return isinstance(r, (list, tuple)) and len(r) == 4 and r[2] > 0 and r[3] > 0
+
+    bar = next((k for k in raw.get("children") or [] if k.get("type") == "TitleBar"), None)
+    if bar and ok(bar.get("rect")):
+        x, y, w, h = bar["rect"]
+        kids = bar.get("children") or []
+        right = min((b["rect"][0] for b in kids if b.get("type") == "Button" and ok(b.get("rect"))), default=x + w)
+        left = max((b["rect"][0] + b["rect"][2] for b in kids if b.get("type") == "MenuBar" and ok(b.get("rect"))),
+                   default=x)  # fmt: skip
+        if right > left:
+            boxes.append([left, y, right - left, h])
+
+    def walk(n: dict) -> None:
+        if n.get("aid") == package.TWIN_AID and ok(n.get("rect")):
+            boxes.append(list(n["rect"]))
+        for k in n.get("children") or []:
+            walk(k)
+
+    walk(raw)
+    return boxes
+
+
+def mask_boxes(png: bytes, boxes: list[list[int]]) -> bytes:
+    """The picture with each box painted one flat colour, so two pictures masked alike never
+    differ there."""
+    if not boxes:
+        return png
+    import io
+
+    from PIL import Image, ImageDraw
+
+    im = Image.open(io.BytesIO(png)).convert("RGB")
+    d = ImageDraw.Draw(im)
+    for x, y, w, h in boxes:
+        d.rectangle([x, y, x + w - 1, y + h - 1], fill=(255, 0, 255))
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    return out.getvalue()
+
+
 def compare_trees(recorded: dict, live: dict, step: int = 0,
                   supplied: frozenset[str] | set[str] = frozenset()) -> list[Difference]:  # fmt: skip
     """Differences between a recorded window tree and the live one, each naming the locator.
@@ -470,6 +519,7 @@ class _Live:
         self.win, self.pids = win, pids
         self.known: set[str] = set()
         self.structure: set[str] = set()
+        self.label_at: list[list[int]] = []  # the twin label's boxes in the last picture
 
     def windows(self) -> list[tuple[int, dict]]:
         """(hwnd, value-free tree) of each top-level window of the app."""
@@ -494,6 +544,7 @@ class _Live:
         clean = privacy.clean(raw, self.known, self.structure)
         got = winlook.masked_picture(hwnd, pictures.places(raw, clean), winlook.font_handle,
                                      pixels)  # fmt: skip
+        self.label_at = label_boxes(raw)
         return got[0] if got else None
 
     def read(self, selectors: list[str]) -> dict[str, list[str]]:
@@ -775,7 +826,6 @@ def verify(exe: str, recording: Path, *, values: dict[str, str | list[str]] | No
                     if after is not None:
                         tree = next((t for h, t in live.windows() if h == after), None)
                     if tree is not None:
-                        from twinlab2.replay.fidelity import twin_label_required
                         from twinlab2_contract import package
 
                         if twin_label_required():  # the twin's own label: required, never compared
@@ -869,7 +919,10 @@ def _compare_picture(live: _Live, hwnd: int, rec, step: dict, folder: Path,
     want = rec.path / step["picture"] if step.get("picture") else None
     if want is None or not want.is_file():
         return None, []
-    pct = picture_difference(want.read_bytes(), png)
+    recorded_png = want.read_bytes()
+    if twin_label_required():  # the twin's own label: masked in both pictures, never compared
+        recorded_png, png = mask_boxes(recorded_png, live.label_at), mask_boxes(png, live.label_at)
+    pct = picture_difference(recorded_png, png)
     note = f"picture differs {pct:.2f} %"
     if pct > threshold:
         return note, [Difference(step=seq, element="(picture)", check="picture",
