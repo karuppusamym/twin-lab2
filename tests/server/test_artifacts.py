@@ -370,9 +370,12 @@ class QueueTest(unittest.TestCase):
     def portal(self):
         return Portal(self.server.url, self.token, timeout=5)
 
+    def dest(self):  # the same portal after a restart (a new port here)
+        return {"portal": self.portal().url.rstrip("/"), "machine_id": 1}
+
     def restart_portal(self):
         self.server.stop()
-        self.server = Server(create_app(self.database))
+        self.server = Server(create_app(self.database), port=self.server.port)
 
     def stored(self):
         with closing(connect(self.database)) as db:
@@ -380,7 +383,7 @@ class QueueTest(unittest.TestCase):
             return artifacts.read(artifacts.load(db, row["artifact_id"]), target=self.server.app.state.artifacts)
 
     def test_queue_survives_network_loss_and_restarts_and_resumes(self):
-        queue = UploadQueue(self.root / "recorder")
+        queue = UploadQueue(self.root / "recorder", destination=self.dest)
         job = queue.add_session(self.session, SESSION)
         self.assertEqual(queue.add_session(self.session, SESSION)["id"], job["id"])  # same bytes, same job
         queued = queue.file_of(job)
@@ -391,7 +394,7 @@ class QueueTest(unittest.TestCase):
         self.assertTrue(queued.is_file())  # kept until the portal confirms
 
         self.restart_portal()  # both sides restart: the portal, and the recorder's queue object
-        queue = UploadQueue(self.root / "recorder")
+        queue = UploadQueue(self.root / "recorder", destination=self.dest)
         self.assertEqual(queue.run(self.portal())[0]["state"], "uploading")  # waiting to retry: not due yet
         resumed = FlakyPortal(self.portal(), ok=100)
         job = queue.run(resumed, force=True)[0]
@@ -408,7 +411,7 @@ class QueueTest(unittest.TestCase):
         self.assertEqual(status["state"], "confirmed")
 
     def test_portal_restart_in_the_middle_of_a_chunked_upload(self):
-        queue = UploadQueue(self.root / "recorder")
+        queue = UploadQueue(self.root / "recorder", destination=self.dest)
         job = queue.add_session(self.session, SESSION)
         portal = self.portal()
         answer = portal.upload_init(SESSION, job["size"], job["sha256"])
@@ -425,7 +428,7 @@ class QueueTest(unittest.TestCase):
         self.assertEqual(self.stored(), data)
 
     def test_a_rejected_checksum_is_sent_again_and_a_changed_file_fails(self):
-        queue = UploadQueue(self.root / "recorder")
+        queue = UploadQueue(self.root / "recorder", destination=self.dest)
         job = queue.add_session(self.session, SESSION)
         real_complete = Portal.upload_complete
         calls = []
@@ -475,7 +478,7 @@ class S3QueueTest(QueueTest):
     def test_proxy_mode_when_the_recorder_cannot_reach_storage(self):
         with mock.patch.dict(os.environ, {"TWINLAB2_S3_DIRECT_UPLOAD": "0"}):
             self.restart_portal()
-            queue = UploadQueue(self.root / "recorder")
+            queue = UploadQueue(self.root / "recorder", destination=self.dest)
             job = queue.add_session(self.session, SESSION)
             flaky = FlakyPortal(self.portal(), ok=1)
             self.assertEqual(queue.run(flaky)[0]["mode"], "portal")

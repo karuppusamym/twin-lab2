@@ -102,6 +102,9 @@ class OfferedListTest(unittest.TestCase):
         self.assertEqual(ui.app_choices(a, a + [{"app_id": 2, "name": "B", "target": {}}]), "rebuild")
 
 
+DEST = {"portal": "https://portal.test", "machine_id": 1}
+
+
 class FakeUploads:
     """The portal's resumable uploads (portal mode), in memory; `down` makes it unreachable."""
 
@@ -153,7 +156,7 @@ class UploadsTest(unittest.TestCase):
 
     def worker(self, make_portal=None):
         w = ui.UploadWorker(lambda on_change: UploadQueue(self.tmp / "data", clock=lambda: self.clock[0],
-                                                          on_change=on_change),
+                                                          on_change=on_change, destination=DEST),
                             make_portal or (lambda: self.portal), lambda fn, *a: fn(*a),
                             lambda jobs, active, error: self.published.append((jobs, active, error)),
                             clock=lambda: self.clock[0])  # fmt: skip

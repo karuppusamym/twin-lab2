@@ -221,10 +221,10 @@ function pageUploads(s) {
   let html = `<div class="page"><h1>Uploads</h1><p class="lede">Uploads continue in the background and resume where they stopped, even after the recorder or the PC restarts.</p>`;
   if (u.error) html += callout("warn", "Not sending right now", u.error) + `<div class="mt"></div>`;
   if (!u.rows.length) return html + `<div class="card muted">Nothing is uploaded yet. Choose a recording under Recordings and press <b>Upload the full recording</b>.</div></div>`;
-  const chip = {sending: ["Sending", "active"], queued: ["Queued", "off"], retrying: ["Retrying", "warn"], done: ["Done", "ok"], failed: ["Failed", "bad"]};
+  const chip = {sending: ["Sending", "active"], queued: ["Queued", "off"], retrying: ["Retrying", "warn"], held: ["Held", "warn"], done: ["Done", "ok"], failed: ["Failed", "bad"]};
   html += `<div class="card stack">` + u.rows.map((r) => {
     const [label, tone] = chip[r.state] || [r.state, "off"];
-    return `<div><div class="row"><b>${esc(r.name)}</b><span class="chip ${tone}">${label}</span><span class="spacer"></span><span class="small muted">${r.percent}%</span>${r.can_retry ? `<button class="btn ghost small" data-act="retry" data-arg="${esc(r.id)}">Retry now</button>` : ""}</div>
+    return `<div><div class="row"><b>${esc(r.name)}</b><span class="chip ${tone}">${label}</span><span class="spacer"></span><span class="small muted">${r.percent}%</span>${r.can_retry ? `<button class="btn ghost small" data-act="retry" data-arg="${esc(r.id)}">Retry now</button>` : ""}${r.can_transfer ? `<button class="btn ghost small" data-act="transfer" data-arg="${esc(r.id)}">Transfer to this portal…</button>` : ""}</div>
       <div class="bar ${tone === "active" ? "" : tone}" role="progressbar" aria-label="${esc(r.name)} upload" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${r.percent}"><i style="width:${r.percent}%"></i></div>
       <div class="xs muted mt2">${esc(r.detail)}</div></div>`;
   }).join("") + `</div><div class="row mt"><button class="btn secondary" data-act="retry-all">Retry all now</button><span class="small muted" id="upload-note">${esc(u.note)}</span></div></div>`;
@@ -418,6 +418,7 @@ const ACTIONS = {
   upload: () => call("upload"),
   retry: (a) => call("retry", a),
   "retry-all": () => call("retry_all"),
+  transfer: (a) => call("transfer", a),
   profile: () => call("open_profile"),
   "check-updates": () => call("check_updates"),
   "install-update": () => call("install_update"),

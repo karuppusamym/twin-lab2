@@ -326,7 +326,11 @@ def recording_status(db, recording_id):
         text = compl.UNKNOWN_OLDER if workstation else compl.UNKNOWN_IMPORTED
     else:
         text = compl.summary(data)
+    scope = [r[0] for r in db.execute(  # the scope of each application the recording holds
+        "SELECT status FROM apps WHERE id IN (SELECT app_id FROM recording_apps WHERE recording_id = ?) "
+        "OR id IN (SELECT app_id FROM evidence WHERE recording_id = ?)", (recording_id, recording_id))]
     return {"completeness": data, "accepted": accepted,
+            "dimensions": compl.dimension_list(data, compl.owner_scope(scope, accepted)),
             "accepted_by": row["accepted_by"] if accepted else None, "accepted_at": row["accepted_at"] if accepted else None,
             "preflight": json.loads(row["preflight"]) if row is not None and row["preflight"] else None,
             "summary": text, "label": compl.label(data, accepted), "attention": compl.needs_attention(data, accepted),

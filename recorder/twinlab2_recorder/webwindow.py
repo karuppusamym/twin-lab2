@@ -101,6 +101,9 @@ class Bridge:
     def retry_all(self):
         self._do(self._app.on_retry_all)
 
+    def transfer(self, job_id: str):
+        self._do(self._app.on_transfer, job_id)
+
     # pairing and settings
     def pair(self, url: str, code: str, name: str):
         return self._do(self._app.on_pair, url, code, name)

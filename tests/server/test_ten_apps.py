@@ -150,7 +150,7 @@ class TenAppRecordingTest(unittest.TestCase):
         paths = {(t.get("origin"), t.get("path")) for t in offered[0]["targets"]}
         self.assertTrue({("https://erp.example.test", "/billing"), ("https://erp.example.test", "/billing-admin")} <= paths)
         doc = references()
-        self.assertEqual(doc["contract_version"], "1.7.0")
+        self.assertEqual(doc["contract_version"], "1.8.0")
         middle = fixture.ts(len(fixture.STEPS) * 5 // 2)
         first, second = part(doc, lambda s: s["captured_at"] < middle), part(doc, lambda s: s["captured_at"] >= middle)
         self.assertTrue(first["flows"] and second["flows"])

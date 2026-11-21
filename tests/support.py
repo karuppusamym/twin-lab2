@@ -132,7 +132,7 @@ class Server:
     """The portal served over HTTP (uvicorn in a thread) on 127.0.0.1, for the recorder's tests:
     `url`, and `stop()` (also on exit of `with`)."""
 
-    def __init__(self, app):
+    def __init__(self, app, port: int = 0):
         import socket
         import threading
 
@@ -141,7 +141,7 @@ class Server:
         self.app = app
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("127.0.0.1", 0))
+        sock.bind(("127.0.0.1", port))  # a restart may keep its port: the same portal URL
         self.port = sock.getsockname()[1]
         self.url = f"http://127.0.0.1:{self.port}"
         config = uvicorn.Config(app, log_level="warning", lifespan="off", proxy_headers=False)

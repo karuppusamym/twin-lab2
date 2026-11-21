@@ -56,7 +56,7 @@ class CleanTest(unittest.TestCase):
         self.assertEqual(completeness.duration_text(3720), "1 h 2 min")
 
     def test_the_contract_accepts_the_block_and_refuses_more(self):
-        self.assertEqual(contract.CONTRACT_VERSION, "1.7.0")
+        self.assertEqual(contract.CONTRACT_VERSION, "1.8.0")
         doc = with_pauses()
         doc["recorder"] = {"name": "TwinLabRecorder", "version": "0.2.0"}
         self.assertEqual(contract.errors(doc, "references"), [])

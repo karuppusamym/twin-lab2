@@ -127,9 +127,20 @@ On a PC (or VM) where the Edge WebView2 Runtime is removed, start the recorder.
 3. Queue an upload with the portal stopped, close the recorder, start the portal, start the
    recorder.
    → Without pressing anything the upload resumes and ends *Done*.
-4. With the machine unpaired (or the token revoked on the portal), queue an upload.
-   → *Not sending right now: …not paired…* above the list; the job stays *Queued*; after
-     pairing it goes.
+4. With the token revoked on the portal, queue an upload.
+   → *Not sending right now: …* above the list with the portal's reason; the job stays *Queued*;
+     after pairing again with the same portal it goes. Unpaired, **Upload** says the PC must be
+     paired first and queues nothing.
+5. Queue an upload with the portal stopped, then pair the PC with a second portal (or pair again
+   with the same portal under a new machine name, which gives a new machine id).
+   → The row reads *Held*: *queued for <first portal> as machine N, but this recorder is now
+     paired with …*; nothing reaches the second portal (its Recordings page stays empty), and
+     **Retry now** / **Retry all now** do not send it.
+6. Press **Transfer to this portal…** on the held row, read the question (from → to), **Transfer**.
+   → The upload starts from 0 % at the new portal and ends *Done*. `upload-queue\transfers.jsonl`
+     in the data folder has one line: the job, its SHA-256, from, to, who and when. Pair back
+     with the first portal instead (no transfer) → the held row goes back to *Queued* and is sent
+     to the first portal.
 
 ## 8. DPI scaling
 
@@ -233,6 +244,52 @@ The exclude list is tested on fakes (`tests/recorder/test_exclude.py`) and in th
 4. Record and stop a session.
    → The indicator ends on *Not recording. The last recording is saved on this PC: review it
      before you send it.*; the list row reads *<name> · finished · not sent yet*.
+
+## 13. Office trial: a managed PC
+
+Headless tests cannot establish these. Run them on an office PC under the office's own
+management (Intune / group policy, its endpoint protection), with the installed MSI, not a
+developer build. Note the PC's Windows build, the EDR product and version, and the scaling.
+
+1. **Signed binaries.** Install the signed MSI (`recorder/installer`). Right-click
+   `TwinLabRecorder.exe` → Properties → Digital Signatures, and run
+   `Get-AuthenticodeSignature "C:\Program Files\TwinLab Recorder\TwinLabRecorder.exe"`.
+   → Status *Valid*, the office's (or the publisher's) certificate, a timestamp; the same for
+     the collector executables it starts and for the MSI. SmartScreen and the office's
+     application control (AppLocker / WDAC) let it start without a warning or an exception
+     request; an auto-update installs a signed MSI the same way.
+2. **Endpoint protection / EDR.** With the office's EDR active and in its normal mode, record
+   3.1 (web + desktop), pause and resume (3b), send (6) and upload (7.1).
+   → No quarantine, blocked process, blocked UI Automation or blocked loopback connection (the
+     WebView2 page, the CDP port of the launched Edge, the TN3270 relay); no alert in the EDR
+     console, or only the alerts the office agreed to allow-list (write down their names). The
+     data folder and `upload-queue` are not locked or emptied by a scan during an upload.
+3. **Elevated target applications.** Start a target application *Run as administrator* while
+   the recorder runs as the normal user, and record it.
+   → The recorder does not ask for elevation and does not record the elevated window's
+     content (Windows' UIPI keeps it out): the desktop channel says so in its notes, and the
+     completeness shows the gap (channel availability or screen coverage is not *complete*),
+     never a silent empty recording. Started elevated too, both are recorded normally.
+4. **Mixed DPI.** Two monitors at different scaling (e.g. 100 % laptop + 150 % external), the
+   target application on one, the recorder window on the other; move the target between them
+   during a recording.
+   → Desktop pictures and element bounds match the window on both monitors (no offset or
+     cropping in the recording's pictures); the recorder window stays sharp and usable; the
+     portal's recording page shows the steps in the right places.
+5. **Interrupted shutdown.** Start a recording and an upload, then restart Windows from the Start
+   menu without stopping (and once, on a laptop, close the lid / let the battery die or hold the
+   power button).
+   → After sign-in the recorder starts (if it is set to), the session is *Recovered* with the
+     loss window in its notes, recovery wrote only inside its own session folder, the
+     completeness shows the interruption, and the upload resumes from where the portal stopped.
+     No corrupted queue job, settings file or session.json (each is written atomically).
+6. **Disk exhaustion.** Fill the disk holding the data folder until less than ~200 MB is free
+   (e.g. `fsutil file createnew C:\fill.bin <bytes>`), then record and upload; then free the
+   space.
+   → The recorder says the disk is full instead of failing silently; the recording stops with
+     its channels marked interrupted rather than writing half files; queued uploads stay queued
+     with an error and resume after the space is freed; nothing already confirmed is lost.
+     Delete `fill.bin` afterwards.
 
 ## Verify: the portal's desktop replay
 

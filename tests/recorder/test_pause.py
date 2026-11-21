@@ -236,7 +236,7 @@ class SessionRunTest(Folder):
         self.assertEqual(block["count"], 2)
         self.assertGreater(block["seconds"], 0.5)
         box = json.loads((folder / "portal-outbox.json").read_text(encoding="utf-8"))
-        self.assertEqual(box["contract_version"], "1.7.0")
+        self.assertEqual(box["contract_version"], "1.8.0")
         self.assertEqual(box["completeness"]["paused"]["count"], 2)
         doc = agent_main.contract_references(
             box

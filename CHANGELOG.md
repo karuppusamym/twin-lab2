@@ -16,6 +16,16 @@ the merged pull requests.
   `TwinAppLabel` footer); Verify checks app-to-app contracts (GET API response fields, file columns, and the
   peer-down message with the producer's lab agent held at 503, always removed afterwards); approved visual
   baselines become required visual states in Verify (reported-only without them).
+- Recorder contract 1.8.0: completeness in separate dimensions (channel availability, event
+  detail, screen/state coverage, network evidence), plus the portal's owner-reviewed scope. The
+  recording page and the recorder's send review show them; the package validator counts an
+  item as observed only as far as the recordings' matching dimension shows it. 1.0 to 1.7 stay
+  accepted, and their dimensions are derived where they can be.
+- Recorder: queued uploads are bound to the portal and machine they were queued for. After
+  re-pairing elsewhere they are held, and moving them needs a transfer in the window, written to
+  `upload-queue\transfers.jsonl`.
+- recorder/GO-DESKTOP-CHECKLIST.md: office trial on a managed PC (signed binaries, EDR, elevated
+  targets, mixed DPI, interrupted shutdown, disk exhaustion).
 - Release pipeline: a `vMAJOR.MINOR.PATCH` tag builds the portal image, pushes it to GHCR with
   build provenance, builds the recorder (`TwinLabRecorder-<version>-win-x64.zip` with its SHA-256),
   and publishes a GitHub release with this changelog's section (`.github/workflows/release.yml`).
@@ -32,4 +42,6 @@ the merged pull requests.
 
 ### Security
 
+- Recorder recovery writes only inside the session's own recording folders, whatever the capture
+  journal names (no traversal, no links followed); fuzz and traversal tests.
 - The image no longer ships zlib1g with CVE-2026-85091 (fixed by Debian's update).

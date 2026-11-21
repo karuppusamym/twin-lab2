@@ -22,6 +22,9 @@ export function RecordingPage() {
   return <QueryView query={rec}>{(r) => <RecordingView rec={r} />}</QueryView>;
 }
 
+// a dimension's status as a badge tone: complete is done, partial needs review, none is a gap
+const DIMENSION_KIND: Record<string, string> = { complete: "complete", partial: "partial", none: "missing", not_applicable: "skipped", unknown: "packaged" };
+
 function RecordingView({ rec }: { rec: Schemas["RecordingDetail"] }) {
   const { status, refs } = rec;
   const c = status.completeness;
@@ -51,6 +54,23 @@ function RecordingView({ rec }: { rec: Schemas["RecordingDetail"] }) {
           <ActionButton label="Accept it as it is" run={async () => data(await api.POST("/api/v1/recordings/{recording_id}/completeness/accept", { params: { path: { recording_id: rec.id } } }))} />
         </div>
       ) : status.accepted && <p className="muted">Accepted as it is by {status.accepted_by} on {when(status.accepted_at)}.</p>}
+      {status.dimensions.length > 0 && (
+        <section aria-labelledby="dimensions-h">
+          <h2 id="dimensions-h">Completeness by dimension</h2>
+          <table className="flow" id="dimensions">
+            <thead><tr><th scope="col">Dimension</th><th scope="col">Status</th><th scope="col">What it says</th></tr></thead>
+            <tbody>
+              {status.dimensions.map((d) => (
+                <tr key={d.id} data-dimension={d.id}>
+                  <td>{d.title}</td>
+                  <td><Badge kind={DIMENSION_KIND[d.status]}>{capitalize(words(d.status))}</Badge>{d.of != null && d.of > 0 && <span className="muted"> {d.have ?? 0}/{d.of}</span>}</td>
+                  <td>{d.detail}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
       <Workboard recordingId={rec.id} />
       <details id="details" className="details-section">
         <summary><span className="summary-title">Details</span> <span className="muted">channels, preflight, upload, every application&apos;s recorded steps</span></summary>

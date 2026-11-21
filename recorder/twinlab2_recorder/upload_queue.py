@@ -15,6 +15,14 @@ For each job, `run()`:
    either to the portal or to presigned storage URLs;
 4. asks the portal to complete; the portal checks the SHA-256 and only then confirms.
 
+Each job is bound to its destination when it is queued: the portal URL and the machine identity
+(the machine id the portal gave at pairing). A job is only sent while the recorder is paired with
+that same portal as that same machine. After re-pairing with another portal or as another machine
+the job is held (`held` says why) and is not sent anywhere until a person transfers it to the new
+destination in the window (`transfer`); each transfer is written to the job (`transfers`) and to
+the queue's audit log (`transfers.jsonl`). Jobs queued before destinations were recorded are held
+the same way.
+
 The queued copy is deleted only after the portal confirms. A network failure leaves the job
 queued with its error and a time to try again (backing off to 10 minutes). A rejected checksum
 starts the upload again from the beginning, up to MAX_ATTEMPTS; a queued file that no longer
@@ -28,6 +36,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import getpass
 import re
 import shutil
 import time
@@ -50,6 +59,32 @@ def sha256_of(path: Path) -> str:
         while chunk := f.read(CHUNK):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def destination_of(values: dict) -> dict | None:
+    """Where this recorder sends now: `{"portal", "machine_id", "machine"}` from the pairing
+    settings, or None when it is not paired."""
+    from twinlab2_recorder.client import check_portal
+
+    portal, machine_id = values.get("portal"), values.get("machine_id")
+    if not portal or type(machine_id) is not int:
+        return None
+    try:
+        portal = check_portal(portal)
+    except PortalError:
+        return None
+    return {"portal": portal.rstrip("/"), "machine_id": machine_id, "machine": values.get("machine")}
+
+
+def same_destination(a: dict | None, b: dict | None) -> bool:
+    return bool(a and b) and a.get("portal") == b.get("portal") and a.get("machine_id") == b.get("machine_id")
+
+
+def where(dest: dict | None) -> str:
+    if not dest:
+        return "no recorded destination"
+    name = f" ({dest['machine']})" if dest.get("machine") else ""
+    return f"{dest.get('portal')} as machine {dest.get('machine_id')}{name}"
 
 
 def pack_session(folder: Path, out: Path) -> Path:
@@ -75,11 +110,13 @@ def pack_session(folder: Path, out: Path) -> Path:
 
 
 class UploadQueue:
-    def __init__(self, data_folder: Path, clock=time.time, on_change=None) -> None:
+    def __init__(self, data_folder: Path, clock=time.time, on_change=None, destination=None) -> None:
         self.folder = Path(data_folder) / "upload-queue"
         self.folder.mkdir(parents=True, exist_ok=True)
         self.clock = clock
         self.on_change = on_change  # called with a copy of each job saved (the window's progress)
+        # the current destination (destination_of the settings), asked each time: pairing changes it
+        self.destination = destination if callable(destination) else (lambda: destination)
 
     # -- jobs on disk ---------------------------------------------------------------------------
 
@@ -136,6 +173,10 @@ class UploadQueue:
     def _adopt(self, tmp: Path, session_id: str, content_type: str) -> dict:
         digest, size = sha256_of(tmp), tmp.stat().st_size
         job_id = f"{session_id}-{digest[:12]}"
+        dest = self.destination()
+        if dest is None:
+            tmp.unlink(missing_ok=True)
+            raise OSError("this recorder is not paired with a portal: pair it before uploading")
         existing = self.get(job_id)
         if existing and existing["state"] != "failed":
             tmp.unlink(missing_ok=True)
@@ -146,14 +187,82 @@ class UploadQueue:
             "state": "queued", "upload_id": None, "upload_token": None, "token_expires": None, "mode": None,
             "chunk_size": None, "received_bytes": 0, "attempts": 0, "rejections": 0, "last_error": None,
             "next_try": 0, "queued_at": _stamp(), "confirmed_at": None, "recording_id": None,
+            "destination": dest, "held": None, "transfers": [],
         })
+
+    # -- destinations -------------------------------------------------------------------------------
+
+    def hold_reason(self, job: dict, current: dict | None = None) -> str | None:
+        """Why the job must not be sent to the current destination, or None."""
+        if job.get("state") == "confirmed":
+            return None
+        current = self.destination() if current is None else current
+        bound = job.get("destination")
+        if current is None:
+            return None  # not paired: nothing is sent anyway (the run cannot make a portal)
+        if not bound:
+            return (f"queued before uploads were bound to a portal; transfer it to {where(current)} "
+                    "to send it there")  # fmt: skip
+        if not same_destination(bound, current):
+            return (f"queued for {where(bound)}, but this recorder is now paired with {where(current)}: "
+                    "it is not sent until you transfer it or pair back")  # fmt: skip
+        return None
+
+    def check_holds(self) -> list[dict]:
+        """Mark each job held (or no longer held) against the current destination."""
+        current = self.destination()
+        for job in self.jobs():
+            reason = self.hold_reason(job, current) if current is not None else job.get("held")
+            if reason != job.get("held"):
+                job["held"] = reason
+                self.save(job)
+        return self.jobs()
+
+    def transfer(self, job_id: str, by: str | None = None, note: str | None = None) -> dict:
+        """Send a held job to the current destination instead: a person's explicit decision,
+        kept on the job and in the audit log. The upload starts again at the new portal."""
+        job = self.get(job_id)
+        current = self.destination()
+        if job is None:
+            raise ValueError("no such upload")
+        if job["state"] == "confirmed":
+            raise ValueError("this upload is already confirmed")
+        if current is None:
+            raise ValueError("this recorder is not paired: pair it first")
+        if same_destination(job.get("destination"), current):
+            raise ValueError("this upload already goes to the current portal")
+        entry = {"at": _stamp(), "job": job_id, "session_id": job["session_id"], "sha256": job["sha256"],
+                 "from": job.get("destination"), "to": current, "by": by or _who(), "note": note}  # fmt: skip
+        with (self.folder / "transfers.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        job.setdefault("transfers", []).append(entry)
+        job.update(destination=current, held=None, upload_id=None, upload_token=None, token_expires=None,
+                   mode=None, chunk_size=None, received_bytes=0, next_try=0, last_error=None, rejections=0)
+        if job["state"] == "uploading" or (job["state"] == "failed" and self.file_of(job).is_file()):
+            job["state"] = "queued"
+        return self.save(job)
+
+    def audit(self) -> list[dict]:
+        """The transfer log, oldest first."""
+        path = self.folder / "transfers.jsonl"
+        if not path.is_file():
+            return []
+        out = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+        return out
 
     def retry(self, job_id: str) -> dict | None:
         """Make a job due now: a failed one whose file is still queued goes back to the queue
         (it resumes where the portal stopped; a changed file fails again), a waiting one is tried
         at the next run. A confirmed job, or one without its file, is left as it is."""
         job = self.get(job_id)
-        if job is None or job["state"] == "confirmed":
+        if job is None or job["state"] == "confirmed" or self.hold_reason(job):
             return job
         if job["state"] == "failed":
             if not self.file_of(job).is_file():
@@ -165,8 +274,12 @@ class UploadQueue:
     # -- running ------------------------------------------------------------------------------------
 
     def run(self, portal, only: str | None = None, force: bool = False) -> list[dict]:
-        """Work through the due jobs (all of them with `force`). Returns every job afterwards."""
+        """Work through the due jobs (all of them with `force`). Returns every job afterwards.
+        A held job (bound to another portal or machine) is never sent."""
+        self.check_holds()
         for job in self.jobs():
+            if job.get("held"):
+                continue
             if job["state"] in ("confirmed", "failed") or (only and job["id"] != only and job["session_id"] != only):
                 continue
             if not force and job.get("next_try", 0) > self.clock():
@@ -185,6 +298,10 @@ class UploadQueue:
         return self.save(job)
 
     def process(self, portal, job: dict) -> dict:
+        bound, url = job.get("destination") or {}, getattr(portal, "url", None)
+        if url is not None and bound.get("portal") != str(url).rstrip("/"):
+            # held jobs never get here; this guards a caller that skips run()
+            return self.save(dict(job, held=f"not sent: queued for {where(bound)}, not {getattr(portal, 'url', '?')}"))
         path = self.file_of(job)
         if not path.is_file():
             return self._fail(job, "the queued file is missing")
@@ -296,9 +413,18 @@ class UploadQueue:
         return job
 
 
+def _who() -> str:
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 - only for the audit line
+        return "unknown"
+
+
 def describe(job: dict) -> str:
     done = f"{job.get('received_bytes', 0)}/{job['size']} bytes"
-    line = f"{job['session_id']}  {job['state']}  {done}"
+    line = f"{job['session_id']}  {'held' if job.get('held') else job['state']}  {done}"
+    if job.get("held"):
+        return line + f"  ({job['held']})"
     if job.get("last_error"):
         line += f"  ({job['last_error']})"
     return line

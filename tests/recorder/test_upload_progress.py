@@ -32,7 +32,7 @@ class Portal:
 def queued(tmp_path):
     source = tmp_path / "source.zip"
     source.write_bytes(b"0123456789")
-    queue = UploadQueue(tmp_path)
+    queue = UploadQueue(tmp_path, destination={"portal": "https://portal.test", "machine_id": 1})
     return queue, queue.add_file(source, "session-123")
 
 
