@@ -2745,7 +2745,18 @@ export interface components {
                     [key: string]: unknown;
                 };
             } | null;
+            /** @description Verify's acceptance checks, each judged on its own: ci, commit_identity, scenarios, fixture_reset, persistence, failure_scenarios, visual_coverage. A failed one keeps the release from Tested. */
+            checks: components["schemas"]["AcceptanceCheck"][];
             error: string | null;
+        };
+        AcceptanceCheck: {
+            id: string;
+            label: string;
+            /** @enum {string} */
+            status: "pass" | "fail" | "not-checked";
+            detail: string;
+            /** @description Whether its failure blocks Tested (a not-checked check never does). */
+            required: boolean;
         };
         MergeSide: {
             id: number;
