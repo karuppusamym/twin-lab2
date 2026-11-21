@@ -32,6 +32,7 @@ Headless: the web replay is headless Chromium, the 3270 replay a socket terminal
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import contextlib
 import json
 from pathlib import Path
 import shutil
@@ -81,7 +82,9 @@ def judge_mainframe(case: str) -> Path:
 def tables(db_file: Path) -> dict:
     if not db_file.is_file():
         return {}
-    with sqlite3.connect(f"file:{db_file.as_posix()}?mode=ro", uri=True) as db:
+    # closing(): `with sqlite3.connect()` only commits; an open handle keeps Windows from
+    # deleting the file at the next reset ("used by another process")
+    with contextlib.closing(sqlite3.connect(f"file:{db_file.as_posix()}?mode=ro", uri=True)) as db:
         names = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table' "
                                           "AND name NOT LIKE 'sqlite_%' ORDER BY name")]
         return {n: [[str(v) for v in row] for row in db.execute(f'SELECT * FROM "{n}" ORDER BY 1')] for n in names}
