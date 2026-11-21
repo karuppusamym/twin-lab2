@@ -40,7 +40,7 @@ providers = [
     "github-copilot-sdk>=1.0.35,<2",
 ]
 # the container image: gunicorn with uvicorn workers
-serve = ["gunicorn>=23,<24", "uvicorn-worker>=0.3,<1"]
+serve = ["gunicorn>=23,<28", "uvicorn-worker>=0.3,<1"]
 # opt-in tracing (TWINLAB2_OTEL=1): spans per request and per worker job, exported over OTLP/HTTP
 otel = ["opentelemetry-sdk>=1.25,<2", "opentelemetry-exporter-otlp-proto-http>=1.25,<2"]
 # FastAPI's TestClient needs httpx (a dependency already); the contract tests validate every
