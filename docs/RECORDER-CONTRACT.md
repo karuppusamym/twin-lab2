@@ -1,4 +1,4 @@
-# Recorder contract 1.7.0
+# Recorder contract 1.8.0
 
 What a workstation recorder sends to the TwinLab2 portal, and how the two sides agree on a version. The
 machine-checkable form is [`contract/twinlab2_contract/recorder-contract.schema.json`](contract/twinlab2_contract/recorder-contract.schema.json)
@@ -150,6 +150,7 @@ recorder's `preflight`:
 | `completeness.recovered` | yes | `true` when the recording was rebuilt from its journal after the recorder stopped unexpectedly |
 | `completeness.loss_window_seconds` | no | a number ≥ 0, or `null`: at most this many seconds before the interruption may be lost |
 | `completeness.local_exclusions` | no (1.5) | applications this PC's own exclude list kept out: `count`, `names[]` (the names of the exclude entries that matched, up to 50 of up to 80 characters), `entries` (how long the list was), `managed` (an office policy file was part of it). See *Contract 1.5* below. |
+| `completeness.dimensions` | no (1.8) | completeness in separate dimensions: `channels`, `event_detail`, `screen_coverage`, `network_evidence`, each `{status, detail, have?, of?}`. See *Contract 1.8* below. |
 | `preflight.checks[]` | with `preflight` | `name` (text up to 80), `ok` (boolean), optional `detail` (up to 300) |
 | `preflight.ready` | with `preflight` | whether the recorder was ready to record |
 
@@ -457,3 +458,34 @@ it is. A resend with different completeness withdraws that acceptance.
 3. Add samples to `tests/recorder/test_contract.py`.
 4. When the change comes from Twin Lab's collectors, move the pin (`UPSTREAM.md`) and regenerate
    `tests/fixtures/references-from-the-collectors.json` in the same commit.
+
+#### Contract 1.8: completeness in separate dimensions
+
+1.8.0 is a minor version with no new requirement; the portal still accepts 1.0.x to 1.7.x.
+
+`overall` says one word about a recording; 1.8 adds `completeness.dimensions` so that each kind
+of completeness is judged on its own (`twinlab2_contract.dimensions`):
+
+| dimension | what it says | `have` of `of` |
+|---|---|---|
+| `channels` | channel availability: every requested collector captured the whole session | channels complete, channels requested |
+| `event_detail` | event-detail completeness: events that kept their step, not only an `incomplete` marker | events with detail, events |
+| `screen_coverage` | screen/state coverage: steps of applications recorded at level full that belong to a state in `screens` | steps in a state, steps |
+| `network_evidence` | network evidence availability: a whole network journal / HAR for the web recordings | - |
+
+`status` is `complete`, `partial`, `none`, `not_applicable` (nothing of that kind was asked for)
+or `unknown`; `detail` is a sentence of at most 300 characters.
+
+```json
+{"dimensions": {"channels": {"status": "partial", "detail": "1 of 2 requested channels captured the whole session (desktop interrupted)", "have": 1, "of": 2},
+                "event_detail": {"status": "complete", "detail": "41 of 41 recorded events kept their detail", "have": 41, "of": 41},
+                "screen_coverage": {"status": "partial", "detail": "30 of 41 steps of fully recorded applications belong to a screen state (6 screen(s))", "have": 30, "of": 41},
+                "network_evidence": {"status": "complete", "detail": "the network journal covers the whole web recording"}}}
+```
+
+The portal adds a fifth, `owner_scope` (owner-reviewed scope: the owner decided the scope of
+every application in the recording, or accepted it as it is), which a recorder never sends. For
+an older recorder it derives `channels` and `network_evidence` from the fields it did send, and
+shows `event_detail` and `screen_coverage` as unknown. The package validator reads the
+dimensions of an application's recordings: an item observed only in recordings whose matching
+dimension is `none` is not counted as observed (see docs/PACKAGE-COMPLETENESS.md).

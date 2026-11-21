@@ -288,6 +288,10 @@ def review_summary(box: dict, notes: list[str] | None = None, portal: str | None
         bad = [f"{k} {v.get('status')}" for k, v in (comp.get("channels") or {}).items()
                if isinstance(v, dict) and v.get("status") not in ("complete", "not_requested")]  # fmt: skip
         lines.append(f"  • completeness: {comp.get('overall')}" + (f" ({', '.join(bad)})" if bad else ""))
+        from twinlab2_contract import dimensions as dims
+
+        for key, d in dims.derive(comp).items():  # contract 1.8: each dimension on its own
+            lines.append(f"      {dims.TITLES[key]}: {d['status'].replace('_', ' ')} ({d['detail']})")
     rb = box.get("robot")
     if isinstance(rb, dict):
         lines.append(f"  • robot log: {rb.get('activities')} activities, {rb.get('covered')} of "

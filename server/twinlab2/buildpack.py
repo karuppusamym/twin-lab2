@@ -130,12 +130,27 @@ def evidence(db, app_id):
                 steps.setdefault(step.get("event_id"), step)
         selection = set(json.loads(row["selection"]))
         events = json.loads(row["events"])
-        out.append({
+        entry = {
             "recording_id": row["id"], "recorded_on": recorded_on(db, row["id"], events), "notes": row["notes"],
             "events": [event_entry(event, steps.get(event["event_id"]))
                        for event in events if event["event_id"] in selection],
-        })
+        }
+        found = capture(db, row["id"])
+        if found:
+            entry["capture"] = found
+        out.append(entry)
     return out
+
+
+def capture(db, recording_id):
+    """The recording's completeness dimensions as statuses only (recorder contract 1.8; derived
+    for an older recorder), for the validator: {} when the recording reported no completeness."""
+    from twinlab2 import registry
+
+    status = registry.recording_status(db, recording_id)
+    if status["completeness"] is None:
+        return {}
+    return {d["id"]: d["status"] for d in status["dimensions"]}
 
 
 def screen_structure(db, app_id):

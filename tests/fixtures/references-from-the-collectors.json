@@ -1,5 +1,5 @@
 {
- "contract_version": "1.7.0",
+ "contract_version": "1.8.0",
  "format": "twinlab-references/1",
  "session": {
   "id": "20261120T090000Z-5e55a0f1",
@@ -196,6 +196,28 @@
   },
   "network_evidence": "none",
   "recovered": false,
-  "loss_window_seconds": null
+  "loss_window_seconds": null,
+  "dimensions": {
+   "channels": {
+    "status": "partial",
+    "detail": "2 of 3 requested channels captured the whole session (network missing)",
+    "have": 2,
+    "of": 3
+   },
+   "event_detail": {
+    "status": "complete",
+    "detail": "11 of 11 recorded events kept their detail",
+    "have": 11,
+    "of": 11
+   },
+   "screen_coverage": {
+    "status": "not_applicable",
+    "detail": "no application was recorded at level full"
+   },
+   "network_evidence": {
+    "status": "none",
+    "detail": "no network evidence was kept for the web recording"
+   }
+  }
  }
 }

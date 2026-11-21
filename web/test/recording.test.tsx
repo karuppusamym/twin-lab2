@@ -105,3 +105,16 @@ describe("a recording the person paused", () => {
       + "Nothing was recorded meanwhile, by their choice: this is not a gap in the recording.");
   });
 });
+
+describe("completeness in separate dimensions", () => {
+  it("shows the five dimensions, each with its own status", async () => {
+    server.use(on("getRecording", () => HttpResponse.json(example("getRecording") as never)));
+    renderApp("/recordings/9f2c4e1a7b3d5f60", "owner");
+    const heading = await screen.findByRole("heading", { name: "Completeness by dimension" });
+    const rows = [...(heading.parentElement?.querySelectorAll("tbody tr") ?? [])].map((tr) => tr.getAttribute("data-dimension"));
+    expect(rows).toEqual(["channels", "event_detail", "screen_coverage", "network_evidence", "owner_scope"]);
+    const scope = heading.parentElement?.querySelector('tr[data-dimension="owner_scope"]');
+    expect(scope?.textContent).toContain("Partial");
+    expect(scope?.textContent).toContain("1 of 2 applications have a scope decision");
+  });
+});

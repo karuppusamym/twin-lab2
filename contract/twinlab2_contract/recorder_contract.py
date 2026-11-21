@@ -23,6 +23,10 @@
   so a rebuild nests it where the original does); 1.0 to 1.5 are accepted as before.
   1.7.0 adds none: the completeness may carry `paused`, when the person paused the recording
   (how many times, for how long, and each period); not a gap. 1.0 to 1.6 are accepted as before.
+  1.8.0 adds none: the completeness may carry `dimensions` (twinlab2_contract.dimensions),
+  channel availability, event detail, screen/state coverage and network evidence judged each on
+  its own; an older completeness is read as before and its dimensions derived. 1.0 to 1.7 are
+  accepted as before.
 
 The validator is a small, dependency-free subset of JSON Schema 2020-12: the keywords the
 schema uses (type, required, properties, additionalProperties, items, enum, const, pattern,
@@ -36,7 +40,7 @@ import json
 from pathlib import Path
 import re
 
-CONTRACT_VERSION = "1.7.0"
+CONTRACT_VERSION = "1.8.0"
 OLDEST_SUPPORTED = "1.0.0"  # the oldest contract version this portal still accepts
 RECORDER_MIN = "0.2.0"  # the first TwinLabRecorder that declares a contract version
 EVENT_IDS_FROM = (1, 1, 0)  # the first contract version whose steps carry event_id

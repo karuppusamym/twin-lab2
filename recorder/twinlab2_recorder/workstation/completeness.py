@@ -10,7 +10,13 @@ contract 1.1.0.
      "network_evidence": "complete|incomplete|none",
      "recovered": bool, "loss_window_seconds": number | null,
      "local_exclusions": {"count", "names", "entries", "managed"},  (contract 1.5, optional)
-     "paused": {"count", "seconds", "periods": [{"from", "to", "seconds"}]}}  (1.7, optional)
+     "paused": {"count", "seconds", "periods": [{"from", "to", "seconds"}]},  (1.7, optional)
+     "dimensions": {"channels"|"event_detail"|"screen_coverage"|"network_evidence":
+                    {"status", "detail", "have", "of"}}}  (1.8, `dimensions`)
+
+`dimensions` (contract 1.8, twinlab2_contract.dimensions) judges each kind of completeness on
+its own: channel availability, event detail, screen/state coverage and network evidence. The
+owner-reviewed scope is the portal's fifth dimension: a recorder never knows it.
 
 A channel is requested when a target needs it (a web origin: `web` and `network`; a desktop
 executable or identity: `desktop`; a TN3270 host: `mainframe`); a session says which in
@@ -309,3 +315,37 @@ def preflight(meta: dict) -> dict | None:
         "checks": checks,
         "ready": bool(ready) if ready is not None else all(c["ok"] for c in checks),
     }
+
+
+def dimensions(manifest_: dict, rows: list[dict], screens: dict | None, full: set[str]) -> dict:
+    """The four recorder dimensions of contract 1.8, from the manifest, the merged timeline rows
+    (each with `_step`) and the `screens` block built from them."""
+    from twinlab2_contract import dimensions as dims
+
+    steps = [r for r in rows if r.get("_step") is not None]
+    incomplete = sum(1 for r in steps if (r.get("_step") or {}).get("incomplete"))
+    detailed = len(steps) - incomplete
+    if steps:
+        detail = f"{detailed} of {len(steps)} recorded events kept their detail"
+        if incomplete:
+            detail += f"; {incomplete} only as a marker (the recorder stopped before they settled)"
+        event = dims.item(dims.ratio(detailed, len(steps)), detail, detailed, len(steps))
+    else:
+        event = dims.item("not_applicable", "no event was recorded")
+    in_state: set[str] = set()
+    for blocks in (screens or {}).values():
+        for screen in blocks:
+            for state in screen.get("states") or []:
+                in_state.update(e for e in state.get("events") or [] if isinstance(e, str))
+    wanted = [r for r in steps if r.get("app") in full and r.get("event_id")]
+    covered = sum(1 for r in wanted if r["event_id"] in in_state)
+    if wanted:
+        n = len({(a, s.get("screen")) for a, b in (screens or {}).items() for s in b})
+        coverage = dims.item(dims.ratio(covered, len(wanted)),
+                             f"{covered} of {len(wanted)} steps of fully recorded applications belong to a "
+                             f"screen state ({n} screen(s))", covered, len(wanted))  # fmt: skip
+    else:
+        coverage = dims.item("not_applicable", "no application was recorded at level full")
+    return {"channels": dims.channels_of(manifest_), "event_detail": event, "screen_coverage": coverage,
+            "network_evidence": dims.network_of(manifest_)}  # fmt: skip
+
