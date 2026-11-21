@@ -1,4 +1,4 @@
-# Recorder contract 1.4.0
+# Recorder contract 1.5.0
 
 What a workstation recorder sends to the TwinLab2 portal, and how the two sides agree on a version. The
 machine-checkable form is [`contract/twinlab2_contract/recorder-contract.schema.json`](contract/twinlab2_contract/recorder-contract.schema.json)
@@ -149,6 +149,7 @@ recorder's `preflight`:
 | `completeness.network_evidence` | yes | `complete`, `incomplete` or `none` |
 | `completeness.recovered` | yes | `true` when the recording was rebuilt from its journal after the recorder stopped unexpectedly |
 | `completeness.loss_window_seconds` | no | a number ≥ 0, or `null`: at most this many seconds before the interruption may be lost |
+| `completeness.local_exclusions` | no (1.5) | applications this PC's own exclude list kept out: `count`, `names[]` (the names of the exclude entries that matched, up to 50 of up to 80 characters), `entries` (how long the list was), `managed` (an office policy file was part of it). See *Contract 1.5* below. |
 | `preflight.checks[]` | with `preflight` | `name` (text up to 80), `ok` (boolean), optional `detail` (up to 300) |
 | `preflight.ready` | with `preflight` | whether the recorder was ready to record |
 
@@ -251,6 +252,31 @@ portal still accepts 1.0.x to 1.3.x. What changed, from the blind-rebuild proof'
 Privacy of the route rule: a lower-case single word after another route word that is not something
 the person typed is taken as the route's own name. A username slug in that place (`/projects/jdoe`,
 where `projects` is not in `PEOPLE`) would be kept; that is the risk accepted, and the list can grow.
+
+#### Contract 1.5: applications excluded on this PC
+
+1.5.0 is a minor version with no new requirement; the portal still accepts 1.0.x to 1.4.x.
+
+The recorder keeps an exclude list of its own (`twinlab2_recorder.workstation.exclude`): programs
+(`WINWORD.EXE`), window-title patterns (`* - Excel`, `Personal`) and web hosts or address prefixes
+(`mail.google.com`, `https://intranet.example.test/hr/`). It is seeded with Office, Outlook, Teams
+and password managers, edited in the recorder's window, and an office can lock entries with a
+managed policy file (`%ProgramData%\TwinLabRecorder\policy.json`). It is applied as events are
+captured, before anything is stored, and it wins over the portal's targets and `deny_keys`: an
+excluded application gets no UI Automation tree, no event or step, no presence row, no picture
+(an excluded window over a target is painted over, and a picture mostly covered is not kept) and
+no HAR or network-journal entry.
+
+What the references say about it is only `completeness.local_exclusions`:
+
+```json
+{"local_exclusions": {"count": 2, "names": ["Microsoft Excel", "Microsoft Word"], "entries": 24, "managed": false}}
+```
+
+`names` are the exclude entries' own names (or patterns), never a window title, an address or a
+time. An exclusion is not a gap: `overall` and the channels' statuses do not change for it, and the
+portal shows "N applications excluded on this PC" beside the recording's completeness instead of
+treating the missing activity as a failure.
 
 #### Event ids in the portal
 

@@ -71,6 +71,15 @@ class OfferedList:
                 break
 
 
+STATE_WORDS = {"stopped": "finished", "recovered": "recovered after a crash", "recording": "recording or unfinished"}
+
+
+def recording_row(s: dict) -> str:
+    """A row of "Recordings on this PC": `Month-end close  ·  finished  ·  not sent yet`."""
+    state = STATE_WORDS.get(str(s.get("state") or ""), str(s.get("state") or "unknown"))
+    return f"{s.get('name') or s.get('id')}  ·  {state}  ·  {'sent' if s.get('sent') else 'not sent yet'}"
+
+
 def app_choices(shown: list[dict], apps: list[dict]) -> str:
     """'keep' when the catalog is the same, 'relabel' when only names or targets changed (same
     apps in the same order: the check boxes stay, their text and targets change), else
@@ -270,6 +279,11 @@ def review_summary(box: dict, notes: list[str] | None = None, portal: str | None
     targets = session.get("targets") or []
     lines += ["", "Withheld (stays on this PC):"]
     lines.append(f"  • other applications: used {presence} time(s), not named (they are not targets)")
+    local = comp.get("local_exclusions") if isinstance(comp, dict) else None
+    if isinstance(local, dict) and local.get("count"):
+        names = ", ".join(local.get("names") or [])
+        lines.append(f"  • excluded on this PC: {local['count']} application(s), nothing recorded"
+                     + (f"; the portal sees only their names: {names}" if names else ""))  # fmt: skip
     lines.append("  • typed values, page contents, network traffic (HAR), pictures and the raw journals: "
                  "the recording folder is not sent; only these references are")  # fmt: skip
     if any(a.get("level") == "steps" for a in apps):

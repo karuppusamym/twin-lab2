@@ -8,7 +8,8 @@ contract 1.1.0.
      "channels": {"web|desktop|mainframe|network": {"status": "complete|interrupted|missing|
                   not_requested", "gaps": [{"from", "to", "reason"}], "notes": [str]}},
      "network_evidence": "complete|incomplete|none",
-     "recovered": bool, "loss_window_seconds": number | null}
+     "recovered": bool, "loss_window_seconds": number | null,
+     "local_exclusions": {"count", "names", "entries", "managed"}}  (contract 1.5, optional)
 
 A channel is requested when a target needs it (a web origin: `web` and `network`; a desktop
 executable or identity: `desktop`; a TN3270 host: `mainframe`); a session says which in
@@ -30,6 +31,11 @@ judged by the recordings present, and `loss_window_seconds` is null.
 A collector supervisor that watches the collectors (heartbeats, exits) may know more than the
 journal: whatever it reports per channel, in `session.json` `channel_status` (the same shape
 as a channel here), is merged in; the worse status wins and the gaps and notes are added.
+
+`local_exclusions` (contract 1.5) says how many applications this PC's exclude list kept out of the
+recording (twinlab2_recorder.workstation.exclude): the names of the entries that matched, never a
+title, address or time. They are not gaps: an excluded application was never meant to be recorded,
+and a channel is not less complete for it.
 """
 
 from __future__ import annotations
@@ -202,9 +208,25 @@ def manifest(folder: Path, meta: dict) -> dict:
         evidence = "incomplete"
     else:
         evidence = "none"
-    return {"overall": overall, "channels": channels, "network_evidence": evidence,
-            "recovered": bool(meta.get("recovered") or meta.get("state") == "recovered"),
-            "loss_window_seconds": capture.LOSS_WINDOW_S if journaled else None}  # fmt: skip
+    out = {"overall": overall, "channels": channels, "network_evidence": evidence,
+           "recovered": bool(meta.get("recovered") or meta.get("state") == "recovered"),
+           "loss_window_seconds": capture.LOSS_WINDOW_S if journaled else None}  # fmt: skip
+    local = local_exclusions(folder, meta)
+    if local is not None:
+        out["local_exclusions"] = local
+    return out
+
+
+def local_exclusions(folder: Path, meta: dict) -> dict | None:
+    """What this PC's exclude list kept out (exclude.summary), from the journal's `excluded`
+    rows (names only) and session.json `local_policy`."""
+    from twinlab2_recorder.workstation import exclude
+    from twinlab2_recorder.workstation.timeline import read_jsonl
+
+    policy = meta.get("local_policy") if isinstance(meta.get("local_policy"), dict) else {}
+    names = [r.get("name") for r in read_jsonl(Path(folder) / "journal.jsonl") if r.get("kind") == "excluded"]
+    entries = policy.get("entries") if isinstance(policy.get("entries"), int) else 0
+    return exclude.summary(names, entries, bool(policy.get("managed")))
 
 
 def _has_har(folder: Path) -> bool:

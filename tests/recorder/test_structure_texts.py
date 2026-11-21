@@ -179,7 +179,7 @@ class ComboOptions(unittest.TestCase):
 
 class Version(unittest.TestCase):
     def test_1_4_with_texts_is_in_the_schema(self):
-        self.assertEqual(contract.CONTRACT_VERSION, "1.4.0")
+        self.assertGreaterEqual(contract.parse(contract.CONTRACT_VERSION), (1, 4, 0))
         state = st.clean_state(dict(structure.mainframe_state(INQUIRY), events=[EVENT]))
         sid = st.state_key(state)
         doc = {"screens": {"mainframe:host": [{"screen": "ACCOUNT INQUIRY", "surface": "mainframe",

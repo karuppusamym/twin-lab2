@@ -78,13 +78,31 @@ def _portal(cfg: st.Settings, ca_bundle: str | None) -> Portal:
 def session_config(targets: list[dict], deny_keys: list[str], name: str, portal_session_id=None,
                    automation_id=None, minutes: float = 240, keep_browser_profile: bool = False,
                    cdp: str | None = None, browser: str | None = None, pictures: bool = False,
-                   robot: bool = True) -> dict:  # fmt: skip
+                   robot: bool = True, exclude: dict | None = None) -> dict:  # fmt: skip
+    """A session's configuration. `exclude`: this PC's exclude list
+    (twinlab2_recorder.workstation.exclude.Policy.as_session()); run_session adds the PC's own list
+    and the managed policy file to whatever it says, so a session never applies fewer."""
     from twinlab2_recorder.workstation.session import new_id
 
     return {"id": new_id(), "name": name, "targets": targets, "deny_keys": deny_keys,
             "portal_session_id": portal_session_id, "automation_id": automation_id,
             "minutes": minutes, "keep_browser_profile": keep_browser_profile, "cdp": cdp,
-            "browser": browser, "pictures": pictures, "robot": robot}  # fmt: skip
+            "browser": browser, "pictures": pictures, "robot": robot,
+            "exclude": exclude}  # fmt: skip
+
+
+def session_exclude(cfg: st.Settings, conf: dict) -> dict:
+    """The exclude list a session applies: what its configuration says, plus this PC's own list
+    and the managed policy file (read again now: the office's entries always apply)."""
+    from twinlab2_recorder.workstation import exclude
+
+    return exclude.merge(exclude.Policy.from_session(conf.get("exclude")), cfg.exclude_policy()).as_session()
+
+
+def _target_excluded(cfg: st.Settings, t: dict) -> bool:
+    """Does this PC's exclude list name a target (its executable or web address)?"""
+    pol = cfg.exclude_policy()
+    return bool(pol.process(t.get("exe")) or (t.get("origin") and pol.url(str(t["origin"]) + (t.get("path") or "/"))))
 
 
 def browser_profile(cfg: st.Settings) -> Path:
@@ -121,7 +139,7 @@ def preflight_checks(cfg: st.Settings, conf: dict) -> dict:
     from twinlab2_recorder.workstation.levels import Targets
     from twinlab2_recorder.workstation.preflight import preflight
 
-    targets = Targets.from_list(conf["targets"], conf.get("deny_keys"))
+    targets = Targets.from_list(conf["targets"], conf.get("deny_keys"), session_exclude(cfg, conf))
     got = preflight(targets, out=cfg.recordings, browser=conf.get("browser") or None,
                     cdp=conf.get("cdp") or None, portal_contract=contract.CONTRACT_VERSION)  # fmt: skip
     # The block goes to the portal: no local paths (they name the Windows user), within the
@@ -165,7 +183,7 @@ def run_session(cfg: st.Settings, conf: dict, script=None, parent_pid: int | Non
     if not pre.get("ready") and conf.get("override_preflight") is not True:
         raise NotReady(pre)
     recover_all(cfg.recordings)
-    targets = Targets.from_list(conf["targets"], conf.get("deny_keys"))
+    targets = Targets.from_list(conf["targets"], conf.get("deny_keys"), session_exclude(cfg, conf))
     s = Session(cfg.recordings, targets, name=conf.get("name") or "", session_id=conf["id"],
                 portal_session_id=conf.get("portal_session_id"),
                 automation_id=conf.get("automation_id"),
@@ -285,6 +303,10 @@ def describe(box: dict, notes: list[str] | None = None, targets: list[dict] | No
                 lines.append(f"           {name}  {where}  {n} steps")
     presence = sum(r["steps"] for r in box["timeline"] if r["app"] == "presence")
     lines.append(f"  other applications: used {presence} time(s), not named")
+    local = (box.get("completeness") or {}).get("local_exclusions") or {}
+    if local.get("count"):
+        lines.append(f"  excluded on this PC: {local['count']} application(s), nothing recorded"
+                     + (f" ({', '.join(local.get('names') or [])})" if local.get("names") else ""))  # fmt: skip
     rb = box.get("robot")
     if rb:
         lines.append(f"  robot log: {rb['activities']} activities; {rb['covered']} of {rb['ui_activities']} "
@@ -375,6 +397,44 @@ def _hide_own_console() -> None:
 
 
 STOP_WAIT_S = 120  # how long closing the window waits for a recording to finish
+IDLE = "Not recording. Choose a session and press Start."
+EXCLUDE_KINDS = ["Program", "Window title", "Web site"]
+EXCLUDE_KIND_OF = {"Program": "process", "Window title": "title", "Web site": "web"}
+EXCLUDE_HINTS = {
+    "Program": "A program's file name, such as WINWORD.EXE or EXCEL.EXE (* matches anything: adobe*.exe).",
+    "Window title": "Words in a window's title, such as Personal; or a whole title with *, such as * - Excel.",
+    "Web site": "A host, such as mail.google.com (its subdomains too), or an address prefix, such as "
+                "https://intranet.example.com/hr/.",
+}
+
+
+def choose_from_list(root, title: str, prompt: str, items: list[str]) -> list[str] | None:
+    """A small modal list to choose several items from; None when cancelled."""
+    import tkinter as tk
+    from tkinter import ttk
+
+    dlg = tk.Toplevel(root)
+    dlg.title(title)
+    dlg.transient(root)
+    dlg.geometry("380x360")
+    ttk.Label(dlg, text=prompt, wraplength=350, justify="left", padding=8).pack(fill="x")
+    box = tk.Listbox(dlg, selectmode="extended", exportselection=False)
+    for item in items:
+        box.insert("end", item)
+    box.pack(fill="both", expand=True, padx=8)
+    got: dict = {"items": None}
+
+    def ok():
+        got["items"] = [items[i] for i in box.curselection()]
+        dlg.destroy()
+
+    row = ttk.Frame(dlg, padding=8)
+    row.pack(fill="x")
+    ttk.Button(row, text="Exclude selected", command=ok).pack(side="right")
+    ttk.Button(row, text="Cancel", command=dlg.destroy).pack(side="right", padx=6)
+    dlg.grab_set()
+    root.wait_window(dlg)
+    return got["items"]
 
 
 def gui(cfg: st.Settings, ca_bundle: str | None) -> None:
@@ -423,7 +483,7 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
     top.bind("<Configure>", rewrap)
 
     # the recording indicator: always visible while a session records
-    indicator = tk.StringVar(value="Not recording.")
+    indicator = tk.StringVar(value=IDLE)
     rec_frame = ttk.Frame(root, padding=(10, 0))
     rec_frame.pack(fill="x")
     rec_label = tk.Label(rec_frame, textvariable=indicator, anchor="w", justify="left", font=("Segoe UI", 10))
@@ -434,76 +494,132 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
 
     body = ttk.Notebook(root)
     body.pack(fill="both", expand=True, padx=10, pady=(6, 0))
-    tabs = {name: ttk.Frame(body, padding=8) for name in ("offered", "own", "done", "uploads")}
+    tabs = {name: ttk.Frame(body, padding=8) for name in ("offered", "own", "done", "uploads", "exclude",
+                                                           "settings")}  # fmt: skip
     body.add(tabs["offered"], text="Offered sessions")
     body.add(tabs["own"], text="My own session")
     body.add(tabs["done"], text="Recordings on this PC")
     body.add(tabs["uploads"], text="Uploads")
+    body.add(tabs["exclude"], text="Excluded apps")
+    body.add(tabs["settings"], text="Settings")
 
+    offered_note = tk.StringVar()
+    ttk.Label(tabs["offered"], textvariable=offered_note, wraplength=640, justify="left").pack(fill="x")
     offered_list = tk.Listbox(tabs["offered"], height=8, exportselection=False)
-    offered_list.pack(fill="both", expand=True)
-    ttk.Label(tabs["offered"], text="Recording starts only when you press Start. The session's target "
-              "applications are recorded in full; other applications only as having been used.",
-              wraplength=640).pack(fill="x", pady=4)  # fmt: skip
-    start_offered = ttk.Button(tabs["offered"], text="Start selected session")
+    offered_list.pack(fill="both", expand=True, pady=(4, 0))
+    ttk.Label(tabs["offered"], text="Nothing is recorded until you press Start. The session's target "
+              "applications are recorded in full; other applications only as having been used, without "
+              "their names; applications on the Excluded apps tab not at all.",
+              wraplength=640, justify="left").pack(fill="x", pady=4)  # fmt: skip
+    start_offered = ttk.Button(tabs["offered"], text="Start selected session", state="disabled")
     start_offered.pack(anchor="w")
 
     tab_own = tabs["own"]
     name_var = tk.StringVar(value="My session")
     ttk.Label(tab_own, text="Session name").pack(anchor="w")
     ttk.Entry(tab_own, textvariable=name_var).pack(fill="x")
-    ttk.Label(tab_own, text="Target applications (from the portal's catalog)").pack(anchor="w", pady=(8, 0))
+    ttk.Label(tab_own, text="Target applications from the portal's catalog").pack(anchor="w", pady=(8, 0))
     own_frame = ttk.Frame(tab_own)
     own_frame.pack(fill="both", expand=True)
+    own_empty = ttk.Label(own_frame, text="None yet: the catalog appears here once this PC is paired "
+                          "with the portal.", foreground="#555555")  # fmt: skip
+    own_empty.pack(anchor="w")
     own_vars: list[list] = []  # [BooleanVar, app, Checkbutton]
-    ttk.Label(tab_own, text="Or one per line: an executable (CaseDesk.exe), a web address "
-              "(https://...), a mainframe host (tn3270://host:port):").pack(anchor="w")  # fmt: skip
+    ttk.Label(tab_own, text="Other targets, one per line: a program (CaseDesk.exe), a web address "
+              "(https://…), or a mainframe host (tn3270://host:port)").pack(anchor="w", pady=(6, 0))  # fmt: skip
     extra = tk.Text(tab_own, height=3)
     extra.pack(fill="x")
     own_buttons = ttk.Frame(tab_own)
     own_buttons.pack(fill="x", pady=4)
     start_own = ttk.Button(own_buttons, text="Start my session")
     start_own.pack(side="left")
-    propose_btn = ttk.Button(own_buttons, text="Targets from a UiPath project…")
+    propose_btn = ttk.Button(own_buttons, text="Fill in from a UiPath project…")
     propose_btn.pack(side="left", padx=8)
 
-    opts = ttk.LabelFrame(root, text="Browser", padding=6)
-    opts.pack(fill="x", padx=10, pady=(6, 0))
-    keep_var = tk.BooleanVar(value=bool(cfg.values.get("keep_browser_profile")))
-    ttk.Checkbutton(opts, text="Keep the recorder's browser profile (needed for UiPath's browser "
-                    "extension)", variable=keep_var).pack(anchor="w")  # fmt: skip
-    cdp_row = ttk.Frame(opts)
-    cdp_row.pack(fill="x")
-    ttk.Label(cdp_row, text="Or attach to a running browser at (DevTools address):").pack(side="left")
-    cdp_var = tk.StringVar(value=cfg.values.get("cdp") or "")
-    ttk.Entry(cdp_row, textvariable=cdp_var, width=28).pack(side="left", padx=4)
-    profile_btn = ttk.Button(cdp_row, text="Open the kept profile…")
-    profile_btn.pack(side="right")
+    opts = ttk.LabelFrame(tabs["settings"], text="Web applications", padding=6)
+    opts.pack(fill="x")
     more = ttk.Frame(opts)
     more.pack(fill="x")
-    ttk.Label(more, text="Browser:").pack(side="left")
+    ttk.Label(more, text="Browser the session opens:").pack(side="left")
     browser_var = tk.StringVar(value=cfg.values.get("browser") or "edge")
     ttk.Combobox(more, textvariable=browser_var, values=["edge", "chrome"], width=8,
                  state="readonly").pack(side="left", padx=4)  # fmt: skip
+    keep_var = tk.BooleanVar(value=bool(cfg.values.get("keep_browser_profile")))
+    keep_row = ttk.Frame(opts)
+    keep_row.pack(fill="x", pady=(4, 0))
+    ttk.Checkbutton(keep_row, text="Keep the browser's profile between sessions (needed for UiPath's "
+                    "browser extension)", variable=keep_var).pack(side="left")  # fmt: skip
+    profile_btn = ttk.Button(keep_row, text="Open the kept profile…")
+    profile_btn.pack(side="right")
+    cdp_row = ttk.Frame(opts)
+    cdp_row.pack(fill="x", pady=(4, 0))
+    ttk.Label(cdp_row, text="Or record a browser already running on this PC, at its DevTools address:"
+              ).pack(side="left")  # fmt: skip
+    cdp_var = tk.StringVar(value=cfg.values.get("cdp") or "")
+    ttk.Entry(cdp_row, textvariable=cdp_var, width=26).pack(side="left", padx=4)
+    ttk.Label(opts, text="For example http://127.0.0.1:9222, a robot's browser. Leave it empty and the "
+              "recorder opens a browser of its own.", foreground="#555555",
+              wraplength=640, justify="left").pack(anchor="w")  # fmt: skip
+    desk_opts = ttk.LabelFrame(tabs["settings"], text="Desktop applications", padding=6)
+    desk_opts.pack(fill="x", pady=(8, 0))
     pictures_var = tk.BooleanVar(value=bool(cfg.values.get("pictures")))
-    ttk.Checkbutton(more, text="Pictures of desktop windows (uses much memory on long runs)",
-                    variable=pictures_var).pack(side="left", padx=8)  # fmt: skip
+    ttk.Checkbutton(desk_opts, text="Take pictures of desktop windows (typed values are painted over; "
+                    "uses more memory in long sessions)", variable=pictures_var).pack(anchor="w")  # fmt: skip
+    ttk.Label(tabs["settings"], text="These settings apply to the next session you start.",
+              foreground="#555555").pack(anchor="w", pady=(8, 0))  # fmt: skip
+
+    # -- the exclude list (twinlab2_recorder.workstation.exclude) ------------------------------------
+    tab_ex = tabs["exclude"]
+    ttk.Label(tab_ex, text="Nothing is recorded from these applications on this PC: no steps, no "
+              "pictures, no network traffic, not even that they were used. A recording only says how "
+              "many were excluded, by the names below.", wraplength=640, justify="left").pack(fill="x")  # fmt: skip
+    ex_note = tk.StringVar()
+    ttk.Label(tab_ex, textvariable=ex_note, wraplength=640, justify="left",
+              foreground="#555555").pack(fill="x", pady=(2, 4))  # fmt: skip
+    ex_table = ttk.Treeview(tab_ex, columns=("kind", "pattern", "name", "source"), show="headings", height=7)
+    for col, text, width in (("kind", "Kind", 100), ("pattern", "Matches", 220), ("name", "Name", 170),
+                             ("source", "From", 150)):  # fmt: skip
+        ex_table.heading(col, text=text)
+        ex_table.column(col, width=width, stretch=col == "pattern")
+    ex_table.pack(fill="both", expand=True)
+    ex_add_row = ttk.Frame(tab_ex)
+    ex_add_row.pack(fill="x", pady=(6, 0))
+    ex_kind = tk.StringVar(value=EXCLUDE_KINDS[0])
+    ex_kind_box = ttk.Combobox(ex_add_row, textvariable=ex_kind, values=EXCLUDE_KINDS, width=13, state="readonly")
+    ex_kind_box.pack(side="left")
+    ex_pattern = tk.StringVar()
+    ex_pattern_entry = ttk.Entry(ex_add_row, textvariable=ex_pattern, width=30)
+    ex_pattern_entry.pack(side="left", padx=4, fill="x", expand=True)
+    ex_add_btn = ttk.Button(ex_add_row, text="Add")
+    ex_add_btn.pack(side="left")
+    ex_hint = tk.StringVar(value=EXCLUDE_HINTS[EXCLUDE_KINDS[0]])
+    ttk.Label(tab_ex, textvariable=ex_hint, foreground="#555555", wraplength=640, justify="left").pack(fill="x")
+    ex_buttons = ttk.Frame(tab_ex)
+    ex_buttons.pack(fill="x", pady=(6, 0))
+    ex_remove_btn = ttk.Button(ex_buttons, text="Remove selected", state="disabled")
+    ex_remove_btn.pack(side="left")
+    ex_pick_btn = ttk.Button(ex_buttons, text="Pick from running apps…")
+    ex_pick_btn.pack(side="left", padx=6)
+    ex_defaults_btn = ttk.Button(ex_buttons, text="Restore defaults")
+    ex_defaults_btn.pack(side="left")
 
     tab_done = tabs["done"]
+    done_note = tk.StringVar()
+    ttk.Label(tab_done, textvariable=done_note, wraplength=640, justify="left").pack(fill="x")
     done_list = tk.Listbox(tab_done, height=6, exportselection=False)
     done_list.pack(fill="both", expand=True)
     review = tk.Text(tab_done, height=12, wrap="word")
     review.pack(fill="both", expand=True, pady=4)
     row = ttk.Frame(tab_done)
     row.pack(fill="x")
-    send_btn = ttk.Button(row, text="Send references to the portal")
+    send_btn = ttk.Button(row, text="Send summary to the portal", state="disabled")
     send_btn.pack(side="left")
-    details_btn = ttk.Button(row, text="Details (JSON)")
+    details_btn = ttk.Button(row, text="Show what is sent (JSON)", state="disabled")
     details_btn.pack(side="left", padx=6)
-    upload_btn = ttk.Button(row, text="Upload the recording…")
+    upload_btn = ttk.Button(row, text="Upload the recording…", state="disabled")
     upload_btn.pack(side="left")
-    ttk.Label(tab_done, text="Sending gives the portal only the references summarised above; the "
-              "recording stays on this PC unless you upload it.", wraplength=640).pack(fill="x")  # fmt: skip
+    ttk.Label(tab_done, text="Sending gives the portal only the summary above; the recording itself stays "
+              "on this PC unless you upload it.", wraplength=640, justify="left").pack(fill="x")  # fmt: skip
 
     tab_up = tabs["uploads"]
     uploads = ttk.Treeview(tab_up, columns=("session", "state", "progress", "detail"), show="headings", height=8)
@@ -514,9 +630,9 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
     uploads.pack(fill="both", expand=True)
     up_row = ttk.Frame(tab_up)
     up_row.pack(fill="x", pady=4)
-    retry_btn = ttk.Button(up_row, text="Retry selected")
+    retry_btn = ttk.Button(up_row, text="Retry selected", state="disabled")
     retry_btn.pack(side="left")
-    upload_now_btn = ttk.Button(up_row, text="Try all now")
+    upload_now_btn = ttk.Button(up_row, text="Retry all now")
     upload_now_btn.pack(side="left", padx=6)
     upload_note = tk.StringVar(value="Uploads continue in the background and resume after a restart.")
     ttk.Label(up_row, textvariable=upload_note, wraplength=440).pack(side="left", padx=8)
@@ -537,11 +653,47 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
 
     root.after(50, pump)
 
+    def paired() -> bool:
+        return bool(cfg.values.get("portal") and cfg.values.get("token"))
+
     def refresh_status():
-        if cfg.values.get("portal") and cfg.values.get("token"):
+        if paired():
             status.set(f"Paired as {cfg.values.get('machine')} with {cfg.values.get('portal')}")
+            pair_btn.configure(text="Pair again…")
         else:
-            status.set("Not paired: pair with the portal to receive sessions and send references.")
+            status.set("Not paired: pair with the portal to receive sessions and send what you record.")
+            pair_btn.configure(text="Pair with portal…")
+        refresh_offered_note()
+        refresh_buttons()
+
+    def refresh_offered_note():
+        if not paired():
+            offered_note.set("Pair with the portal (top right) to see the sessions it offers this PC. You "
+                             "can still record your own session.")  # fmt: skip
+        elif offered_list.size() == 0:
+            offered_note.set("The portal offers no session to this PC right now. It is asked again every "
+                             "15 to 20 seconds.")  # fmt: skip
+        else:
+            offered_note.set("Choose a session, then press Start.")
+
+    def refresh_buttons(_event=None):
+        """Enable what can be done now: a selection, a pairing, no recording running."""
+        idle = state["proc"] is None and not state.get("checking") and not state["closing"]
+        start_offered.configure(state="normal" if idle and offered_list.curselection() else "disabled")
+        start_own.configure(state="normal" if idle else "disabled")
+        s = selected_done()
+        has_box = s is not None and state.get("box") is not None
+        busy = state.get("sending") or state["closing"]
+        send_btn.configure(state="normal" if has_box and paired() and not busy else "disabled")
+        details_btn.configure(state="normal" if has_box else "disabled")
+        upload_btn.configure(state="normal" if s is not None and paired() and not state["closing"] else "disabled")
+        retry_btn.configure(state="normal" if uploads.selection() else "disabled")
+        if not paired():
+            done_note.set("Not paired: you can review recordings here; pair with the portal to send them.")
+        elif not state.get("done"):
+            done_note.set("No recordings on this PC yet.")
+        else:
+            done_note.set("Choose a recording to see what sending it would give the portal.")
 
     def refresh_done():
         keep = None
@@ -551,9 +703,10 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
         done_list.delete(0, "end")
         state["done"] = sessions_list(cfg)
         for i, s in enumerate(state["done"]):
-            done_list.insert("end", f"{s['name']}  ·  {s['state']}  ·  {'sent' if s['sent'] else 'not sent'}")
+            done_list.insert("end", ui.recording_row(s))
             if s["id"] == keep:
                 done_list.selection_set(i)
+        refresh_buttons()
 
     def selected_done() -> dict | None:
         sel = done_list.curselection()
@@ -572,8 +725,9 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
                                                    cfg.values.get("machine")))  # fmt: skip
             if state["details"]:
                 review.insert("end", "\n\nDetails: the references as sent (JSON)\n" + json.dumps(box, indent=1))
-        details_btn.configure(text="Hide details" if state["details"] else "Details (JSON)")
+        details_btn.configure(text="Hide what is sent" if state["details"] else "Show what is sent (JSON)")
         review.configure(state="disabled")
+        refresh_buttons()
 
     def show_done(_event=None):
         s = selected_done()
@@ -620,6 +774,8 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
         refresh_status()
         state["deny"] = offered["deny_keys"]
         offered_model.sync(offered_list, offered["sessions"])
+        refresh_offered_note()
+        refresh_buttons()
         new = apps["apps"]
         how = ui.app_choices([a for _, a, _ in own_vars], new)
         if how == "relabel":
@@ -629,13 +785,19 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
         elif how == "rebuild":
             ticked = {a["app_id"] for var, a, _ in own_vars if var.get()}
             for child in own_frame.winfo_children():
-                child.destroy()
+                if child is not own_empty:
+                    child.destroy()
             own_vars.clear()
             for a in new:
                 var = tk.BooleanVar(value=a["app_id"] in ticked)
                 box = ttk.Checkbutton(own_frame, text=a["name"], variable=var)
                 box.pack(anchor="w")
                 own_vars.append([var, a, box])
+        if own_vars:
+            own_empty.pack_forget()
+        else:
+            own_empty.configure(text="The portal's catalog has no application yet.")
+            own_empty.pack(anchor="w")
 
     # -- recording -----------------------------------------------------------------------------------
 
@@ -647,11 +809,14 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
                           pictures=pictures_var.get())  # fmt: skip
         cfg.save()
         return {"keep_browser_profile": keep_var.get(), "cdp": cdp or None,
-                "browser": browser_var.get(), "pictures": pictures_var.get()}  # fmt: skip
+                "browser": browser_var.get(), "pictures": pictures_var.get(),
+                "exclude": cfg.exclude_policy().as_session()}  # fmt: skip
 
     def set_start_buttons(enabled: bool):
-        for b in (start_offered, start_own):
-            b.configure(state="normal" if enabled and not state["closing"] else "disabled")
+        refresh_buttons()
+        if not enabled:
+            for b in (start_offered, start_own):
+                b.configure(state="disabled")
 
     def start(conf):
         """Preflight first (in a worker thread: a check may wait a few seconds), then record."""
@@ -679,6 +844,7 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
         state["checking"] = False
         if state["closing"]:
             return
+        refresh_buttons()
         if error:
             indicator.set("Not recording: the checks could not run.")
             set_start_buttons(True)
@@ -689,9 +855,10 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
             failed = "\n".join("• " + f for f in failed_checks(block))
             indicator.set("Not ready:\n" + failed)
             if not messagebox.askyesno("TwinLab Recorder — not ready",
-                                       f"These checks failed:\n\n{failed}\n\nFix them and press Start "
-                                       "again. Or record anyway? The recording will say it started with "
-                                       "these checks failed.", icon="warning", default="no"):  # fmt: skip
+                                       f"These checks failed:\n\n{failed}\n\nRecord anyway? The recording "
+                                       "will say that it started with these checks failed. Answer No to fix "
+                                       "them first, then press Start again.", icon="warning", default="no"):  # fmt: skip
+                indicator.set("Not recording: fix the failed checks, then press Start again.\n" + failed)
                 set_start_buttons(True)
                 return
             conf["override_preflight"] = True
@@ -761,7 +928,7 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
             messagebox.showerror("TwinLab Recorder", f"The recording ended with an error. The log is "
                                  f"{state.get('log')}")  # fmt: skip
         else:
-            indicator.set("Recording saved on this PC. Review it before sending.")
+            indicator.set("Not recording. The last recording is saved on this PC: review it before you send it.")
         set_start_buttons(True)
         refresh_done()
         body.select(tab_done)
@@ -783,7 +950,7 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
     def on_start_offered():
         s = offered_model.selected(offered_list)
         if s is None:
-            messagebox.showinfo("TwinLab Recorder", "Choose a session first.")
+            messagebox.showinfo("TwinLab Recorder", "Choose a session in the list first.")
             return
         start(session_config(s["targets"], state["deny"], s["name"], s["id"], s["automation_id"]))
 
@@ -798,7 +965,8 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
             elif line.lower().startswith(("tn3270://", "tn3270s://")):
                 targets.append({"tn3270": line})
         if not targets:
-            messagebox.showinfo("TwinLab Recorder", "Choose at least one target application.")
+            messagebox.showinfo("TwinLab Recorder", "Tick at least one application from the catalog, or type "
+                                "one in the box below it.")
             return
         start(session_config(targets, state["deny"], name_var.get().strip() or "My session"))
 
@@ -808,7 +976,7 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
         s = selected_done()
         if s is None or state.get("sending"):
             return
-        if not messagebox.askyesno("TwinLab Recorder", f"Send the references summarised here to "
+        if not messagebox.askyesno("TwinLab Recorder", f"Send the summary shown here to "
                                    f"{cfg.values.get('portal') or 'the portal'}? The recording itself stays "
                                    "on this PC."):  # fmt: skip
             return
@@ -819,13 +987,13 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
         def sent(result):
             state["sending"] = False
             send_btn.configure(state="normal")
-            messagebox.showinfo("TwinLab Recorder", f"Sent. The portal mapped it as {result.get('recording_id')}.")
+            messagebox.showinfo("TwinLab Recorder", f"Sent. It is recording {result.get('recording_id')} on the portal.")
             refresh_done()
 
         def not_sent(reason):
             state["sending"] = False
             send_btn.configure(state="normal")
-            messagebox.showerror("TwinLab Recorder", f"The references were not sent: {reason}")
+            messagebox.showerror("TwinLab Recorder", f"Not sent: {reason}")
 
         jobs.run("send", lambda _r: send(cfg, session_id, ca_bundle), state="sending",
                  label=f"references of {s['name']}", retries=3, on_done=sent, on_failed=not_sent)  # fmt: skip
@@ -955,6 +1123,88 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
                             + ("\n\n" + "\n".join(got["notes"]) if got["notes"] else "")
                             + "\n\nCheck them before you start.")  # fmt: skip
 
+    # -- the exclude list -------------------------------------------------------------------------------
+
+    def refresh_exclude():
+        from twinlab2_recorder.workstation import exclude
+
+        pol = cfg.exclude_policy()
+        state["exclude_rows"] = exclude.rows(pol)
+        ex_table.delete(*ex_table.get_children())
+        for i, r in enumerate(state["exclude_rows"]):
+            ex_table.insert("", "end", iid=str(i), values=(r["kind"], r["pattern"], r["name"], r["source"]))
+        can_edit = pol.allow_user_changes
+        for wd in (ex_add_btn, ex_pick_btn, ex_defaults_btn, ex_pattern_entry):
+            wd.configure(state="normal" if can_edit else "disabled")
+        ex_kind_box.configure(state="readonly" if can_edit else "disabled")
+        locked = sum(1 for r in state["exclude_rows"] if r["rule"].locked)
+        if not can_edit:
+            ex_note.set("Your office manages this list on this PC: it cannot be changed here.")
+        elif locked:
+            ex_note.set(f"{locked} entr{'y is' if locked == 1 else 'ies are'} set by your office's policy and "
+                        "cannot be removed here. The rest are yours to change.")  # fmt: skip
+        elif not state["exclude_rows"]:
+            ex_note.set("The list is empty: every application may be recorded as a session's target or "
+                        "as having been used.")  # fmt: skip
+        else:
+            ex_note.set(f"{len(state['exclude_rows'])} entries. Changes apply to the next session you start.")
+        exclude_selection()
+
+    def exclude_selection(_event=None):
+        rows = [state["exclude_rows"][int(i)] for i in ex_table.selection() if int(i) < len(state["exclude_rows"])]
+        ex_remove_btn.configure(state="normal" if rows and not any(r["locked"] for r in rows) else "disabled")
+
+    def own_rules():
+        return [r["rule"] for r in state["exclude_rows"] if not r["rule"].locked]
+
+    def exclude_add(rule=None):
+        from twinlab2_recorder.workstation import exclude
+
+        if rule is None:
+            text = ex_pattern.get().strip()
+            if not text:
+                messagebox.showinfo("TwinLab Recorder", "Type a program, a window title or a web site to exclude.")
+                return
+            rule = exclude.clean_rule({"kind": EXCLUDE_KIND_OF[ex_kind.get()], "pattern": text})
+            if rule is None:
+                messagebox.showerror("TwinLab Recorder", "That entry would exclude every application: name one.")
+                return
+        if any(r["rule"].key() == rule.key() for r in state["exclude_rows"]):
+            ex_pattern.set("")
+            return
+        cfg.set_exclude_rules(own_rules() + [rule])
+        ex_pattern.set("")
+        refresh_exclude()
+
+    def exclude_remove():
+        drop = {int(i) for i in ex_table.selection()}
+        keep = [r["rule"] for i, r in enumerate(state["exclude_rows"]) if i not in drop and not r["rule"].locked]
+        cfg.set_exclude_rules(keep)
+        refresh_exclude()
+
+    def exclude_defaults():
+        from twinlab2_recorder.workstation import exclude
+
+        cfg.set_exclude_rules(exclude.restore_defaults(own_rules()))
+        refresh_exclude()
+
+    def exclude_pick():
+        from twinlab2_recorder.workstation import exclude
+
+        names = [n for n in exclude.running_programs()
+                 if not any(r["rule"].matches_process(n) for r in state["exclude_rows"])]  # fmt: skip
+        if not names:
+            messagebox.showinfo("TwinLab Recorder", "Every program with a window open now is already excluded, "
+                                "or none is open.")  # fmt: skip
+            return
+        chosen = choose_from_list(root, "Exclude running apps", "Programs with a window open now. Choose the "
+                                  "ones to exclude:", names)  # fmt: skip
+        for name in chosen or []:
+            exclude_add(exclude.clean_rule({"kind": "process", "pattern": name}))
+
+    def exclude_kind_changed(_event=None):
+        ex_hint.set(EXCLUDE_HINTS[ex_kind.get()])
+
     # -- closing ------------------------------------------------------------------------------------
 
     def destroy():
@@ -983,6 +1233,7 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
         set_start_buttons(False)
         for b in (pair_btn, send_btn, upload_btn):
             b.configure(state="disabled")
+        activity.set("Finishing the recording before the window closes…")
 
         def finished(code):
             recorded(code if code is not None else -1)
@@ -1007,6 +1258,16 @@ def build_window(cfg: st.Settings, ca_bundle: str | None, root) -> SimpleNamespa
     retry_btn.configure(command=on_retry)
     upload_now_btn.configure(command=lambda: upload_worker.kick(force=True))
     done_list.bind("<<ListboxSelect>>", show_done)
+    offered_list.bind("<<ListboxSelect>>", refresh_buttons)
+    uploads.bind("<<TreeviewSelect>>", refresh_buttons)
+    ex_table.bind("<<TreeviewSelect>>", exclude_selection)
+    ex_kind_box.bind("<<ComboboxSelected>>", exclude_kind_changed)
+    ex_pattern_entry.bind("<Return>", lambda _e: exclude_add())
+    ex_add_btn.configure(command=exclude_add)
+    ex_remove_btn.configure(command=exclude_remove)
+    ex_defaults_btn.configure(command=exclude_defaults)
+    ex_pick_btn.configure(command=exclude_pick)
+    refresh_exclude()
     refresh_status()
     refresh_done()
     upload_worker.start()
@@ -1109,7 +1370,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit("name a session (--session) or targets (--exe, --origin)")
             conf = session_config(targets, deny, name or "session", portal_id, automation_id, args.minutes,
                                   args.keep_browser_profile, args.cdp, args.browser, args.pictures,
-                                  not args.no_robot)  # fmt: skip
+                                  not args.no_robot, cfg.exclude_policy().as_session())  # fmt: skip
+            excluded = [t for t in targets if _target_excluded(cfg, t)]
+            for t in excluded:
+                print(f"note: {t.get('name') or t.get('exe') or t.get('origin')} is on this PC's exclude "
+                      "list: it will not be recorded", file=sys.stderr)  # fmt: skip
             print("checking that each channel can start...")
             conf["preflight"] = preflight_checks(cfg, conf)
             print(describe_checks(conf["preflight"]))

@@ -70,3 +70,19 @@ describe("a recording that holds several applications", () => {
     });
   });
 });
+
+describe("a recording made on a PC with an exclude list", () => {
+  it("says how many applications were excluded on that PC, by name, and does not call it a gap", async () => {
+    const detail = example<{ status: { summary: string; completeness: Record<string, unknown> | null } }>("getRecording");
+    detail.status.completeness = {
+      ...(detail.status.completeness ?? { overall: "complete", channels: {}, network_evidence: "complete" }),
+      local_exclusions: { count: 2, names: ["Microsoft Excel", "Microsoft Word"], entries: 24, managed: false },
+    };
+    server.use(on("getRecording", () => HttpResponse.json(detail as never)));
+    renderApp("/recordings/9f2c4e1a7b3d5f60", "owner");
+    const note = await screen.findByText(/Excluded on this PC:/);
+    expect(note.closest("p")?.textContent).toBe(
+      "Excluded on this PC: 2 applications (Microsoft Excel, Microsoft Word), by the person's own exclude list. "
+      + "Nothing about them was recorded, by design: this is not a gap in the recording.");
+  });
+});

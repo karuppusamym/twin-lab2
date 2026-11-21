@@ -26,6 +26,12 @@ Every event is written to the session's capture journal as it is captured
 with its permanent `event_id`; so are the web recorder's HAR entries (`capture/network.jsonl`).
 `journal.jsonl` (the session's own rows) is fsync'd the same way.
 
+The PC's exclude list (`targets.exclude`, twinlab2_recorder.workstation.exclude) is applied as
+events are captured: an excluded program, a window whose title is excluded and an excluded web
+address get no row at all, not even presence, and their windows are painted over in desktop
+pictures (`exclusion_masks`). The session keeps one `excluded` row per entry that matched, with
+the entry's name only (no time, title or address): the completeness manifest counts them.
+
 At the end `session.json` says `stopped` and twinlab2_recorder.workstation.timeline writes `session.jsonl`
 and `portal-outbox.json`, with the completeness manifest (twinlab2_recorder.workstation.completeness). A
 folder left `recording` (the program was killed) is rebuilt from its journal by `recover()`
@@ -192,6 +198,7 @@ class Session:
         self.parent_pid = parent_pid
         self._parent_check = 0.0
         self._noted: set[str] = set()
+        self.excluded_names: set[str] = set()  # exclude entries that matched (names only)
         self._cache: dict[int, tuple[dict, str]] = {}
         self._added: set[int] = set()
         self._apps_lock = threading.Lock()
@@ -226,13 +233,78 @@ class Session:
     # -- journal ---------------------------------------------------------------------------------
 
     def journal(self, row: dict) -> None:
-        row = dict(row, ts=row.get("ts") or _now())
+        if row.get("kind") == "excluded":  # the entry's name and nothing else, not even a time
+            self._journal_row({"kind": "excluded", "name": str(row.get("name") or "")})
+            return
+        self._journal_row(dict(row, ts=row.get("ts") or _now()))
+
+    def _journal_row(self, row: dict) -> None:
         if row.get("kind") in ("presence", "outside"):  # an event of the timeline: its id now
             capture.stamp(row, "web" if row["kind"] == "outside" else "desktop", _now())
         with self._lock:
             if self._journal is None:
                 return
             self._journal.write(row)
+
+    # -- the exclude list ------------------------------------------------------------------------
+
+    def excluded(self, rule) -> None:
+        """An exclude entry matched: its name is kept once (exclude.summary)."""
+        label = getattr(rule, "label", None) or str(rule or "")
+        if label and label not in self.excluded_names:
+            self.excluded_names.add(label)
+            self.journal({"kind": "excluded", "name": label})
+
+    def excluded_url(self, url: str) -> str | None:
+        """For the web recorder: the exclude entry an address falls under (its name), or None."""
+        pol = self.targets.exclude
+        rule = pol.url(url) if pol else None
+        if rule is None:
+            return None
+        self.excluded(rule)
+        return rule.label
+
+    def excluded_window(self, hwnd: int) -> str | None:
+        """For the desktop recorder: the exclude entry a window falls under, by its program (the
+        application it shows) or its title, or None. The title is read without sending the window
+        a message and is not kept."""
+        pol = self.targets.exclude
+        if not pol or not hwnd:
+            return None
+        from twinlab2_recorder.desktop import win
+
+        try:
+            pid = win.app_pid(hwnd)
+            if pid and pid != os.getpid():
+                ident, level = self._identify(pid, self._cache)
+            else:
+                ident, level = {}, None
+            rule = (pol.ident(ident) if level == lv.EXCLUDED else None) or pol.title(_title(win, hwnd))
+        except Exception:  # noqa: BLE001 - a window gone while it was read is not excluded
+            return None
+        if rule is not None:
+            self.excluded(rule)
+            return rule.label
+        return None
+
+    def exclusion_masks(self, hwnd: int) -> list[list[int]] | None:
+        """Where excluded windows cover a picture of `hwnd`: window-relative rectangles of the
+        excluded windows above it in Z order and of any embedded in it ([]: none); None when the
+        picture must not be kept (mostly covered: exclude.MASK_LIMIT)."""
+        pol = self.targets.exclude
+        if not pol or not hwnd:
+            return []
+        from twinlab2_recorder.desktop import win
+        from twinlab2_recorder.workstation import exclude
+
+        target = _rect(win, hwnd)
+        if target is None:
+            return []
+        own = win.window_pid(hwnd)
+        others = [_rect(win, h) for h in _above(win, hwnd) + _embedded(win, hwnd, own)
+                  if self.excluded_window(h)]  # fmt: skip
+        rects, share = exclude.masks(target, [r for r in others if r])
+        return None if share > exclude.MASK_LIMIT else rects
 
     def requested_channels(self) -> list[str]:
         """The channels this session's targets need (twinlab2_recorder.workstation.completeness)."""
@@ -266,6 +338,7 @@ class Session:
                 "portal_session_id": self.portal_session_id,
                 "targets": self.targets.as_list(), "deny_keys": sorted(self.targets.deny_keys),
                 "channels": self.requested_channels(), "apps": self.apps, "notes": self.notes,
+                "local_policy": _policy_facts(self.targets.exclude),
                 **({"preflight": self.preflight} if self.preflight else {})}  # fmt: skip
 
     # -- stopping ------------------------------------------------------------------------------
@@ -303,6 +376,12 @@ class Session:
         level = lv.PRESENCE if ours else self.targets.level(ident, path)
         if ours:
             ident = dict(ident, browser=True, session_browser=True)
+        elif level == lv.EXCLUDED:
+            self.excluded(self.targets.excluded(ident))
+            target = self.targets.target_of(ident)
+            if target is not None:
+                self.note_once(f"{target.name or ident.get('exe')} is a target of this session, but "
+                               "this PC's exclude list names it: it is not recorded")  # fmt: skip
         elif self.targets.target_of(ident) is not None:
             exe = ident.get("exe")
             if level == lv.PRESENCE:
@@ -379,6 +458,8 @@ class Session:
                             added.add(pid)
                         if new:
                             self._record_process(pid, ident, level)
+                    elif level == lv.EXCLUDED or self._title_excluded(win, fg):
+                        pass  # excluded on this PC: not even that it was used
                     elif not self._session_browser(pid):
                         # Only that some other application was used; never its title.
                         row = {"kind": "presence", "exe": ident.get("exe")}
@@ -389,6 +470,13 @@ class Session:
             except Exception as exc:  # noqa: BLE001 - the watcher must outlive one bad read
                 self.note_once(f"watcher: {type(exc).__name__}")
             time.sleep(POLL_S)
+
+    def _title_excluded(self, win, hwnd: int) -> bool:
+        pol = self.targets.exclude
+        rule = pol.title(_title(win, hwnd)) if pol else None
+        if rule is not None:
+            self.excluded(rule)
+        return rule is not None
 
     def _outside(self, origin: str, ts: str) -> None:
         self.journal({"kind": "outside", "ts": ts, "denied": lv.denied_origin(origin)})
@@ -500,7 +588,8 @@ class Session:
             self.failed |= {"web", "network"}
 
     def _web_journals(self) -> dict:
-        return {"journal": self.capture.get("web"), "network_journal": self.capture.get("network")}
+        return {"journal": self.capture.get("web"), "network_journal": self.capture.get("network"),
+                "exclude": self.excluded_url if self.targets.exclude else None}
 
     def _web_ready(self, gone_at: str | None) -> None:
         """The web recorder listens: its channels are capturing (again, after `gone_at`)."""
@@ -661,7 +750,8 @@ class Session:
 
         rec = Recorder(self.folder / "desktop", set(), session=True, stop=self.stopping,
                        max_seconds=self.max_seconds, pictures=self.pictures, admit=self.admit,
-                       unfocused_values=self.robot, journal=self.capture.get("desktop"))  # fmt: skip
+                       unfocused_values=self.robot, journal=self.capture.get("desktop"),
+                       **self.desktop_exclusions())  # fmt: skip
         for pid, level in self._pending:
             rec.add_process(pid, level)
         self._pending = []
@@ -674,6 +764,12 @@ class Session:
         except Exception:
             self.failed.add("desktop")
             raise
+
+    def desktop_exclusions(self) -> dict:
+        """The desktop recorder's hooks into the exclude list (none without one)."""
+        if not self.targets.exclude:
+            return {}
+        return {"exclude_window": self.excluded_window, "exclusion_masks": self.exclusion_masks}
 
     def _script(self, script, failure: list) -> None:
         try:
@@ -690,6 +786,10 @@ class Session:
             failure.append(exc)
         finally:
             self.stop()
+
+
+def _policy_facts(policy) -> dict:
+    return {"entries": len(policy.rules) if policy else 0, "managed": bool(policy and policy.managed)}
 
 
 def remove_profile(profile: Path, seconds: float = 60) -> bool:
@@ -717,6 +817,58 @@ def remove_profile(profile: Path, seconds: float = 60) -> bool:
             break
         time.sleep(1.0)
     return not profile.exists()
+
+
+def _title(win, hwnd: int) -> str:
+    """A window's title without sending it a message (a hung window cannot block the watcher)."""
+    import ctypes
+
+    buf = ctypes.create_unicode_buffer(512)
+    try:
+        win.user32.InternalGetWindowText(hwnd, buf, 512)
+    except (AttributeError, OSError, ctypes.ArgumentError):
+        return ""
+    return buf.value
+
+
+def _rect(win, hwnd: int) -> tuple[int, int, int, int] | None:
+    import ctypes
+    from ctypes import wintypes
+
+    r = wintypes.RECT()
+    if not hwnd or not win.user32.GetWindowRect(hwnd, ctypes.byref(r)):
+        return None
+    return (r.left, r.top, r.right - r.left, r.bottom - r.top)
+
+
+def _above(win, hwnd: int) -> list[int]:
+    """The visible top-level windows above `hwnd` in Z order (EnumWindows goes top down)."""
+    out: list[int] = []
+    found: list[bool] = []
+
+    def cb(h, _):
+        if int(h or 0) == int(hwnd):
+            found.append(True)
+            return False
+        if win.user32.IsWindowVisible(h) and not win.user32.IsIconic(h):
+            out.append(int(h))
+        return True
+
+    win.user32.EnumWindows(win.WNDENUMPROC(cb), 0)
+    return out if found else []
+
+
+def _embedded(win, hwnd: int, own: int) -> list[int]:
+    """Visible child windows of `hwnd` that belong to another process (an embedded program)."""
+    out: list[int] = []
+
+    def cb(h, _):
+        if win.user32.IsWindowVisible(h) and win.window_pid(h) not in (own, 0):
+            out.append(int(h))
+        return True
+
+    win.user32.EnumChildWindows(hwnd, win.WNDENUMPROC(cb), 0)
+    return out
 
 
 def _window_pids(win) -> set[int]:

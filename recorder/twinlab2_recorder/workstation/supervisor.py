@@ -800,6 +800,9 @@ def channel_session(ctx: ChildContext, spec: dict):
                 j.close(clean=c not in self.failed)
 
         def journal(self, row: dict) -> None:
+            if row.get("kind") == "excluded":  # its name only (Session.journal)
+                ctx.send({"t": "row", "row": {"kind": "excluded", "name": str(row.get("name") or "")}})
+                return
             row = dict(row, ts=row.get("ts") or _now())
             ctx.send({"t": "row", "row": row})
             if row.get("kind") == "browser":
@@ -821,7 +824,7 @@ def channel_session(ctx: ChildContext, spec: dict):
         def _identify(self, pid: int, cache: dict):
             fresh = pid not in cache
             ident, level = super()._identify(pid, cache)
-            if fresh and ctx.channel == "desktop":
+            if fresh and ctx.channel == "desktop" and level != lv.EXCLUDED:
                 self._accessibility(pid, ident, level)
             return ident, level
 
@@ -849,7 +852,8 @@ def channel_session(ctx: ChildContext, spec: dict):
             rec = Recorder(self.folder / "desktop", set(), session=True, stop=self.stopping,
                            max_seconds=self.max_seconds, pictures=self.pictures,
                            admit=self.admit, unfocused_values=self.robot,
-                           journal=self.capture.get("desktop"), resume=self.resume)  # fmt: skip
+                           journal=self.capture.get("desktop"), resume=self.resume,
+                           **self.desktop_exclusions())  # fmt: skip
             self.first_seq = rec.seq
             for pid, lvl in self._pending:
                 rec.add_process(pid, lvl)

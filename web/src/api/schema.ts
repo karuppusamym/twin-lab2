@@ -2712,6 +2712,18 @@ export interface components {
             channels: {
                 [key: string]: components["schemas"]["Channel"];
             };
+            local_exclusions?: components["schemas"]["LocalExclusions"];
+        };
+        /** @description Recorder contract 1.5: applications the recording PC's own exclude list kept out. Not a gap: they were never meant to be recorded. Names of the exclude entries only. */
+        LocalExclusions: {
+            /** @description How many applications were excluded. */
+            count: number;
+            /** @description The exclude entries' names (Microsoft Word), never a title or address. */
+            names: string[];
+            /** @description How many entries the PC's exclude list had. */
+            entries: number;
+            /** @description An office's managed policy file was part of the list. */
+            managed: boolean;
         };
         Preflight: {
             ready: boolean;
