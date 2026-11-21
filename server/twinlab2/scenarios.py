@@ -10,6 +10,7 @@ import json
 import re
 
 from twinlab2 import readiness_cache
+from twinlab2_contract import package
 
 # The table is created by migrations.py (baseline).
 
@@ -52,7 +53,7 @@ def event_ref(recording_id, event_id):
     return f"{recording_id}#{event_id}"
 
 
-def from_form(form, allowed_events):
+def from_form(form, allowed_events, bindings=None):
     """The scenario fields of a submitted form, or ValueError. `allowed_events` is the set of
     `recording#event_id` references of events selected for the app."""
     values = {}
@@ -70,7 +71,32 @@ def from_form(form, allowed_events):
         if value not in events:
             events.append(value)
     values["events"] = json.dumps(events)
+    if bindings is not None:
+        values["bindings"] = json.dumps(clean_bindings(bindings, events))
     return values
+
+
+def clean_bindings(raw, events):
+    """The fixture bindings of a scenario (twinlab2_contract.package), or ValueError: each one
+    binds one of the scenario's linked events to a fixture field (`field`, the name in an
+    example line) or a shared identifier of the interface contract (`identifier`)."""
+    if not isinstance(raw, list):
+        raise ValueError("“bindings” must be a list.")
+    out, seen = [], set()
+    for b in raw:
+        if not isinstance(b, dict) or not isinstance(b.get("event"), str):
+            raise ValueError("Each binding names a linked event.")
+        if b["event"] not in events:
+            raise ValueError("Bind only events linked to this scenario.")
+        if b["event"] in seen:
+            raise ValueError("Bind each event once.")
+        field = b.get("field") if isinstance(b.get("field"), str) else ""
+        ident = package.slug(b.get("identifier")) if isinstance(b.get("identifier"), str) else ""
+        if bool(field.strip()) == bool(ident):
+            raise ValueError("A binding names either a fixture field or a shared identifier.")
+        seen.add(b["event"])
+        out.append({"event": b["event"], **({"field": field.strip()[:60]} if field.strip() else {"identifier": ident})})
+    return out
 
 
 class Stale(Exception):
@@ -79,7 +105,8 @@ class Stale(Exception):
 
 def load(db, app_id):
     rows = db.execute("SELECT * FROM scenarios WHERE app_id = ? ORDER BY position, id", (app_id,)).fetchall()
-    return [dict(row, events=json.loads(row["events"])) for row in rows]
+    return [dict(row, events=json.loads(row["events"]), bindings=json.loads(row["bindings"] or "[]")
+                 if "bindings" in row.keys() else []) for row in rows]
 
 
 def save(db, app_id, values, scenario_id=None, expected_revision=None):

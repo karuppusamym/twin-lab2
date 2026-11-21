@@ -576,7 +576,8 @@ def app_evidence(app_id: int):
 
 def scenario_view(row):
     out = {key: (row.get(key) or "") for key in scenarios.FIELDS}
-    out.update(id=row["id"], revision=row["revision"], events=list(row["events"]))
+    out.update(id=row["id"], revision=row["revision"], events=list(row["events"]),
+               bindings=list(row.get("bindings") or []))
     return out
 
 
@@ -601,7 +602,7 @@ def save_scenario(app_id, body, scenario_id=None):
     data = payload(body)
     want = revisions.expected(data) if scenario_id is not None else None
     try:
-        values = scenarios.from_form(scenario_form(data), set(selected_events(app_id)))
+        values = scenarios.from_form(scenario_form(data), set(selected_events(app_id)), data.get("bindings"))
     except ValueError as error:
         fail(400, str(error))
     try:
