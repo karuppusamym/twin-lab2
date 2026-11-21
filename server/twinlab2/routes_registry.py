@@ -326,11 +326,21 @@ def agent_apps():
 # -- references -------------------------------------------------------------------------------------
 
 
+IDENTITY_FACTS = ("exe", "company", "product", "version", "toolkit")
+
+
 def app_for(item):
     """The catalog application of a recorded one: by identity key, by the target's catalog id,
     or by its executable name; else a new `discovered` one."""
     row = db().execute("SELECT app_id FROM app_identities WHERE key = ?", (item["key"],)).fetchone()
+    facts = {k: item[k] for k in IDENTITY_FACTS if k in item}
     if row is not None:
+        # An identity the owner added before anything was recorded has no facts yet: the first
+        # recording's fill them in (the toolkit the package names comes from here). Facts once
+        # known are kept.
+        if facts:
+            db().execute("UPDATE app_identities SET facts = ? WHERE key = ? AND facts IN ('', '{}')",
+                         (json.dumps(facts), item["key"]))  # fmt: skip
         return row["app_id"], False
     app_id = None
     shared_host = False
@@ -355,7 +365,6 @@ def app_for(item):
             (name, item["surface"]),
         ).fetchone()[0]
         created = True
-    facts = {k: item[k] for k in ("exe", "company", "product", "version", "toolkit") if k in item}
     db().execute("INSERT INTO app_identities(key, app_id, surface, facts) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                  (item["key"], app_id, item["surface"], json.dumps(facts)))  # fmt: skip
     return app_id, created
