@@ -239,11 +239,26 @@ class AppSetup_App(Model):
     name: str
     git_url: str
     url_match: Literal['path', 'host']
+    data_backend: Literal['', 'sqlite', 'postgresql', 'sqlserver']
     required_checks: str
     target_platform: str
     windows_check_pattern: str
     lab_url: str
     launch: str
+
+
+class DataBackend(Model):
+    """The backend the build pack names, chosen by the owner or predicted from the data model's dialect."""
+    engine: Literal['sqlite', 'postgresql', 'sqlserver']
+    source: Literal['chosen', 'predicted']
+    reason: str
+    tables: list[str]
+
+
+class AppSetup_Deployment(Model):
+    """How the demo is deployed, as its build pack describes it."""
+    kind: Literal['openshift', 'local']
+    files: list[str]
 
 
 class AppSetup(Model):
@@ -254,6 +269,13 @@ class AppSetup(Model):
     github_token_configured: bool
     default_windows_pattern: str
     releases: list[ReleaseSummary]
+    data_backends: list[Choice]
+    data_backend: DataBackend
+    deployment: AppSetup_Deployment
+
+
+class DataBackendInput(Model):
+    data_backend: Literal['', 'sqlite', 'postgresql', 'sqlserver']
 
 
 class IdentityInput(Model):
@@ -1187,6 +1209,8 @@ CompareInput.model_rebuild()
 Comparison.model_rebuild()
 Completeness.model_rebuild()
 ConnectionCheck.model_rebuild()
+DataBackend.model_rebuild()
+DataBackendInput.model_rebuild()
 Deployment.model_rebuild()
 DeploymentCheck.model_rebuild()
 DeploymentInput.model_rebuild()

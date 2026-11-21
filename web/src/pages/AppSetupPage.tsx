@@ -30,6 +30,7 @@ function SetupView({ setup }: { setup: Schemas["AppSetup"] }) {
           <GitForm appId={app.id} gitUrl={app.git_url} />
         </section>
       </div>
+      <DemoTarget setup={setup} />
       <section id="verification" aria-labelledby="verification-h">
         <h2 id="verification-h">Release verification</h2>
         <p className="muted">What a release of this application needs before it is Tested. GitHub repository:{" "}
@@ -81,6 +82,39 @@ function Identities({ setup }: { setup: Schemas["AppSetup"] }) {
           <button className="secondary" disabled={saveMatch.isPending}>Save matching</button>
         </form>
       )}
+    </section>
+  );
+}
+
+const ENGINE_LABELS: Record<string, string> = { sqlite: "SQLite", postgresql: "PostgreSQL", sqlserver: "SQL Server" };
+
+function DemoTarget({ setup }: { setup: Schemas["AppSetup"] }) {
+  const appId = setup.app.id;
+  const [backend, setBackend] = useField(setup.app.data_backend);
+  const save = useAction(async () => data(await api.PUT("/api/v1/apps/{app_id}/data-backend", {
+    params: { path: { app_id: appId } },
+    body: { data_backend: backend as Schemas["DataBackendInput"]["data_backend"] },
+  })));
+  const b = setup.data_backend;
+  return (
+    <section id="demo-target" aria-labelledby="demo-target-h">
+      <h2 id="demo-target-h">Data and deployment</h2>
+      <p>The build pack asks for <strong>{ENGINE_LABELS[b.engine]}</strong> ({b.source}): {b.reason}</p>
+      {b.tables.length > 0
+        ? <p className="muted">Tables in the data model: {b.tables.map((t) => <code key={t}>{t} </code>)}</p>
+        : <p className="muted">No data model: attach the DDL as a <em>Database</em> attachment (.sql), or the builder infers the tables from the recordings.</p>}
+      <form aria-label="Data backend" onSubmit={(e) => { e.preventDefault(); save.mutate(undefined); }}>
+        <label>Data backend
+          <select value={backend} onChange={(e) => setBackend(e.target.value as typeof backend)}>
+            {setup.data_backends.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
+        </label>
+        <ErrorText error={save.error} />
+        <button className="secondary" disabled={save.isPending}>Save data backend</button>
+      </form>
+      {setup.deployment.kind === "openshift"
+        ? <p>Deployed on OpenShift from the demo repository: the pack carries {setup.deployment.files.map((f) => <code key={f}>{f} </code>)}for the builder to commit; pods are then set up by hand with <code>oc apply</code>.</p>
+        : <p>A desktop demo: built and installed on a local machine or VM, with no OpenShift files.</p>}
     </section>
   );
 }

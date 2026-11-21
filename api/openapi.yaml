@@ -408,6 +408,31 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /api/v1/apps/{app_id}/data-backend:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    put:
+      tags: [apps]
+      operationId: setDataBackend
+      summary: The demo's data backend (SQLite, PostgreSQL, SQL Server), or empty to predict it from the data model
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DataBackendInput" }
+            examples:
+              sqlserver: { value: { data_backend: sqlserver } }
+      responses:
+        "200":
+          description: The setup after the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppSetup" }
+              examples:
+                setup: { $ref: "#/components/examples/AppSetup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /api/v1/apps/{app_id}/verification-settings:
     parameters: [{ $ref: "#/components/parameters/AppId" }]
     put:
@@ -2215,16 +2240,19 @@ components:
         surface: { type: string }
     AppSetup:
       type: object
-      required: [app, identities, platforms, github_repo, github_token_configured, default_windows_pattern, releases]
+      required: [app, identities, platforms, github_repo, github_token_configured, default_windows_pattern, releases,
+                 data_backends, data_backend, deployment]
       properties:
         app:
           type: object
-          required: [id, name, git_url, url_match, required_checks, target_platform, windows_check_pattern, lab_url, launch]
+          required: [id, name, git_url, url_match, required_checks, target_platform, windows_check_pattern, lab_url, launch,
+                     data_backend]
           properties:
             id: { type: integer }
             name: { type: string }
             git_url: { type: string }
             url_match: { type: string, enum: [path, host] }
+            data_backend: { type: string, enum: ["", sqlite, postgresql, sqlserver], description: "What the owner chose; empty: predicted" }
             required_checks: { type: string }
             target_platform: { type: string }
             windows_check_pattern: { type: string }
@@ -2236,6 +2264,29 @@ components:
         github_token_configured: { type: boolean }
         default_windows_pattern: { type: string }
         releases: { type: array, items: { $ref: "#/components/schemas/ReleaseSummary" } }
+        data_backends: { type: array, items: { $ref: "#/components/schemas/Choice" } }
+        data_backend: { $ref: "#/components/schemas/DataBackend" }
+        deployment:
+          type: object
+          description: How the demo is deployed, as its build pack describes it.
+          required: [kind, files]
+          properties:
+            kind: { type: string, enum: [openshift, local] }
+            files: { type: array, items: { type: string }, description: "The files the pack carries for it (deploy/ocp/<name>/...)" }
+    DataBackend:
+      type: object
+      description: The backend the build pack names, chosen by the owner or predicted from the data model's dialect.
+      required: [engine, source, reason, tables]
+      properties:
+        engine: { type: string, enum: [sqlite, postgresql, sqlserver] }
+        source: { type: string, enum: [chosen, predicted] }
+        reason: { type: string }
+        tables: { type: array, items: { type: string }, description: "The tables the data model's DDL creates" }
+    DataBackendInput:
+      type: object
+      required: [data_backend]
+      properties:
+        data_backend: { type: string, enum: ["", sqlite, postgresql, sqlserver] }
     IdentityInput:
       type: object
       required: [key]
@@ -3593,7 +3644,7 @@ components:
 
     AppSetup:
       value:
-        app: { id: 1, name: Billing Desk, git_url: https://github.com/example/billing-desk-demo, url_match: path, required_checks: "build\ntest (*)", target_platform: web, windows_check_pattern: "", lab_url: "", launch: Open the demo URL. }
+        app: { id: 1, name: Billing Desk, git_url: https://github.com/example/billing-desk-demo, url_match: path, required_checks: "build\ntest (*)", target_platform: web, windows_check_pattern: "", lab_url: "", launch: Open the demo URL., data_backend: "" }
         identities:
           - { key: "web:https://billing.example.test/desk", surface: web }
         platforms:
@@ -3605,6 +3656,13 @@ components:
         default_windows_pattern: "*windows*"
         releases:
           - { id: 5, version: 1.0.0, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
+        data_backends:
+          - { value: "", label: Predict from the data model }
+          - { value: sqlite, label: SQLite }
+          - { value: postgresql, label: PostgreSQL }
+          - { value: sqlserver, label: SQL Server }
+        data_backend: { engine: sqlserver, source: predicted, reason: "The data model is written for SQL Server (4 dialect markers).", tables: [dbo.Invoice, dbo.InvoiceLine] }
+        deployment: { kind: openshift, files: [deploy/ocp/billing-desk-1/README.md, deploy/ocp/billing-desk-1/openshift.yaml] }
 
     VerifyOutcome:
       value: { release_id: 5, tested: false, reasons: ["Required check build is not green."], report_sha: 2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f }

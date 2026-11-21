@@ -24,6 +24,7 @@ from starlette.datastructures import MultiDict
 from twinlab2 import api_models as m
 from twinlab2 import artifacts
 from twinlab2 import audit
+from twinlab2 import demo_target
 from twinlab2 import auth
 from twinlab2 import buildpack
 from twinlab2 import builds
@@ -363,14 +364,39 @@ def app_setup(app_id):
     return {
         "app": {key: (item[key] or "") for key in ("name", "git_url", "required_checks", "target_platform",
                                                    "windows_check_pattern", "lab_url", "launch")}
-               | {"id": item["id"], "url_match": item["url_match"] or "path"},
+               | {"id": item["id"], "url_match": item["url_match"] or "path",
+                  "data_backend": item["data_backend"] if item["data_backend"] in demo_target.ENGINES else ""},
         "identities": [{"key": r["key"], "surface": r["surface"] or ""} for r in identities(app_id)],
         "platforms": [shapes.choice(value, label) for value, label in commit_checks.PLATFORMS.items()],
         "github_repo": commit_checks.github_repo(item["git_url"]) or None,
         "github_token_configured": bool(commit_checks.GitHub().token),
         "default_windows_pattern": commit_checks.WINDOWS_PATTERN,
         "releases": [shapes.release_summary(r) for r in releases(app_id)],
+        "data_backends": [shapes.choice(value, label) for value, label in demo_target.BACKENDS.items()],
+        "data_backend": dict(demo_target.backend(db(), item),
+                             tables=demo_target.tables(text for _row, text in demo_target.ddl_texts(db(), app_id))),
+        "deployment": deployment_of(item),
     }
+
+
+def deployment_of(item):
+    """How the pack deploys the demo: OpenShift files for a web or mainframe demo, else local."""
+    if demo_target.kind(db(), item) == "desktop":
+        return {"kind": "local", "files": []}
+    name = demo_target.resource_name(item)
+    return {"kind": "openshift", "files": [f"deploy/ocp/{name}/README.md", f"deploy/ocp/{name}/openshift.yaml"]}
+
+
+@routes.put(V1 + "/apps/{app_id:int}/data-backend", require_role("owner"), response_model=m.AppSetup)
+def set_data_backend(app_id: int, body: m.DataBackendInput):
+    get_app(app_id)
+    value = payload(body).get("data_backend", "")
+    if value not in demo_target.BACKENDS:
+        fail(400, "Choose SQLite, PostgreSQL, SQL Server, or predict it from the data model.")
+    with db():
+        db().execute("UPDATE apps SET data_backend = ? WHERE id = ?", (value, app_id))
+        record("app.data_backend", "app", app_id, app_id=app_id, data_backend=value or "predicted")
+    return app_setup(app_id)
 
 
 @routes.get(V1 + "/apps/{app_id:int}/setup", require_role("owner"), response_model=m.AppSetup)
