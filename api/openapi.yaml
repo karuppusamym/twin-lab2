@@ -3814,7 +3814,7 @@ components:
           provider_detail: null
         app: { id: 1, name: Billing Desk }
         messages:
-          - { id: 31, direction: from_provider, kind: clarification, author: Claude, body: Is VAT added before or after the discount?, created_at: "2026-11-20T08:10:00+00:00", state: received, state_label: Received, error: null, reply_to: null, scenario_id: null, data: {}, decision: null }
+          - { id: 31, direction: from_provider, kind: clarification, author: Claude, body: "Is VAT added before or after the discount?", created_at: "2026-11-20T08:10:00+00:00", state: received, state_label: Received, error: null, reply_to: null, scenario_id: null, data: {}, decision: null }
           - { id: 32, direction: from_provider, kind: tool_approval, author: Claude, body: "", created_at: "2026-11-20T08:11:00+00:00", state: received, state_label: Received, error: null, reply_to: null, scenario_id: null, data: { tool: bash, input: { command: npm test } }, decision: null }
         questions: []
         outstanding: [{ id: 31, kind: clarification }]

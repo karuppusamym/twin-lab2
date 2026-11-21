@@ -168,16 +168,24 @@ def changes(old_files: dict, new_files: dict, old_manifest: dict | None, new_man
     return lines, text
 
 
+class DraftChanged(ValueError):
+    """The draft is not the one the owner approved (it changed since the preview)."""
+
+
+class Unchanged(ValueError):
+    """The draft is the latest frozen revision: nothing to freeze."""
+
+
 def freeze(db, app_id, user, approved_sha256, note, version_path):
     """Freeze the application's current draft as the next revision. The caller has checked the
     owner role; `approved_sha256` is the SHA-256 the owner approved on the preview. ValueError
     when the draft changed since, or nothing changed since the latest revision."""
     current = buildpack.draft(db, app_id, version_path)
     if (approved_sha256 or "").strip().lower() != current.sha256:
-        raise ValueError("The package changed since you previewed it: review the preview again and approve it.")
+        raise DraftChanged("The package changed since you previewed it: review the preview again and approve it.")
     previous = latest(db, app_id)
     if previous is not None and previous["sha256"] == current.sha256:
-        raise ValueError(f"Nothing changed since revision {previous['rev']}: it is still the latest package.")
+        raise Unchanged(f"Nothing changed since revision {previous['rev']}: it is still the latest package.")
     old_files, old_manifest = {}, None
     if previous is not None:
         old_files = buildpack.read(open_package(db, previous["storage_ref"]))

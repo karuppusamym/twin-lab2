@@ -58,17 +58,123 @@ def _drop():
             shutil.rmtree(state_dir(url), ignore_errors=True)
 
 
+# -- the portal under test ----------------------------------------------------------------------
+
+
+class Client:
+    """A test client of the portal (an ASGI app): FastAPI's TestClient on http://localhost from
+    127.0.0.1 (so the machine's own user `local` is signed in unless the portal needs a sign-in),
+    which sends the session's CSRF token on every /api/v1 request that changes something and
+    checks every /api/v1 response against api/openapi.yaml (tests/contract.py).
+
+    `user` is sent as X-Forwarded-User (the OAuth proxy) on every request; `as_user(name)` is
+    the same client (the same cookies) as another proxy user. Responses are httpx responses:
+    `.status_code`, `.json()`, `.content`, `.text`, `.headers`."""
+
+    def __init__(self, app, user=None, remote="127.0.0.1", _http=None):
+        from fastapi.testclient import TestClient
+
+        self.app, self.user = app, user
+        self.http = _http or TestClient(app, base_url="http://localhost", client=(remote, 50000),
+                                        follow_redirects=False)
+
+    def as_user(self, name):
+        return Client(self.app, name, _http=self.http)
+
+    @property
+    def token(self):
+        """The session's form token (the CSRF token of /api/v1)."""
+        token = getattr(self.http, "_twinlab_token", None)
+        if not token:
+            token = self.http.get("/api/v1/session", headers=self._headers()).json()["csrf_token"]
+            self.http._twinlab_token = token
+        return token
+
+    def _headers(self, extra=None):
+        headers = {"X-Forwarded-User": self.user} if self.user else {}
+        headers.update(extra or {})
+        return headers
+
+    def request(self, method, path, *, headers=None, csrf=True, **kwargs):
+        import contract
+
+        headers = self._headers(headers)
+        if csrf and method.upper() not in ("GET", "HEAD", "OPTIONS") and path.startswith("/api/v1/")                 and "X-CSRF-Token" not in headers:
+            headers["X-CSRF-Token"] = self.token
+        response = self.http.request(method, path, headers=headers, **kwargs)
+        if path == "/api/v1/session" and response.status_code == 200 and method.upper() != "DELETE":
+            self.http._twinlab_token = response.json()["csrf_token"]
+        contract.check(method, path, response.status_code, response.headers.get("content-type", ""), response.content)
+        return response
+
+    def get(self, path, **kw):
+        return self.request("GET", path, **kw)
+
+    def post(self, path, **kw):
+        return self.request("POST", path, **kw)
+
+    def put(self, path, **kw):
+        return self.request("PUT", path, **kw)
+
+    def patch(self, path, **kw):
+        return self.request("PATCH", path, **kw)
+
+    def delete(self, path, **kw):
+        return self.request("DELETE", path, **kw)
+
+
+def client(app, user=None, remote="127.0.0.1"):
+    return Client(app, user, remote)
+
+
+class Server:
+    """The portal served over HTTP (uvicorn in a thread) on 127.0.0.1, for the recorder's tests:
+    `url`, and `stop()` (also on exit of `with`)."""
+
+    def __init__(self, app):
+        import socket
+        import threading
+
+        import uvicorn
+
+        self.app = app
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 0))
+        self.port = sock.getsockname()[1]
+        self.url = f"http://127.0.0.1:{self.port}"
+        config = uvicorn.Config(app, log_level="warning", lifespan="off", proxy_headers=False)
+        self.server = uvicorn.Server(config)
+        self.thread = threading.Thread(target=self.server.run, kwargs={"sockets": [sock]}, daemon=True)
+        self.thread.start()
+        import time
+
+        for _ in range(500):
+            if self.server.started:
+                break
+            time.sleep(0.01)
+
+    def stop(self):
+        self.server.should_exit = True
+        self.thread.join(10)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.stop()
+
+
 # -- shared test steps ------------------------------------------------------------------------------
 
 
-def freeze(client, token, app_path, summary=""):
+def freeze(client, app_id, summary=""):
     """Preview the draft, approve its SHA-256 and freeze it (a draft identical to the latest
-    revision is not frozen again), then download the latest builder package."""
-    page = client.get(app_path + "/build-pack/preview")
-    if page.status_code != 200:
-        return page
-    sha = re.search(r'id="archive-sha256">([0-9a-f]{64})<', page.data.decode()).group(1)
-    response = client.post(app_path + "/packages", data={"token": token, "approve": "yes", "sha256": sha,
-                                                         "summary": summary})
-    assert response.status_code in (302, 409), response.data
-    return client.get(app_path + "/build-pack")
+    revision is not frozen again: 409 unchanged), then download the latest builder package."""
+    draft = client.get(f"/api/v1/apps/{app_id}/package-draft")
+    if draft.status_code != 200:
+        return draft
+    response = client.post(f"/api/v1/apps/{app_id}/packages",
+                           json={"approve": True, "sha256": draft.json()["sha256"], "summary": summary})
+    assert response.status_code in (201, 409), response.text
+    return client.get(f"/api/v1/apps/{app_id}/build-pack")

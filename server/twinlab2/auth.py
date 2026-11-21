@@ -19,9 +19,10 @@ every application and may read every application's non-restricted pages. An admi
 owner: to review an application's restricted evidence an admin assigns themself the owner role,
 which is written to the audit history like every other role change.
 
-Every route needs a policy. `require_role(...)` (or `public`, `signed_in`, `agent_token`) marks
-the view; `install` refuses (403) any request to an endpoint without a mark, so a route added
-later without a decision is closed rather than open.
+Every route needs a policy. `require_role(...)` (or `public`, `signed_in`, `agent_token`) is
+given when the route is added (`rest.Routes`), and runs as its FastAPI dependency; a route added
+without one answers 403 (`rest.PolicyRoute`), so a route added later without a decision is
+closed rather than open, and a test lists every route's policy.
 
 Sign-in
 -------
@@ -33,8 +34,8 @@ Sign-in
    `TWINLAB2_ADMINS` or with `python portal.py user NAME --admin`. Groups are read from
    `X-Forwarded-Groups` (comma separated); members of `TWINLAB2_ADMIN_GROUP` are admins. To
    take identity from somewhere else (a signed JWT, mTLS), replace `proxy_identity`.
-2. A session made by `/login`: a user of the local user store (`users`, password hashed with
-   PBKDF2-SHA256) signs in with their own password; with `TWINLAB2_PASSWORD` set, any other
+2. The signed session cookie made by `POST /api/v1/session` (the web app's sign-in page): a
+   user of the local user store (`users`, password hashed with PBKDF2-SHA256) signs in with their own password; with `TWINLAB2_PASSWORD` set, any other
    name signs in with that shared portal password, as before.
 3. Otherwise only this machine: the user `local`, a portal admin.
 """
@@ -42,13 +43,14 @@ Sign-in
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from functools import wraps
 import hashlib
 import hmac
 import os
 import secrets
 
-from flask import abort, current_app, g, redirect, request, session, url_for
+from fastapi import Request
+
+from twinlab2.rest import check_csrf, db, fail, form_token, g, is_api
 
 ROLES = ("viewer", "builder", "owner")
 RANK = {role: rank for rank, role in enumerate(ROLES, 1)}
@@ -191,46 +193,63 @@ def proxy_identity(req):
 
 
 def _settings() -> Settings:
-    return current_app.extensions["twinlab_auth"]["settings"]
+    return g.settings
 
 
 def _db():
-    return current_app.extensions["twinlab_auth"]["db"]()
+    return db()
+
+
+def client_host(req):
+    return req.client.host if req.client else ""
+
+
+ONLY_THIS_MACHINE = ("This portal serves only this machine: set TWINLAB2_PASSWORD, add local users, "
+                     "or run it behind the SSO proxy.")
+
+
+def resolve(req=None):
+    """(user, is_admin) of the request, or (None, the reason nobody is signed in). Never raises."""
+    req = req or g.request
+    settings, connection = _settings(), _db()
+    admin = False
+    if settings.trust_proxy:
+        user, groups = proxy_identity(req)
+        if not user:
+            return None, "Sign in through the SSO / OAuth proxy."
+        admin = bool(settings.admin_group and settings.admin_group in groups)
+    elif req.session.get("user"):
+        user = req.session["user"]
+    elif settings.password or client_host(req) not in LOCAL:
+        if settings.password or has_local_users(connection):
+            return None, "Sign in first."
+        return None, ONLY_THIS_MACHINE
+    else:
+        user, admin = LOCAL_USER, True  # the machine's own user, when the portal serves only this machine
+    if user in settings.admins:
+        admin = True
+    row = connection.execute("SELECT is_admin FROM users WHERE name = ?", (user,)).fetchone()
+    if row is not None and row[0]:
+        admin = True
+    return user, admin
 
 
 def identify():
-    """Set g.user and g.is_admin for the request, or return the response that signs in."""
-    settings, db = _settings(), _db()
-    g.is_admin = False
-    if settings.trust_proxy:
-        user, groups = proxy_identity(request)
-        if not user:
-            abort(401, "Sign in through the SSO / OAuth proxy.")
-        g.user = user
-        g.is_admin = bool(settings.admin_group and settings.admin_group in groups)
-    elif session.get("user"):
-        g.user = session["user"]
-    elif settings.password or request.remote_addr not in LOCAL:
-        if settings.password or has_local_users(db):
-            return redirect(url_for("login", next=request.path))
-        abort(403, "This portal serves only this machine: set TWINLAB2_PASSWORD, add local users, "
-                   "or run it behind the SSO proxy.")
-    else:
-        g.user = LOCAL_USER
-        g.is_admin = True  # the machine's own user, when the portal serves only this machine
-    if g.user in settings.admins:
-        g.is_admin = True
-    row = db.execute("SELECT is_admin FROM users WHERE name = ?", (g.user,)).fetchone()
-    if row is not None and row[0]:
-        g.is_admin = True
-    return None
+    """Set g.user and g.is_admin for the request, or answer 401 `signed_out` (403 when the portal
+    serves only this machine and the request comes from another)."""
+    user, admin = resolve()
+    if user is None:
+        if admin == ONLY_THIS_MACHINE:
+            fail(403, admin)
+        fail(401, admin, "signed_out")
+    g.user, g.is_admin = user, admin
 
 
 def login_user(name, password):
     """True when `name` may sign in with `password`: a local user with their own password, or
     (with TWINLAB2_PASSWORD) any other name with the shared password."""
-    settings, db = _settings(), _db()
-    row = db.execute("SELECT password_hash FROM users WHERE name = ?", (name,)).fetchone()
+    settings, connection = _settings(), _db()
+    row = connection.execute("SELECT password_hash FROM users WHERE name = ?", (name,)).fetchone()
     if row is not None and row[0]:
         return check_password(row[0], password)
     return bool(settings.password) and secrets.compare_digest(password, settings.password)
@@ -239,6 +258,13 @@ def login_user(name, password):
 def login_available():
     settings = _settings()
     return not settings.trust_proxy and (bool(settings.password) or has_local_users(_db()))
+
+
+def auth_mode():
+    """proxy (the OAuth proxy names the user), local (a sign-in form), or open (this machine)."""
+    if _settings().trust_proxy:
+        return "proxy"
+    return "local" if login_available() else "open"
 
 
 # -- policies -----------------------------------------------------------------------------------
@@ -264,72 +290,56 @@ def allowed(roles, app_id, user=None, admin=None):
 
 
 def ensure(*roles, app_id=None):
-    """Abort 403 unless the current user holds one of `roles` on `app_id`."""
+    """403 (`role`) unless the current user holds one of `roles` on `app_id`."""
     if not allowed(roles, app_id):
         names = " or ".join(r if r != ADMIN else "portal admin" for r in roles)
-        abort(403, f"This needs the {names} role" + (" on this application." if app_id is not None else "."))
+        fail(403, f"This needs the {names} role" + (" on this application." if app_id is not None else "."), "role")
 
 
 def can(*roles, app_id=None):
     return allowed(roles, app_id)
 
 
+class Policy:
+    """Who may call a route. `dependency` is the FastAPI dependency that enforces it: it signs
+    the request in (unless public or the agent's token, which the view checks), checks the
+    roles on the application(s) `resolve(path parameters)` names, then the CSRF header."""
+
+    def __init__(self, kind, roles=(), resolve=None):
+        self.kind, self.roles, self.resolve = kind, tuple(roles), resolve
+        self.mark = (kind, self.roles)
+
+        def dependency(request: Request):
+            g.request = request
+            if is_api(request.url.path):
+                form_token()
+            if self.kind == "roles":
+                identify()
+                target = self.resolve(dict(request.path_params)) if self.resolve else None
+                targets = target if isinstance(target, (list, tuple, set)) else [target]
+                for app_id in targets:
+                    ensure(*self.roles, app_id=app_id)
+            elif self.kind == "signed_in":
+                identify()
+            check_csrf(request)
+
+        self.dependency = dependency
+
+
 def require_role(*roles, resolve=app_from_args):
-    """Mark and guard a view: the user needs one of `roles` (owner, builder, viewer — ranked —
-    on the application `resolve(view kwargs)` returns, or `admin`). `resolve` may return one
-    application id, a list of them (all needed), or None (then only `admin` can pass)."""
+    """The user needs one of `roles` (owner, builder, viewer — ranked — on the application
+    `resolve(path parameters)` returns, or `admin`). `resolve` may return one application id, a
+    list of them (all needed), or None (then only `admin` can pass)."""
     for role in roles:
         if role not in RANK and role != ADMIN:
             raise ValueError(f"unknown role {role!r}")
-
-    def decorate(view):
-        @wraps(view)
-        def guarded(*args, **kwargs):
-            target = resolve(kwargs) if resolve else None
-            targets = target if isinstance(target, (list, tuple, set)) else [target]
-            for app_id in targets:
-                ensure(*roles, app_id=app_id)
-            return view(*args, **kwargs)
-
-        guarded.twinlab_policy = ("roles", roles)
-        return guarded
-
-    return decorate
+    return Policy("roles", roles, resolve)
 
 
-def _mark(kind):
-    def decorate(view):
-        view.twinlab_policy = (kind, ())
-        return view
-    return decorate
-
-
-public = _mark("public")  # no sign-in (login page, health check)
-signed_in = _mark("signed_in")  # any signed-in user; the view filters what it shows
-agent_token = _mark("agent")  # the recorder's bearer token (registry.agent_machine)
+public = Policy("public")  # no sign-in (the session endpoint, the web app's files, health check)
+signed_in = Policy("signed_in")  # any signed-in user; the view filters what it shows
+agent_token = Policy("agent")  # the recorder's bearer token (registry routes check it)
 
 
 def policy_of(view):
     return getattr(view, "twinlab_policy", None)
-
-
-def install(app, db):
-    """Sign every request in and refuse endpoints without a policy."""
-    app.extensions["twinlab_auth"] = {"settings": Settings.from_env(), "db": db}
-
-    @app.before_request
-    def authorise():
-        view = app.view_functions.get(request.endpoint)
-        if request.endpoint == "static":
-            return None
-        if view is None:
-            return None  # 404 / 405 follow
-        policy = policy_of(view)
-        if policy is None:
-            abort(403, "This page has no access policy.")
-        if policy[0] in ("public", "agent"):
-            return None
-        return identify()
-
-    app.jinja_env.globals.update(can=can, is_admin=lambda: g.get("is_admin", False),
-                                 login_available=login_available)
