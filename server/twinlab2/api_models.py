@@ -15,6 +15,9 @@ class Model(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
 
+ErrorCode = Literal['invalid_request', 'idempotency_key_mismatch', 'signed_out', 'wrong_credentials', 'forbidden', 'csrf', 'role', 'restricted', 'not_found', 'method_not_allowed', 'conflict', 'state_conflict', 'draft_changed', 'unchanged', 'incomplete_package', 'plan_changed', 'publish_locked', 'idempotency_in_progress', 'too_large', 'unsupported_media_type', 'idempotency_key_reused', 'internal', 'bad_gateway', 'unavailable', 'error']
+
+
 class Problem_ErrorsItem(Model):
     field: str
     message: str
@@ -27,7 +30,9 @@ class Problem(Model):
     status: int
     detail: str
     instance: str | None = None
-    code: str | None = None
+    code: ErrorCode | None = None
+    request_id: str | None = None
+    owners: list[str] | None = None
     errors: list[Problem_ErrorsItem] | None = None
     current: dict[str, Any] | None = None
 
@@ -744,7 +749,7 @@ class NewBuild(Model):
     start_from_build: int | None = None
     change_summary: str | None = None
     budget: float
-    request_key: str
+    request_key: str | None = None
 
 
 class BuildStarted(Model):
@@ -754,7 +759,7 @@ class BuildStarted(Model):
 
 
 class RequestKey(Model):
-    request_key: str
+    request_key: str | None = None
 
 
 class BuildMessage(Model):
@@ -794,7 +799,7 @@ class AnswerInput(Model):
     answer: str
     scope_change: bool | None = None
     reply_to: int | None = None
-    request_key: str
+    request_key: str | None = None
 
 
 class AnswerResult(Model):
@@ -805,7 +810,7 @@ class AnswerResult(Model):
 
 class ToolDecision(Model):
     decision: Literal['approve', 'deny']
-    request_key: str
+    request_key: str | None = None
 
 
 class CompareInput(Model):
@@ -886,6 +891,12 @@ class RecordingStatus(Model):
     preflight: Preflight | Any
 
 
+class RecordingSummary_AppsListItem(Model):
+    app_id: int
+    name: str
+    mode: str
+
+
 class RecordingSummary(Model):
     id: str
     name: str
@@ -893,6 +904,7 @@ class RecordingSummary(Model):
     received_at: str | None
     automation: str | None
     apps: str | None
+    apps_list: list[RecordingSummary_AppsListItem]
     status: RecordingStatus
 
 

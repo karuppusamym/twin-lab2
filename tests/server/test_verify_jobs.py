@@ -132,6 +132,17 @@ class DuplicateTest(Base):
         self.assertEqual((after["id"], after["state"]), (first["id"], "passed"))  # not run again
         self.assertEqual(len([c for c in self.twin.calls if c[0] == "replay"]), 1)
 
+    def test_the_idempotency_key_header_is_the_request_key(self):
+        release_id = self.a_release()
+        headers = {"Idempotency-Key": "verify-once"}
+        first = self.ok(self.client.post(f"{V1}/releases/{release_id}/verify", headers=headers), 202)
+        self.run_worker()
+        again = self.client.post(f"{V1}/releases/{release_id}/verify", headers=headers)
+        self.assertEqual((again.status_code, again.json()["id"], again.json()["state"]), (202, first["id"], "passed"))
+        self.assertEqual(again.headers.get("Idempotent-Replayed"), "true")
+        clash = self.client.post(f"{V1}/releases/{release_id}/verify", headers=headers, json={"request_key": "other"})
+        self.assertEqual(clash.status_code, 400)
+
     def test_a_request_while_one_is_queued_gets_that_one(self):
         release_id = self.a_release()
         first = self.ok(self.client.post(f"{V1}/releases/{release_id}/verify"), 202)

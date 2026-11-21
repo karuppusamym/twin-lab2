@@ -36,7 +36,7 @@ ACTIVE = ("queued", "running")
 FINAL = ("passed", "failed", "error")
 log = logging.getLogger("twinlab2.verifications")
 
-# The table is created by migrations.py (13: async verification).
+# The table is created by migrations.py (14: async verification).
 
 
 class Unknown(LookupError):

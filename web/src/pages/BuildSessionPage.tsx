@@ -175,7 +175,7 @@ function ToolApproval({ build, message }: { build: Schemas["BuildFull"]; message
   const tool = typeof message.data.tool === "string" ? message.data.tool : "a tool";
   const input = message.data.input;
   const decide = (decision: "approve" | "deny") => async () => data(await api.POST("/api/v1/builds/{build_id}/tool-decisions/{message_id}", {
-    params: { path: { build_id: build.id, message_id: message.id } }, body: { decision, request_key: `tool:${message.id}` },
+    params: { path: { build_id: build.id, message_id: message.id } }, body: { decision, request_key: `tool:${message.id}:${decision}` },
   }));
   return (
     <>

@@ -435,7 +435,7 @@ class TwoAppsTest(tv.VerificationWorld):
                 db.execute("INSERT INTO app_identities (key, app_id, surface) VALUES (?, ?, 'web')", (key, app_id))
                 db.execute("INSERT INTO recording_apps (recording_id, app_id, key, level, flow) VALUES (?, ?, ?, 'replicate', '[]')",
                            (self.recording_id, app_id, key))
-            brief = db.execute("SELECT revision FROM briefs ORDER BY rowid LIMIT 1").fetchone()["revision"]
+            brief = db.execute("SELECT revision FROM briefs WHERE app_id = 1 LIMIT 1").fetchone()["revision"]
             db.execute("INSERT INTO releases (app_id, version, revision, commit_sha, archive, archive_sha) "
                        "VALUES (?, '1', ?, ?, ?, 'x')", (billing, brief, tv.OTHER, b"zip"))
             rid = db.execute("SELECT id FROM releases WHERE app_id = ?", (billing,)).fetchone()["id"]

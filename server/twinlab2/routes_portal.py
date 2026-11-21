@@ -43,6 +43,7 @@ from twinlab2 import shapes
 from twinlab2 import uploads
 from twinlab2 import verification as commit_checks
 from twinlab2 import verifications
+from twinlab2 import idempotency
 from twinlab2.auth import require_role
 from twinlab2.portal import (ATTACHMENT_TYPES, RESULTS, VERSION_PATH, PublishConflict, acquire_publish,
                              brief_scenarios, deployment_label, deployment_reason, ordered, publish,
@@ -180,27 +181,23 @@ def sign_in(body: m.SignIn):
     via = auth.login_user(name, data.get("password") if isinstance(data.get("password"), str) else "") if name else None
     if via is None:
         fail(401, "Wrong name or password.", "wrong_credentials")
-    session, token = g.session, g.session.get("form_token")
+    session = g.session
     with db():
         if session.get("sid"):
             auth.revoke_session(db(), session["sid"])
         sid = auth.start_session(db(), name, via, g.settings.session_hours)
-    session.clear()
+    session.clear()  # a new form token too (session_view makes it): one read before sign-in is no use after
     session["user"], session["sid"] = name, sid
-    if token:
-        session["form_token"] = token
     return session_view()
 
 
 @routes.delete(V1 + "/session", auth.public, status_code=204)
 def sign_out():
-    session, token = g.session, g.session.get("form_token")
+    session = g.session
     if session.get("sid"):  # revoked on the server: a copy of the cookie no longer signs in
         with db():
             auth.revoke_session(db(), session["sid"])
-    session.clear()
-    if token:
-        session["form_token"] = token
+    session.clear()  # and the form token with it: GET /api/v1/session hands out a new one
     return Response(status_code=204)
 
 
@@ -287,7 +284,8 @@ def change_app(app_id, data, current=None):
         raise revisions.conflict((current or app_detail)(app_id), "this application")
 
 
-@routes.post(V1 + "/apps", auth.signed_in, response_model=m.AppRef, status_code=201)
+@routes.post(V1 + "/apps", auth.signed_in, response_model=m.AppRef, status_code=201,
+             idempotent="stored")
 def create_app_(body: m.NewApp):
     data = payload(body)
     name = text(data, "name", 200)
@@ -584,7 +582,8 @@ def list_scenarios(app_id: int):
     }
 
 
-@routes.post(V1 + "/apps/{app_id:int}/scenarios", require_role("owner"), response_model=m.Scenario, status_code=201)
+@routes.post(V1 + "/apps/{app_id:int}/scenarios", require_role("owner"), response_model=m.Scenario, status_code=201,
+             idempotent="stored")
 def create_scenario(app_id: int, body: m.ScenarioInput):
     return save_scenario(app_id, body)
 
@@ -1015,7 +1014,8 @@ def preview_pack(app_id: int, override_reason: str = ""):
             "known_gaps": json.loads(d.manifest).get("known_gaps")}
 
 
-@routes.post(V1 + "/apps/{app_id:int}/packages", require_role("owner"), response_model=m.PackageRevision, status_code=201)
+@routes.post(V1 + "/apps/{app_id:int}/packages", require_role("owner"), response_model=m.PackageRevision, status_code=201,
+             idempotent="stored")
 def freeze_package(app_id: int, body: m.FreezeInput):
     """The owner's explicit approval: freeze the previewed draft as the next revision."""
     get_app(app_id)
@@ -1316,7 +1316,7 @@ def verify_context(runner=None):
 
 
 @routes.post(V1 + "/releases/{release_id:int}/verify", require_role("owner", resolve=release_app),
-             response_model=m.Verification, status_code=202)
+             response_model=m.Verification, status_code=202, idempotent="native")
 def verify_this_release(release_id: int, body: m.VerifyInput | None = None):
     """Queue the verification of a release; 202 with the verification to follow
     (GET /api/v1/verifications/{id}). A repeated request gets the same verification."""
@@ -1324,8 +1324,9 @@ def verify_this_release(release_id: int, body: m.VerifyInput | None = None):
     data = payload(body) if body is not None else {}
     if item["state"] == "published":
         fail(400, "A published release is final: package a new version to test again.")
-    row = queue_verification("release", item["app_id"], {"targets": targets_of(data)}, data.get("request_key"),
-                             release_id=release_id, commit=item["commit_sha"])
+    row = queue_verification("release", item["app_id"], {"targets": targets_of(data)},
+                             idempotency.key_of(data.get("request_key")), release_id=release_id,
+                             commit=item["commit_sha"])
     return verification_view(verifications.get(db(), row["id"]))
 
 
@@ -1370,7 +1371,7 @@ def verify_session(build, request_key=None):
 
 
 @routes.post(V1 + "/apps/{app_id:int}/verify-commit", require_role("owner"), response_model=m.Verification,
-             status_code=202)
+             status_code=202, idempotent="native")
 def verify_build(app_id: int, body: m.VerifyCommitInput):
     """The “Verify this build” hook: a build's repository, head commit and pull request. 202
     with the verification to follow; its release is known once the worker packaged the commit."""
@@ -1380,7 +1381,7 @@ def verify_build(app_id: int, body: m.VerifyCommitInput):
     row = verify_commit_request(app_id, text(data, "repo", 200) or commit_checks.github_repo(item["git_url"]),
                                 text(data, "sha", 64), integer(data, "pr_number"), text(data, "ref", 200),
                                 session.get("build_id"), session.get("revision"), targets_of(data),
-                                data.get("request_key"))
+                                idempotency.key_of(data.get("request_key")))
     return verification_view(verifications.get(db(), row["id"]))
 
 
@@ -1444,13 +1445,14 @@ def release_openshift(release_id: int, image_digest: str = ""):
     if item["state"] != "published":
         auth.ensure("builder", app_id=item["app_id"])
     app = get_app(item["app_id"])
-    if demo_target.kind(db(), app) == "desktop":
+    surface = demo_target.kind(db(), app)
+    if surface == "desktop":
         fail(404, "A desktop demo has no OpenShift deployment.")
     git_url = app["git_url"] or (f"https://github.com/{item['repository']}.git" if item["repository"] else "")
     try:
         text_ = demo_target.release_manifest(app, demo_target.backend(db(), app)["engine"], VERSION_PATH,
                                              {"commit": item["commit_sha"], "version": item["version"],
-                                              "image_digest": image_digest.strip()}, git_url)
+                                              "image_digest": image_digest.strip()}, git_url, surface)
     except ValueError as error:
         fail(400, str(error))
     return download(text_.encode("utf-8"), "application/yaml",

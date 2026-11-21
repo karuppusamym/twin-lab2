@@ -92,7 +92,7 @@ describe("a build session's chat", () => {
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[0]).toMatchObject({ answer: "After the discount.", scope_change: false, reply_to: 31 });
-    expect(sent[1]).toEqual({ decision: "approve", request_key: "tool:32" });
+    expect(sent[1]).toEqual({ decision: "approve", request_key: "tool:32:approve" });
     // only an owner verifies a build
     expect(screen.queryByRole("button", { name: "Verify this build" })).not.toBeInTheDocument();
   });
