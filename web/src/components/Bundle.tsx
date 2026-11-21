@@ -216,7 +216,7 @@ function Contract({ appId, contract }: { appId: number; contract: Schemas["Inter
         {doc.relationships.length === 0 && <p className="muted">No producer and consumer relationship yet.</p>}
         {doc.relationships.map((r, n) => (
           <label key={n}>{name(r.producer)} → {name(r.consumer)} by {r.kind === "identifier" ? `identifier ${r.identifier}` : r.kind}
-            {r.kind === "api" && r.schema ? ` (${String((r.schema as Record<string, unknown>).method ?? "")} ${String((r.schema as Record<string, unknown>).path ?? "")})` : ""}
+            {r.kind === "api" && r.detail ? ` (${String(r.detail.method ?? "")} ${String(r.detail.path ?? "")})` : ""}
             <span className="field-hint">What {name(r.consumer)} does when {name(r.producer)} is down</span>
             <input value={r.when_down} placeholder="Shows an error, keeps the input, retries later" onChange={(e) => setRel(n, { when_down: e.target.value })} />
           </label>

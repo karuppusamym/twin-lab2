@@ -61,9 +61,9 @@ PAGES = {
     "recordings": ("Recordings", "/recordings"),
     "setup": ("Data and deployment", "/apps/{app}/setup#demo-target"),
     "git": ("Git repository", "/apps/{app}/setup#git"),
-    "interfaces": ("Interfaces", "/apps/{app}/package-preview#interfaces"),
-    "baselines": ("Visual baselines", "/apps/{app}/package-preview#baselines"),
-    "package": ("Package preview", "/apps/{app}/package-preview"),
+    "interfaces": ("Interfaces", "/apps/{app}/build-pack/preview#interfaces"),
+    "baselines": ("Visual baselines", "/apps/{app}/build-pack/preview#baselines"),
+    "package": ("Package preview", "/apps/{app}/build-pack/preview"),
 }
 
 
@@ -716,7 +716,7 @@ class _Checker:
         self.levels["interfaces.schemas"] = self.contract_level()
         out = []
         for r in rels:
-            schema = r.get("schema") or {}
+            schema = r.get("detail") or {}
             if r["kind"] == "api" and not (schema.get("method") and schema.get("path")):
                 out.append("An API relationship has no method and path.")
             if r["kind"] == "file" and not schema.get("columns"):

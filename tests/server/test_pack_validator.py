@@ -19,6 +19,7 @@ import unittest
 from zipfile import ZipFile
 
 from twinlab2 import buildpack, pack_validator, packages
+from twinlab2_contract import package
 from twinlab2.portal import VERSION_PATH
 from support import FIXTURE_GAPS
 from test_roles_audit import Base
@@ -43,8 +44,18 @@ def pack(surface, scenario, screens, attachments, target_extra=None, app_extra=N
               "data_model": {"files": ["attachments/3.sql"], "tables": ["orders"]}, "deploy": deploy}
     if surface != "desktop":
         target["version_endpoint"] = "/.twinlab/version"
+    target["twin_label"] = package.twin_label(surface, [4, 2, 1])
     target.update(target_extra or {})
-    data = {"format": 2, "app": {"id": 1, "name": "Demo", "git_url": "https://example.test/demo.git",
+    typed = next((e for e in scenario["events"] if e["action"] == "type"), None)
+    fields = package.fixture_fields(scenario["example_values"])
+    if typed and fields:
+        scenario["fixture_fields"] = fields
+        scenario["bindings"] = [{"event_id": typed["event_id"], "recording_id": REC, "field": fields[0]["field"],
+                                 "type": fields[0]["type"], "value": fields[0]["value"]}]
+    baselines = [{"screen": sc["screen"], "state": st["id"], "viewport": "1280x720", "theme": "light", "scale": "1",
+                  "path": f"baselines/{n}.png", "sha256": "0" * 64, "source": "recording"}
+                 for n, (sc, st) in enumerate(((sc, st) for sc in screens for st in sc["states"]), 1)]
+    data = {"format": 3, "visual_baselines": baselines, "app": {"id": 1, "name": "Demo", "git_url": "https://example.test/demo.git",
                                  "status": "catalog", "surface": surface, **(app_extra or {})},
             "scenarios": [scenario], "evidence": [{"recording_id": REC, "events": scenario["events"]}],
             "attachments": attachments, "target": target, "screens": screens, "unresolved_questions": []}
@@ -212,6 +223,24 @@ def set_target(key, value):
     return change
 
 
+def incompatible_binding(data, files):
+    """The bound value no longer fits its control: the control takes an email address."""
+    typed = next(e for e in first_events(data) if e["action"] == "type")
+    for sc in data["screens"]:
+        for st in sc["states"]:
+            if typed["event_id"] in st["events"]:
+                for c in st["controls"]:
+                    if typed.get("label") in (c.get("id"), c.get("name"), c.get("label")):
+                        c["type"] = "email"
+
+
+def unproduced_identifier(data, files):
+    """A step bound to a shared identifier no interface contract lists (no producer)."""
+    data["scenarios"][0]["bindings"] = [dict(b, identifier="order-number") for b in data["scenarios"][0]["bindings"]]
+    for b in data["scenarios"][0]["bindings"]:
+        b.pop("field", None)
+
+
 # per critical item: a change that removes it from a complete pack
 REMOVALS = {
     "scenario.present": lambda d, f: d.update(scenarios=[]),
@@ -233,6 +262,9 @@ REMOVALS = {
     "mainframe.aid": drop_aid_key,
     "deploy.target": drop_deploy_files,
     "deploy.version": lambda d, f: d["target"].pop("version_endpoint"),
+    "data.binding_types": incompatible_binding,
+    "interfaces.identifiers": unproduced_identifier,
+    "deploy.twin_label": lambda d, f: d["target"].pop("twin_label"),
 }
 
 
@@ -281,6 +313,8 @@ class ValidatorTest(unittest.TestCase):
     def test_important_and_nice_gaps_do_not_fail_the_pack(self):
         data, files = web_pack()
         data["attachments"] = []
+        data["visual_baselines"] = []
+        data["scenarios"][0]["bindings"] = []
         data["target"]["data_model"] = {"files": [], "tables": []}
         data["app"]["git_url"] = ""
         set_scenario(failure_cases=[], starting_conditions="", expected_result="The order is listed.")(data, files)
@@ -290,7 +324,7 @@ class ValidatorTest(unittest.TestCase):
                          {"web.api", "visuals.screens", "visuals.per_screen", "visuals.style", "data.model",
                           "deploy.repository", "scenario.failures", "scenario.starting", "scenario.messages",
                           "behaviour.invalid_input", "behaviour.empty_results", "behaviour.retries",
-                          "behaviour.duplicates", "behaviour.persistence", "behaviour.unrecorded"})
+                          "behaviour.duplicates", "behaviour.persistence", "behaviour.unrecorded", "data.bindings"})
         self.assertEqual(result["counts"]["critical"], 0)
         self.assertTrue(all(g["severity"] != "critical" for g in result["gaps"]))
         api = next(g for g in result["gaps"] if g["item"] == "web.api")
@@ -307,6 +341,7 @@ class ValidatorTest(unittest.TestCase):
     def test_scores_per_verification_dimension(self):
         data, files = web_pack()
         data["attachments"] = [a for a in data["attachments"] if a["kind"] != "Screen"]
+        data["visual_baselines"] = []
         result = pack_validator.validate(data, files)
         dims = {d["id"]: d for d in result["dimensions"]}
         self.assertEqual(list(dims), list(pack_validator.DIMENSIONS))
@@ -361,7 +396,8 @@ class ValidatorTest(unittest.TestCase):
         data["attachments"] = []
         text = "\n".join(pack_validator.markdown(pack_validator.validate(data, files)))
         self.assertIn("## Completeness", text)
-        self.assertIn("- present: Expected result of each scenario", text)
+        self.assertIn("- present (documented): Expected result of each scenario", text)
+        self.assertIn("do not count as covered", text)
         self.assertIn("- missing (important): API calls (HAR or API description).", text)
         known = {"reason": "Shown to the builder.", "gaps": [{"item": "x", "title": "Entry screen"}]}
         text = "\n".join(pack_validator.markdown(pack_validator.validate(data, files), known))

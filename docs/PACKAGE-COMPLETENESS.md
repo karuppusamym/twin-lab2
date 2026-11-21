@@ -71,7 +71,7 @@ Everything the fidelity replay (`server/twinlab2/replay/`) and the release check
 | `behaviour.duplicates` | Duplicates | all | important | behavioural | Creating the same record twice is refused, merged or allowed; the recording shows one creation. |
 | `behaviour.cancellation` | Cancellation | all | important | behavioural | The screens have Cancel or Close; whether cancelling discards, keeps a draft or asks is not recorded. |
 | `behaviour.persistence` | Persistence | all | important | behavioural | What was saved must still be there after a reload or a restart; acceptance cases can check a reload. |
-| `behaviour.unrecorded` | Failure cases or precondition rules | all | important | behavioural | Off the recorded path the builder follows the pack's defaults (a direct URL to a later page returns to the start, keys not listed do nothing); without the owner's failure cases or precondition rules the copy behaves however the builder guessed. |
+| `behaviour.unrecorded` | Failure cases or precondition rules | all | important | behavioural | Off the recorded path the builder follows the pack's defaults (a direct URL to a later page returns to the start, keys not listed do nothing); without the owner's failure cases or precondition rules the copy behaves however the builder guessed (a blind rebuild showed a form the original never shows without a lookup). |
 | `screens.structure` | Screen structure (recorder contract 1.3) | all | critical | structural | The replay compares every recorded screen's interactive elements by tag, id and classes after every step; without the structure the builder cannot know them. |
 | `screens.referenced` | Every screen the scenarios touch | all | critical | structural | Each screen a scenario's step lands on is compared with the rebuilt one; a missing screen fails that step. |
 | `screens.controls` | Controls of each screen: kind, identifier or label, order | all | critical | structural | The replay finds each step's target among the controls and counts every interactive element; a control without kind or identifier cannot be rebuilt to match. |
@@ -83,6 +83,8 @@ Everything the fidelity replay (`server/twinlab2/replay/`) and the release check
 | `navigation.transitions` | Navigation between screens | web, desktop | important | structural | The scenarios move between screens; the transitions say which action leads where. |
 | `data.examples` | Synthetic values for the steps that type or select | all | critical | behavioural | A recording keeps no typed value: the replay types the bound synthetic values, and a step that needs one without it blocks the replay. |
 | `data.shapes` | The shape of each example field | all | important | behavioural | "Field: value" lines tell the builder which field takes which format; the replay compares value formats. |
+| `data.bindings` | Each typing or selecting step bound to a fixture field | all | important | behavioural | One example line does not say which step types it: the replay types the value bound to each step, and a step without a binding is guessed or blocks the replay. |
+| `data.binding_types` | Bound values fit their controls | all | critical | behavioural | The replay types the bound value into the recorded control: a number in an email field, or an option that is not in the list, fails the step on the original as well as on the copy. |
 | `data.backend` | Data backend | all | critical | deployment | The demo creates its tables and seed data on this backend and resets to that seed. |
 | `data.model` | Data model (DDL) | all | important | deployment | Without DDL the builder infers tables from the screens, and the names will differ from the original. |
 | `access.signin` | Roles and sign-in | all | important | behavioural | The recording shows a sign-in; the builder needs which roles exist and which one each scenario starts as. |
@@ -98,9 +100,14 @@ Everything the fidelity replay (`server/twinlab2/replay/`) and the release check
 | `mainframe.protected` | Protected text positions (labels, messages, key line) | mainframe | important | structural | Where labels, output fields, the message line and the key line sit is the look of a 3270 screen; without them the builder places them and the copy looks different. |
 | `mainframe.aid` | AID keys (Enter, PF keys, Clear) | mainframe | critical | structural | A host transaction moves on an AID key; a step without it cannot be replayed. |
 | `mainframe.flow` | Transaction flow between host screens | mainframe | important | structural | Which AID key on which screen leads to which next screen is the transaction. |
+| `interfaces.identifiers` | Shared identifiers come from a producer | all | critical | behavioural | A value one application types that another produced (an order number typed in Billing) must be one the producer makes, with the same synthetic value in both packages, or the two copies never meet. |
+| `interfaces.order` | Launch and reset order | all | important | behavioural | Applications recorded together are started producers first and reset consumers first; the replay of a cross-application recording needs every peer up. |
+| `interfaces.peer_down` | What happens when a peer is down | all | important | behavioural | A consumer whose producer does not answer must fail in a known way (message, retry, queued work), not however the builder guessed. |
+| `interfaces.schemas` | API and file schemas between the applications | all | important | behavioural | An API call or a file between two applications needs its method and path, or its columns, on both sides. |
+| `deploy.twin_label` | The "AI generated Twin App" label | all | critical | deployment | Every rebuilt application shows that it is an AI generated twin, on every screen, so nobody takes it for the original; Verify refuses a release without it. |
 | `visuals.screens` | Screenshots or layout notes | all | important | visual | Structure says what is on a screen, not where; visual checks compare the copy's picture. |
-| `visuals.per_screen` | An approved screenshot of every screen (visual baseline) | all | important | visual | The visual comparison (replay/visual.py) needs a baseline per compared state; a screen without one cannot be judged on appearance. |
-| `visuals.states` | Screenshots of special states (disabled, selected, error) | all | important | visual | A disabled button, a selected row or an error message looks different; one picture per screen shows only one state. |
+| `visuals.per_screen` | An approved baseline of every screen state the scenarios reach | all | important | visual | The visual comparison (replay/visual.py) needs a baseline per compared state, at a known viewport, theme and scale; pictures of one screen say nothing about the others. |
+| `visuals.states` | Baselines of special states (disabled, selected, error) | all | important | visual | A disabled button, a selected row or an error message looks different; a baseline of another state of the same screen does not show it. |
 | `visuals.style` | Fonts, colours and spacing | all | nice | visual | Without them the copy looks generic even when its structure matches. |
 | `deploy.target` | Deployment target | all | critical | deployment | The builder commits the deployment files of the target (OpenShift, or a local install for desktop). |
 | `deploy.version` | Version endpoint | web, mainframe | critical | deployment | The release checks run only against a deployment that reports the built commit at the version endpoint. |
@@ -123,6 +130,50 @@ target, version endpoint, repository). A release's verified scope can then be st
 Each gap the validator reports also names the page that fixes it (Scenarios, Recorded flows,
 Uploaded evidence, Recordings, Data and deployment, Git repository) and the action to take there,
 and lists the scenarios, screens or events that lack the item.
+
+
+## Evidence levels (spec version 2)
+
+A present item is not the same as a proven one. Each item of the result has an evidence level,
+shown per item and counted per application, apart from the presence `score`:
+
+- **documented**: only written down (a scenario line, a keyword the check matched). The `behaviour.*`
+  items, `scenario.expected`, `data.examples` and other prose items start here;
+- **observed**: seen in the recording (screen structure, routes, transitions, the inferred interface
+  contract);
+- **owner-confirmed**: set, approved or confirmed by the owner (settings, bindings, baselines, an
+  edited interface contract, or the Confirm button on the package preview: `item_confirmations`);
+- **replay-tested**: a verification of a release built from this package revision passed the
+  dimension that exercises the item (shown on the preview, never written into the package bytes).
+
+`coverage` is the share of applicable items, weighted by severity, at observed or above:
+documented-only items never count as covered. `evidence.json` carries the levels in
+`completeness.evidence`, `coverage` and `levels`.
+
+## Package format 3
+
+`evidence.json` format 3 (twinlab2_contract.package, contract 0.3.0; format 2 stays readable) adds:
+
+- **fixture bindings** per scenario (`bindings`, `fixture_fields`): each typing or selecting step is
+  bound to one example field (`Field: value`, or `Field (email): value` with its type) or a shared
+  identifier. `data.bindings` reports unbound steps; `data.binding_types` (critical) a value the
+  recorded control cannot take (a number in an email field, an option not in the list);
+- **visual baselines** (`visual_baselines`, files `baselines/<id>.png`): one per screen state, viewport,
+  theme and scale, approved by the owner from the recorder's masked pictures or a reviewed Screen
+  attachment. `visuals.per_screen` and `visuals.states` count states, not pictures;
+- **interfaces**: the interface contract with the applications this one exchanges data with
+  (shared synthetic identifiers with their producer, relationships by identifier, API call or file
+  with their schema, launch and reset order, what a consumer does when its producer is down).
+  Inferred from the recording, editable by the owners; `interfaces.identifiers` (critical) reports
+  a value typed here that its producer never makes, or a different synthetic value. Verify checks
+  the identifiers and that each producer's verified deployment answers; peer-down behaviour and
+  schemas are reported as not checked;
+- **the "AI generated Twin App" label** (`target.twin_label`, `deploy.twin_label`, critical): web, a
+  fixed banner with `data-twin-app` and `<meta name="twin-app">`; desktop, a title suffix and a
+  status label (AutomationId `TwinAppLabel`); 3270, a protected field on a row the recorded screens
+  leave empty. Verify (`--twin-label`) requires it on every replayed screen and leaves it out of the
+  structural and visual comparisons; a web deployment whose start page lacks it, or a replayed
+  screen without it, keeps the release from becoming Tested.
 
 ## How each item is checked
 

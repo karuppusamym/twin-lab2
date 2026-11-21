@@ -3026,8 +3026,8 @@ export interface components {
             identifier?: string;
             /** @description What the consumer does when the producer is down. */
             when_down: string;
-            /** @description api: method, path, request, response; file: format, columns. */
-            schema?: {
+            /** @description The schema: api: method, path, request, response; file: format, columns. */
+            detail?: {
                 [key: string]: unknown;
             };
         };

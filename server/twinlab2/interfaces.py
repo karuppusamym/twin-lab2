@@ -164,7 +164,7 @@ def generate(db, recording_id) -> dict | None:
                 if any((origin + path).startswith(o) or origin == o.split("/", 3)[0] + "//" + o.split("/", 3)[2]
                        for o in origins if "://" in o):
                     rel = {"kind": "api", "producer": producer, "consumer": consumer, "when_down": "",
-                           "schema": {"method": method, "path": path, "request": req, "response": resp}}
+                           "detail": {"method": method, "path": path, "request": req, "response": resp}}
                     if rel not in relationships:
                         relationships.append(rel)
     for producer, _name, events in apps:
@@ -179,7 +179,7 @@ def generate(db, recording_id) -> dict | None:
                 if any(order[c] > order[event] and IMPORT.search(f"{csteps.get(c, {}).get('label') or ''}")
                        for c in cevents):
                     relationships.append({"kind": "file", "producer": producer, "consumer": consumer,
-                                          "when_down": "", "schema": {"format": "", "columns": _columns(
+                                          "when_down": "", "detail": {"format": "", "columns": _columns(
                                               db, producer, steps.get(event, {}).get("screen"))}})
     launch = _launch(apps, relationships)
     return {"version": package.INTERFACES_VERSION, "recording_id": recording_id,
@@ -257,8 +257,8 @@ def _clean(doc, recording_id):
                     "when_down": str(r.get("when_down") or "")[:1000]}
             if r.get("kind") == "identifier":
                 item["identifier"] = package.slug(r.get("identifier"))
-            if isinstance(r.get("schema"), dict):
-                item["schema"] = r["schema"]
+            if isinstance(r.get("detail"), dict):
+                item["detail"] = r["detail"]
             out["relationships"].append(item)
     problems = package.check_interfaces(out)
     if problems:
@@ -357,7 +357,7 @@ def markdown(data) -> list[str]:
         for r in c["relationships"]:
             what = {"identifier": f"identifier `{r.get('identifier')}`", "api": "API call", "file": "file"}[r["kind"]]
             line = f"- {label(r['producer'])} → {label(r['consumer'])} by {what}"
-            schema = r.get("schema") or {}
+            schema = r.get("detail") or {}
             if r["kind"] == "api":
                 line += f": `{schema.get('method')} {schema.get('path')}`"
                 if schema.get("request"):

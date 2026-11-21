@@ -749,7 +749,7 @@ class InterfaceRelationship(Model):
     consumer: int
     identifier: str | None = None
     when_down: str
-    schema: dict[str, Any] | None = None
+    detail: dict[str, Any] | None = None
 
 
 class InterfaceApp(Model):

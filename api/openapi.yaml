@@ -3971,7 +3971,7 @@ components:
         consumer: { type: integer }
         identifier: { type: string }
         when_down: { type: string, description: "What the consumer does when the producer is down." }
-        schema: { type: object, additionalProperties: true, description: "api: method, path, request, response; file: format, columns." }
+        detail: { type: object, additionalProperties: true, description: "The schema: api: method, path, request, response; file: format, columns." }
     InterfaceApp:
       type: object
       required: [id, name]
