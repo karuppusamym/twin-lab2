@@ -884,6 +884,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/BaselineList" }
+              examples:
+                baselines: { $ref: "#/components/examples/BaselineList" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
     post:
@@ -903,6 +905,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Baseline" }
+              examples:
+                baseline: { $ref: "#/components/examples/Baseline" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -958,6 +962,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/InterfaceList" }
+              examples:
+                interfaces: { $ref: "#/components/examples/InterfaceList" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -982,6 +988,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/InterfaceContract" }
+              examples:
+                interfaceContract: { $ref: "#/components/examples/InterfaceContract" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -1016,6 +1024,8 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Confirmation" }
+              examples:
+                confirmation: { $ref: "#/components/examples/Confirmation" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
     delete:
@@ -5531,6 +5541,65 @@ components:
         href: { type: string }
         next: { type: string }
   examples:
+    Baseline:
+      value: { id: 3, screen: /invoices, state: 101e08fe53483e97, viewport: 1280x720, theme: light, scale: "1",
+               source: recording, attachment_id: null, recording_id: "9f2c4e1a7b3d5f60",
+               event_id: "0b1c2d3e-0000-4000-8000-000000000001",
+               sha256: "5e1b2b8f0d4c6a7e9f30112233445566778899aabbccddeeff00112233445566",
+               approved_by: alice, approved_at: "2026-11-20T10:00:00+00:00" }
+    Confirmation:
+      value: { item: scenario.expected, note: "Checked with the billing team." }
+    InterfaceContract:
+      value:
+        recording_id: "9f2c4e1a7b3d5f60"
+        edited: true
+        revision: 1
+        edited_by: alice
+        edited_at: "2026-11-20T10:00:00+00:00"
+        doc:
+          version: 1
+          recording_id: "9f2c4e1a7b3d5f60"
+          apps: [{ id: 1, name: Billing }, { id: 8, name: Orders }]
+          identifiers:
+            - { name: order-number, field: Order number, type: identifier, value: "1001", producer: 8, consumers: [1] }
+          relationships:
+            - { kind: identifier, identifier: order-number, producer: 8, consumer: 1, when_down: "Billing shows 'Orders is not available' and keeps the draft." }
+          launch_order: [8, 1]
+          reset_order: [1, 8]
+        generated: null
+    BaselineList:
+      value:
+        needed:
+          - { screen: /invoices, state: 101e08fe53483e97, number: 1, events: ["0b1c2d3e-0000-4000-8000-000000000001"] }
+          - { screen: "/invoices/{id}", state: 9e69029dfe7e9a78, number: 1, events: ["0b1c2d3e-0000-4000-8000-000000000002"] }
+        approved:
+          - { id: 3, screen: /invoices, state: 101e08fe53483e97, viewport: 1280x720, theme: light, scale: "1",
+              source: recording, attachment_id: null, recording_id: "9f2c4e1a7b3d5f60",
+              event_id: "0b1c2d3e-0000-4000-8000-000000000001",
+              sha256: "5e1b2b8f0d4c6a7e9f30112233445566778899aabbccddeeff00112233445566",
+              approved_by: alice, approved_at: "2026-11-20T10:00:00+00:00" }
+        candidates:
+          - { source: recording, recording_id: "9f2c4e1a7b3d5f60", event_id: "0b1c2d3e-0000-4000-8000-000000000002",
+              screen: "/invoices/{id}", state: 9e69029dfe7e9a78, label: "Recorder picture after event 0b1c2d3e… (2.png)" }
+    InterfaceList:
+      value:
+        contracts:
+          - recording_id: "9f2c4e1a7b3d5f60"
+            edited: false
+            revision: 0
+            edited_by: null
+            edited_at: null
+            doc:
+              version: 1
+              recording_id: "9f2c4e1a7b3d5f60"
+              apps: [{ id: 1, name: Billing }, { id: 8, name: Orders }]
+              identifiers:
+                - { name: order-number, field: Order number, type: identifier, value: "1001", producer: 8, consumers: [1] }
+              relationships:
+                - { kind: identifier, identifier: order-number, producer: 8, consumer: 1, when_down: "" }
+              launch_order: [8, 1]
+              reset_order: [1, 8]
+            generated: null
     Operations:
       value:
         storage: { backend: local, location: /artifacts, versioning: every put is a new version file, direct_upload: false, encryption: "envelope (AES-256-GCM, key 3f2a9c0d1e4b5a6c)" }

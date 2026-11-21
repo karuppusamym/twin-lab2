@@ -22,19 +22,77 @@ const GUIDED: Key[] = ["starting", "actions", "expected", "failures"];
 const CHOICES_PAGE = 50;
 
 function blank(): Schemas["ScenarioInput"] {
-  return { name: "", starting: "", actions: "", expected: "", failures: "", examples: "", questions: "", notes: "", events: [] };
+  return { name: "", starting: "", actions: "", expected: "", failures: "", examples: "", questions: "", notes: "", events: [], bindings: [] };
 }
 
 /** The editable fields of a saved scenario (what a draft compares). */
 function fieldsOf(s: Schemas["Scenario"]): Schemas["ScenarioInput"] {
   return { name: s.name, starting: s.starting, actions: s.actions, expected: s.expected, failures: s.failures,
-           examples: s.examples, questions: s.questions, notes: s.notes, events: [...(s.events ?? [])] };
+           examples: s.examples, questions: s.questions, notes: s.notes, events: [...(s.events ?? [])],
+           bindings: [...(s.bindings ?? [])] };
 }
 
 /** What is saved: the lists without their blank lines. */
 function cleaned(v: Schemas["ScenarioInput"]): Schemas["ScenarioInput"] {
   const lines = (text: string | undefined) => (text ?? "").split("\n").map((l) => l.trimEnd()).filter((l) => l.trim()).join("\n");
-  return { ...v, name: v.name.trim(), actions: lines(v.actions), failures: lines(v.failures) };
+  const events = new Set(v.events ?? []);
+  return { ...v, name: v.name.trim(), actions: lines(v.actions), failures: lines(v.failures),
+           bindings: (v.bindings ?? []).filter((b) => events.has(b.event)) };
+}
+
+const TYPING = new Set(["type", "input", "fill", "select", "change"]);
+
+/** The fixture fields of the example lines: `Field: value` or `Field (type): value`, several per line with "; ". */
+export function fixtureFields(examples: string): string[] {
+  const out: string[] = [];
+  for (const line of examples.split("\n")) {
+    for (const part of line.split(/;\s+/)) {
+      const m = /^\s*([^:=()]{1,60}?)\s*(?:\([a-z]+\))?\s*[:=]\s*\S/.exec(part);
+      const name = m?.[1]?.trim();
+      if (name && !out.some((f) => f.toLowerCase() === name.toLowerCase())) out.push(name);
+    }
+  }
+  return out;
+}
+
+/** Each linked step that types or selects, bound to one example field or a shared identifier. */
+function Bindings({ list, values, onChange, of }: {
+  list: Schemas["ScenarioList"]; values: Schemas["ScenarioInput"]; onChange: (b: Schemas["Binding"][]) => void; of: string;
+}) {
+  const linked = new Set(values.events ?? []);
+  const steps = list.event_choices.filter((c) => linked.has(c.ref) && TYPING.has(c.action));
+  const fields = fixtureFields(values.examples ?? "");
+  const identifiers = list.identifiers ?? [];
+  const bindings = values.bindings ?? [];
+  if (!steps.length) return null;
+  const current = (ref: string) => {
+    const b = bindings.find((x) => x.event === ref);
+    return b?.field ? `field:${b.field}` : b?.identifier ? `id:${b.identifier}` : "";
+  };
+  const set = (ref: string, value: string) => {
+    const rest = bindings.filter((b) => b.event !== ref);
+    if (value.startsWith("field:")) rest.push({ event: ref, field: value.slice(6) });
+    else if (value.startsWith("id:")) rest.push({ event: ref, identifier: value.slice(3) });
+    onChange(rest);
+  };
+  const unbound = steps.filter((s) => !current(s.ref)).length;
+  return (
+    <fieldset className="guided-part bindings">
+      <legend>Bound values</legend>
+      <p className="field-hint">The replay types a value at each step that types or selects: choose which example field (or shared identifier) it is.
+        {unbound ? ` ${plural(unbound, "step")} not bound yet.` : " Every step is bound."}</p>
+      {steps.map((s) => (
+        <label key={s.ref}>#{s.seq} {s.action} {s.label ?? ""} <span className="muted">{s.screen ?? ""}</span>
+          <select value={current(s.ref)} onChange={(e) => set(s.ref, e.target.value)} aria-label={`Value bound to step ${s.seq} of ${of}`}>
+            <option value="">Not bound</option>
+            {fields.length > 0 && <optgroup label="Example fields">{fields.map((f) => <option key={f} value={`field:${f}`}>{f}</option>)}</optgroup>}
+            {identifiers.length > 0 && <optgroup label="Shared identifiers">{identifiers.map((i) => <option key={i.name} value={`id:${i.name}`}>{i.name} ({i.value})</option>)}</optgroup>}
+          </select>
+        </label>
+      ))}
+      {!fields.length && <p className="muted">Write the example values as “Field: value” to bind them.</p>}
+    </fieldset>
+  );
 }
 
 /** A numbered list kept as one line per item (the API's "one per line" text). */
@@ -176,6 +234,7 @@ export function ScenarioForm({ appId, list, scenario }: { appId: number; list: S
             ? <LinkedEvents choices={list.event_choices} selected={events} onSelect={select} />
             : <p className="muted">Assign a recording&apos;s events to this application on the recording&apos;s page to link them to these steps.</p>}
         </fieldset>
+        <Bindings list={list} values={values} of={title} onChange={(b) => setValues((v) => ({ ...v, bindings: b }))} />
         <fieldset className="guided-part">
           <legend><span className="step-number" aria-hidden="true">3</span> Expected result</legend>
           {area("expected", 2, "What the user sees when the scenario succeeds: the business outcome, not the clicks.", true)}
