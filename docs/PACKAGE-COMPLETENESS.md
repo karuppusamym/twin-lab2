@@ -50,6 +50,7 @@ Everything the fidelity replay (`server/twinlab2/replay/`) and the release check
 | The deployment reports the built commit at `/.twinlab/version` | `deploy.version` |
 | The reset check: the lab agent's data equals its baseline after a reset | `data.backend` (with `scenario.starting` for the baseline) |
 | Mainframe screens are fixed grids; transactions move on AID keys | `mainframe.layout`, `mainframe.aid` |
+| A 3270 screen is named by all the protected text of its first non-empty row (the title line), compared exactly; then its input fields by row, column, length and attributes | `mainframe.title`, `mainframe.layout` |
 
 ## The items
 
@@ -70,6 +71,7 @@ Everything the fidelity replay (`server/twinlab2/replay/`) and the release check
 | `behaviour.duplicates` | Duplicates | all | important | behavioural | Creating the same record twice is refused, merged or allowed; the recording shows one creation. |
 | `behaviour.cancellation` | Cancellation | all | important | behavioural | The screens have Cancel or Close; whether cancelling discards, keeps a draft or asks is not recorded. |
 | `behaviour.persistence` | Persistence | all | important | behavioural | What was saved must still be there after a reload or a restart; acceptance cases can check a reload. |
+| `behaviour.unrecorded` | Failure cases or precondition rules | all | important | behavioural | Off the recorded path the builder follows the pack's defaults (a direct URL to a later page returns to the start, keys not listed do nothing); without the owner's failure cases or precondition rules the copy behaves however the builder guessed. |
 | `screens.structure` | Screen structure (recorder contract 1.3) | all | critical | structural | The replay compares every recorded screen's interactive elements by tag, id and classes after every step; without the structure the builder cannot know them. |
 | `screens.referenced` | Every screen the scenarios touch | all | critical | structural | Each screen a scenario's step lands on is compared with the rebuilt one; a missing screen fails that step. |
 | `screens.controls` | Controls of each screen: kind, identifier or label, order | all | critical | structural | The replay finds each step's target among the controls and counts every interactive element; a control without kind or identifier cannot be rebuilt to match. |
@@ -91,7 +93,9 @@ Everything the fidelity replay (`server/twinlab2/replay/`) and the release check
 | `desktop.menus` | Menus used by the scenarios | desktop | important | structural | A menu step needs its menu path; without menu controls the builder guesses the menu bar. |
 | `desktop.shortcuts` | Keyboard shortcuts | desktop | important | structural | A key step without its key cannot be rebuilt or replayed. |
 | `mainframe.layout` | Field positions and lengths | mainframe | critical | structural | A 3270 screen is a fixed grid: each field's row, column and length is the screen. |
+| `mainframe.title` | Title line of each host screen | mainframe | critical | structural | The replay names a 3270 screen by all the protected text of its first non-empty row and compares it exactly; a screen known only by its layout id gives the builder no title to put there. |
 | `mainframe.attributes` | Field attributes (protected, hidden, numeric) | mainframe | important | structural | Protected, non-display and numeric fields behave differently on the terminal. |
+| `mainframe.protected` | Protected text positions (labels, messages, key line) | mainframe | important | structural | Where labels, output fields, the message line and the key line sit is the look of a 3270 screen; without them the builder places them and the copy looks different. |
 | `mainframe.aid` | AID keys (Enter, PF keys, Clear) | mainframe | critical | structural | A host transaction moves on an AID key; a step without it cannot be replayed. |
 | `mainframe.flow` | Transaction flow between host screens | mainframe | important | structural | Which AID key on which screen leads to which next screen is the transaction. |
 | `visuals.screens` | Screenshots or layout notes | all | important | visual | Structure says what is on a screen, not where; visual checks compare the copy's picture. |
@@ -139,8 +143,15 @@ and lists the scenarios, screens or events that lack the item.
 - **Surface**: web screens are routes (a path or URL); web API calls need an attachment of kind
   API or a `.har`. Desktop: `app.toolkit` (the toolkit the recorder detected), layout notes or
   screenshots for windows and dialogs, menu controls when a step uses a menu, a named key on every
-  key step. Mainframe: every field of a touched host screen has row, column and length; every AID
-  step names its key.
+  key step. Mainframe: every field of a touched host screen has row, column and length; every host
+  screen has a title (not only a layout id `scr:…`); at least one protected field with its position
+  per touched screen; every AID step names its key.
+- **Behaviour not recorded**: `behaviour.unrecorded` is present when a scenario has failure cases or
+  its text states a precondition rule ("only reached from", "a direct URL", "unless", "PF5 does
+  nothing", "sends you back"). BUILD_TASK.md always has a "Behaviour not recorded" section with the
+  defaults the builder follows where the owner said nothing: web pages are reached only as recorded
+  (a direct URL to a later step returns to the start), keys not listed for a host screen do nothing,
+  the required fields of the recorded forms, and the owner's failure cases first.
 - **Visuals and deployment**: a reviewed screenshot (kind Screen); `target.deploy` with its files
   in the package; `target.version_endpoint` for web and mainframe; `app.git_url`.
 
@@ -155,7 +166,7 @@ pages. The validator still reports them (with `capture_gap` set) so the builder 
 | `desktop.windows` | One screen per window, without its owner window or whether it is modal. | `recorder/twinlab2_recorder/workstation/structure.py` (`desktop_state`), `contract/twinlab2_contract/structure.py` |
 | `screens.withheld` | Identifiers, classes and labels that could be data (any digit, an `@`, longer than 40 characters) are dropped, so stable ids such as `button1` or `addressLine2` are lost too. Only a count reaches the portal (`withheld` per state), never the names, so the preview shows how many per screen and state, not which. | `contract/twinlab2_contract/structure.py` (`ident()`, `plain()`, `clean_state`), `recorder/twinlab2_recorder/workstation/flow.py` (`ident()`, `plain()`), `recorder/twinlab2_recorder/workstation/structure.py` |
 | `visuals.per_screen` | The recorder's screenshots (the replay's default visual baselines, `replay/visual.py`) stay on the recording machine; the pack has only screenshots the owner attaches and approves. | `recorder/twinlab2_recorder/workstation/` (pictures), `server/twinlab2/buildpack.py` |
-| `mainframe.attributes` | Only unprotected fields are sent; protected output fields appear only as the label of the next field. | `recorder/twinlab2_recorder/workstation/structure.py` (`mainframe_state`) |
+| `mainframe.protected` | Recorder contract 1.3 sends only unprotected fields; protected output fields appear only as the label of the next field. Once a state's controls carry protected fields (`protected: true`, with `row`, `col`, `len` and `text`, or `shape` when the text may be data), the pack renders them as a layout table and the gap closes. | `recorder/twinlab2_recorder/workstation/structure.py` (`mainframe_state`), `contract/twinlab2_contract/structure.py` (`clean_control`) |
 
 Fixed in the pack builder with this spec (it had them and did not copy them):
 
