@@ -311,6 +311,74 @@ def control_web(case: str) -> int:
     return 0
 
 
+def visual_check(case: str, control: bool) -> int:
+    """Visual fidelity: every recorded picture compared with the replay's picture of the same step
+    (the portal's visual.py through visual_run.py; threshold 2 % of pixels differing by more than 16
+    per channel, the recorder's masked pixels and the other system's widget excluded). Not
+    required: it is reported as its own dimension and never changes the strict web result."""
+    from twinlab2.replay import visual
+    import record
+
+    src = judge_web(case, control=control)
+    rec_id = src.parent.name
+    tag = "control-visual" if control else "visual"
+    folder = EVIDENCE / case / f"judge-{tag}" / rec_id / "web"
+    if folder.exists():
+        shutil.rmtree(folder)
+    shutil.copytree(src, folder)
+    pictures = visual.pictures_of(folder)
+    size = visual.picture_size(folder / pictures[max(pictures)])
+    states = [{"id": f"after-step-{seq}", "after": seq, "required": False, "mode": "threshold",
+               "max_ratio": 0.02, "tolerance": 16, "exclude": ["iframe#fxWidget"]} for seq in sorted(pictures)]
+    (folder / "visual.yaml").write_text(yaml.safe_dump({"version": 1, "recording": rec_id, "viewport": "desktop",
+                                                       "fonts": [], "states": states}, sort_keys=False), encoding="utf-8")
+    procs, proxy = [], None
+    try:
+        if control:
+            procs = record.start_refapps(case)
+            base = WEB_APPS["a"]["orders"]["source"] if case == "a" else C_SOURCE
+        elif case == "a":
+            app = WEB_APPS["a"]["orders"]
+            procs.append(launch(app["build"], app["port"], {"BILLING_URL": "http://127.0.0.1:18752"}))
+            base = f"http://127.0.0.1:{app['port']}"
+        else:
+            o, b = WEB_APPS["c"]["orders"], WEB_APPS["c"]["billing"]
+            procs.append(launch(o["build"], o["port"], {"BILLING_URL": f"http://127.0.0.1:{C_PROXY}"}))
+            procs.append(launch(b["build"], b["port"]))
+            proxy = PathProxy(C_PROXY, o["port"], b["port"])
+            threading.Thread(target=proxy.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{C_PROXY}"
+        out = EVIDENCE / case / "replay"
+        report_path = out / f"{tag}-fidelity.json"
+        run = subprocess.run([sys.executable, str(Path(__file__).with_name("visual_run.py")), str(folder), base,
+                              str(report_path), f"{size[0]}x{size[1]}", str(out / f"{tag}-pictures")],
+                             capture_output=True, text=True, timeout=1800)
+        if not report_path.is_file():
+            raise SystemExit("visual replay wrote no report: " + (run.stderr or run.stdout)[-2000:])
+        rep = read_json(report_path)
+    finally:
+        if proxy:
+            proxy.shutdown()
+        if control:
+            record.stop(procs)
+        else:
+            for p in procs:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True)
+    vis = rep.get("visual") or []
+    count = {}
+    for v in vis:
+        count[v["status"]] = count.get(v["status"], 0) + 1
+    ratios = sorted(v.get("ratio") or 0 for v in vis if v.get("compared"))
+    summary = {"picture_size": list(size), "states": len(vis), "by_status": count,
+               "median_ratio": ratios[len(ratios) // 2] if ratios else None, "max_ratio": ratios[-1] if ratios else None,
+               "worst": sorted(({"id": v["id"], "ratio": v.get("ratio"), "status": v["status"], "note": v.get("note")}
+                                for v in vis), key=lambda v: -(v["ratio"] or 0))[:8],
+               "behaviour_status_of_this_run": rep.get("status")}
+    write_json(EVIDENCE / case / "replay" / f"{tag}-summary.json", summary)
+    print(json.dumps(summary, indent=1))
+    return 0
+
+
 def summarize(report: dict) -> dict:
     steps = report.get("steps") or []
     count = {}
@@ -468,11 +536,13 @@ def mf_scenarios(case, results, cases):
 
 
 def main(argv) -> int:
-    if len(argv) < 3 or argv[1] not in ("web", "tn3270", "judge", "control-web", "control-tn3270"):
+    if len(argv) < 3 or argv[1] not in ("web", "tn3270", "judge", "control-web", "control-tn3270", "visual", "control-visual"):
         raise SystemExit(__doc__)
     if argv[1] == "judge":
         judge_web(argv[2])
         return 0
+    if argv[1] in ("visual", "control-visual"):
+        return visual_check(argv[2], argv[1] == "control-visual")
     if argv[1] == "control-web":
         return control_web(argv[2])
     if argv[1] == "control-tn3270":
