@@ -96,14 +96,18 @@ def _streams(folder: Path) -> tuple[list[dict], dict]:
                                                     "recording": None, "seq": None,
                                                     "action": "presence", **_event(j)}))  # fmt: skip
     last_desk = None
-    by_exe = {
-        str(a.get("exe") or "").lower(): k for k, a in apps.items() if a.get("surface") == "desktop"
-    }
+    # an executable name stands for an application only when one application has it: two
+    # applications a host runs (java.exe, ...) share it, and their steps go by process id
+    exes: dict[str, set[str]] = {}
+    for k, a in apps.items():
+        if a.get("surface") == "desktop":
+            exes.setdefault(str(a.get("exe") or "").lower(), set()).add(k)
+    by_exe = {exe: next(iter(keys)) for exe, keys in exes.items() if len(keys) == 1}
     for k, s in enumerate(read_jsonl(folder / "desktop" / "steps.jsonl")):
         # A window that closed, or a message box read after it went, has no process any more:
         # it is the application's whose step came before it.
         key = (pid_key.get(s.get("pid")) or by_exe.get(str(s.get("process") or "").lower())
-               or last_desk or next(iter(by_exe.values()), None))  # fmt: skip
+               or last_desk or next((k for k, a in apps.items() if a.get("surface") == "desktop"), None))  # fmt: skip
         if key is None:
             continue
         last_desk = key
