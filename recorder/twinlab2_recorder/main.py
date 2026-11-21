@@ -234,11 +234,47 @@ def send(cfg: st.Settings, session_id: str, ca_bundle: str | None = None) -> dic
     return result
 
 
-def describe(box: dict, notes: list[str] | None = None) -> str:
+def _split_by_path(steps: list[dict], origin: str, targets: list[dict]) -> list[tuple[dict, int]]:
+    """The steps of one origin per target on it, by the portal's rule: a step goes to the target
+    whose path prefix is the longest one its screen starts with (whole segments), else to the
+    target without a path. -> [(target, steps)] in the targets' order."""
+    from twinlab2_recorder.workstation.flow import prefix_segments
+
+    counts = [0] * len(targets)
+    bare = next((i for i, t in enumerate(targets) if not prefix_segments(t.get("path"))), None)
+    for s in steps:
+        screen = str(s.get("screen") or "")
+        path = screen[len(origin):] if screen.startswith(origin) else ""
+        segs = tuple(x for x in path.split("/") if x)
+        best, length = bare, -1
+        for i, t in enumerate(targets):
+            pre = prefix_segments(t.get("path"))
+            if pre and len(pre) > length and segs[: len(pre)] == pre:
+                best, length = i, len(pre)
+        if best is not None:
+            counts[best] += 1
+    return list(zip(targets, counts))
+
+
+def describe(box: dict, notes: list[str] | None = None, targets: list[dict] | None = None) -> str:
+    """The session as the person reads it before sending. `targets`: the session's targets with
+    their names (session.json); several on one origin get one line each (gap 12 of the rebuild
+    proof: a shared host was listed once, under the last target's name)."""
     lines = [f"Session {box['session'].get('name')} ({box['session']['id']})"]
+    targets = targets if targets is not None else (box.get("session") or {}).get("targets") or []
+    targets = [_web_target(t) for t in targets if isinstance(t, dict)]
     for a in box["apps"]:
-        lines.append(f"  {a['level']:6} {a.get('display') or a['key']}  [{a['key']}]  "
-                     f"{len(box['flows'].get(a['key'], []))} steps")  # fmt: skip
+        flow = box["flows"].get(a["key"], [])
+        origin = a.get("origin") or ""
+        mine = [t for t in targets if origin and str(t.get("origin") or "").rstrip("/").lower() == origin.lower()]
+        if a.get("surface") != "web" or len(mine) < 2:
+            lines.append(f"  {a['level']:6} {a.get('display') or a['key']}  [{a['key']}]  {len(flow)} steps")
+            continue
+        lines.append(f"  {a['level']:6} {len(mine)} applications on one host  [{a['key']}]  {len(flow)} steps")
+        for t, n in _split_by_path(flow, origin, mine):
+            name = t.get("name") or (f"app {t['app_id']}" if t.get("app_id") is not None else "?")
+            where = t.get("path") or "(the rest of the host)"
+            lines.append(f"           {name}  {where}  {n} steps")
     presence = sum(r["steps"] for r in box["timeline"] if r["app"] == "presence")
     lines.append(f"  other applications: used {presence} time(s), not named")
     rb = box.get("robot")
@@ -254,6 +290,29 @@ def describe(box: dict, notes: list[str] | None = None) -> str:
     for note in notes or []:
         lines.append(f"  note: {note}")
     return "\n".join(lines)
+
+
+def _web_target(t: dict) -> dict:
+    """A target with its origin and path apart (an origin given with its path, a web key)."""
+    row = dict(t)
+    if row.get("origin") or str(row.get("key") or "").startswith("web:"):
+        from twinlab2_recorder.workstation.levels import Target
+
+        try:
+            target = Target.from_dict(row)
+            row["origin"], row["path"] = target.origin, target.path or row.get("path")
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return row
+
+
+def session_targets(cfg: st.Settings, session_id: str) -> list[dict] | None:
+    """The session's targets with their names, as session.json keeps them (None if unreadable)."""
+    try:
+        meta = json.loads((cfg.recordings / session_id / "session.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return [_web_target(t) for t in meta.get("targets") or [] if isinstance(t, dict)]
 
 
 def session_notes(cfg: st.Settings, session_id: str) -> list[str]:
@@ -1063,7 +1122,7 @@ def main(argv: list[str] | None = None) -> int:
             except KeyboardInterrupt:
                 folder = cfg.recordings / conf["id"]
             box = outbox(cfg, folder.name)
-            print(describe(box, session_notes(cfg, folder.name)))
+            print(describe(box, session_notes(cfg, folder.name), session_targets(cfg, folder.name)))
             if args.send:
                 print(json.dumps(send(cfg, folder.name, args.ca_bundle)))
             else:
@@ -1078,7 +1137,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
         elif args.command == "show":
             box = outbox(cfg, args.session_id)
-            print(describe(box, session_notes(cfg, args.session_id)))
+            print(describe(box, session_notes(cfg, args.session_id), session_targets(cfg, args.session_id)))
             print(json.dumps(box, indent=1))
         elif args.command == "send":
             box = outbox(cfg, args.session_id)

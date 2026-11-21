@@ -10,21 +10,28 @@ A flow step is `{"n", "action", "control", "label", "screen"}`:
   buttons, menus, check boxes, an input's label), at most three words, passing `plain()`; else
   no label. Never the name of a tab, a window, a group, a Text, ListItem, DataItem, TreeItem,
   Hyperlink, Custom or Document (they are named after records). The screen is the window's
-  AutomationId when it is an identifier; else a part of its title only when it is the
+  AutomationId when it is an identifier; for a message box (`#32770`, which has none) its
+  title when it is plain and at most four words; else a part of its title only when it is the
   application's own name; else none (a title names the record or document open).
 - web: the element's id or name from the selector when it is an identifier; the control is the
   tag. Never link text, row text, an aria-label or a quoted text selector. The screen is the
   origin and a route template: the application's path prefix when the URL is under one the
   session's targets name (the portal's catalog: `/finance/billing`, the longest one winning,
-  whole segments only), else the first path segment when it is an identifier; after it only the
-  common words of routes (`ROUTE_WORDS`: edit, view, new, search...); every other segment
-  becomes `{id}` (a segment can be a record: `/customers/jane-doe`); no query, fragment or user
+  whole segments only), else the first path segment when it is an identifier; after it the
+  common words of routes (`ROUTE_WORDS`: edit, view, new, search...) and any segment of two to
+  24 lower-case letters (`route_word`: `/orders/new/items`), except right after a segment that
+  names people or accounts (`PEOPLE`: `/users/jdoe` keeps `{id}`); every other segment
+  becomes `{id}` (a segment can be a record: `/customers/jane-doe`, `/orders/10442`, a UUID,
+  an e-mail address); no query, fragment or user
   information. A prefix is kept as the target names it, never read from the URL, so a record's
   segment is never kept because it is in the place where a prefix could be.
 - mainframe: a field by its label, a key by its name, a screen by its title (see tn3270.py).
 
 `plain(text)`: at most 40 characters, no digit, no `@`, not a shape the recorder wrote
-(`X-9999`: a run of X/x/9 with punctuation), and not empty.
+(`X-9999`: a run of X/x/9 with punctuation), and not empty. `ident(text)`: the contract's rule
+for an identifier (twinlab2_contract.structure.ident): letters, `_`, `.`, `-` and at most one
+digit run of at most two digits after a letter (`addressLine2`, `button1`, `btn2FA`), never an
+all-digit id, a long or repeated digit run or a counter after a separator (`mat-input-0`).
 """
 
 from __future__ import annotations
@@ -66,7 +73,11 @@ def plain(text: object) -> bool:
 
 
 def ident(text: object) -> bool:
-    return plain(text) and bool(IDENT.match(str(text).strip()))
+    """An identifier (twinlab2_contract.structure.ident, the contract's one rule): letters, `_`,
+    `.`, `-`, and at most one short digit run as developers name things (`addressLine2`)."""
+    from twinlab2_contract.structure import ident as contract_ident
+
+    return contract_ident(text)
 
 
 def _uia(selector: object) -> dict:
@@ -103,10 +114,42 @@ def route_template(url: str, prefixes: Iterable[str] = ()) -> str:
         if len(segs) > len(best) and tuple(path[: len(segs)]) == segs:
             best = segs
     out = list(best)
-    for seg in path[len(best):]:
-        keep = seg.lower() in ROUTE_WORDS or (not out and ident(seg) and len(seg) <= 24)
+    for i in range(len(best), len(path)):
+        seg, before = path[i], (path[i - 1] if i else "").lower()  # the segment as it was
+        keep = seg.lower() in ROUTE_WORDS or (not out and ident(seg) and len(seg) <= 24) or (
+            route_word(seg) and before not in PEOPLE
+        )
         out.append(seg if keep else "{id}")
     return "/" + "/".join(out)
+
+
+# A segment that names a person or an account when it comes right after one of these: kept as
+# `{id}` even when it is a plain lower-case word (`/users/jdoe`, `/customers/priya`).
+PEOPLE = {
+    "user", "users", "u", "people", "person", "persons", "member", "members", "customer",
+    "customers", "client", "clients", "account", "accounts", "employee", "employees", "staff",
+    "profile", "profiles", "contact", "contacts", "patient", "patients", "author", "authors",
+    "owner", "owners", "student", "students", "agent", "agents", "partner", "partners", "vendor",
+    "vendors", "supplier", "suppliers", "team", "teams", "org", "orgs", "tenant", "tenants",
+    "party", "parties", "applicant", "applicants", "beneficiary", "beneficiaries", "payee",
+    "payees", "@", "~",
+}  # fmt: skip
+ROUTE_WORD = re.compile(r"[a-z]{2,24}")
+
+
+def route_word(seg: str) -> bool:
+    """A path segment that is a route's own word, kept as itself (`/orders/new/items`,
+    `/billing/lookup`): two to 24 lower-case letters a to z, nothing else. A record's segment
+    nearly always has a digit, an upper-case letter, a separator or more length (ids, UUIDs,
+    order numbers, `jane-doe`, `Priya`, e-mail addresses); those stay `{id}`.
+
+    The privacy side: a lower-case word can still be a username or a name used as a slug
+    (`/users/jdoe`, `/u/priya`). Such a segment is `{id}` when it follows a segment that names
+    people or accounts (`PEOPLE`), and a typed value in a whole path segment was already
+    replaced by its shape when the step was cleaned (`Xxxx`: not lower-case letters). What is
+    left is a lower-case single word that comes after another route word and is not something
+    the person typed: a route's name in practice (the risk accepted, documented here)."""
+    return bool(ROUTE_WORD.fullmatch(seg))
 
 
 def desktop_step(step: dict, app: dict | None = None) -> dict:
@@ -126,7 +169,13 @@ def desktop_step(step: dict, app: dict | None = None) -> dict:
     wprops = dict(window.get("props") or {})
     wsel = _uia(window.get("selector"))
     screen = wprops.get("AutomationId") or wsel.get("AutomationId")
-    if not (screen and ident(screen)):
+    dialog = (wprops.get("ClassName") or wsel.get("ClassName")) == "#32770"
+    title = " ".join(str(window.get("title") or "").split())
+    if dialog and not (screen and ident(screen)) and plain(title) and len(title.split()) <= 4:
+        # A message box (#32770) has no AutomationId: its title is the application's own
+        # words ("Sign in", "Delete case"), so it names the dialog's screen.
+        screen = title
+    elif not (screen and ident(screen)):
         # A title names the record or document open ("Jane Doe - App"): only a part that is the
         # application's own name is kept.
         own = {str(v).strip().lower() for v in (app or {}).values() if isinstance(v, str)}
