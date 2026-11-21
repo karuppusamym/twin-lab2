@@ -22,6 +22,8 @@ os.environ.setdefault("TWINLAB2_SECRET_KEY", "tests-only-secret")
 # let anyone add an application; the default rule (`owners`: admins and existing owners) is tested
 # where it is set explicitly (test_workboard, test_demo_portal).
 os.environ.setdefault("TWINLAB2_APP_CREATORS", "anyone")
+# the startup check of the listening address (app.bind_host) must not read pytest's own command line
+os.environ.setdefault("TWINLAB2_BIND_HOST", "127.0.0.1")
 
 
 def _no_console_windows():

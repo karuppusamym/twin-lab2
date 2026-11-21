@@ -461,7 +461,31 @@ VERIFICATIONS = [
 ]
 
 
-# -- 15: package bundle: fixture bindings, visual baselines, confirmations, interface contracts -------
+# -- 15: access requests; agent token scopes and per-machine rate limits ---------------------------
+
+ACCESS_AND_AGENT = [
+    # one row per "Request access" (routes_access.py): pending until an owner (or admin) approves
+    # or declines it; the decision is also in the audit history (access.approve / access.decline)
+    """CREATE TABLE IF NOT EXISTS access_requests (
+        id {id}, app_id INTEGER NOT NULL REFERENCES apps(id), user_name TEXT NOT NULL,
+        role TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', state TEXT NOT NULL,
+        created_at TEXT NOT NULL, decided_by TEXT, decided_at TEXT, note TEXT NOT NULL DEFAULT ''
+    )""",
+    "CREATE INDEX IF NOT EXISTS access_requests_app ON access_requests(app_id, state)",
+    "CREATE INDEX IF NOT EXISTS access_requests_user ON access_requests(user_name, id)",
+    # what a machine token may do (agent.SCOPES, space separated); a pairing code carries the
+    # scopes its machine will get. Machines paired before this keep both.
+    add_columns([("machines", "scopes", "TEXT NOT NULL DEFAULT 'record upload'"),
+                 ("pairing_codes", "scopes", "TEXT NOT NULL DEFAULT 'record upload'")]),
+    # requests per machine per minute (agent.limit): a fixed window shared by every replica
+    """CREATE TABLE IF NOT EXISTS agent_rate (
+        machine_id INTEGER NOT NULL, minute TEXT NOT NULL, hits INTEGER NOT NULL,
+        PRIMARY KEY (machine_id, minute)
+    )""",
+]
+
+
+# -- 16: package bundle: fixture bindings, visual baselines, confirmations, interface contracts -------
 
 PACKAGE_BUNDLE = [
     # per scenario, each typing or selecting step bound to a synthetic fixture field or a shared
@@ -513,7 +537,8 @@ MIGRATIONS = [
                                                ("builder_packages", "known_gaps", "TEXT NOT NULL DEFAULT ''")])]),
     (13, "idempotency keys", IDEMPOTENCY_KEYS),
     (14, "async verification", VERIFICATIONS),
-    (15, "package bundle", PACKAGE_BUNDLE),
+    (15, "access requests and agent scopes", ACCESS_AND_AGENT),
+    (16, "package bundle", PACKAGE_BUNDLE),
 ]
 
 
