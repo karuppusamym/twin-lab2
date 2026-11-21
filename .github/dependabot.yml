@@ -18,6 +18,10 @@ updates:
     groups:
       python-minor:
         update-types: [minor, patch]
+    ignore:
+      # anthropic 2.x: the Claude build-session tests time out. Revisit once the SDK change is read.
+      - dependency-name: anthropic
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: npm
     directory: /web
@@ -26,8 +30,30 @@ updates:
     groups:
       npm-minor:
         update-types: [minor, patch]
+    ignore:
+      # Revisit each when the toolchain around it supports it (see the closed PRs for the reason).
+      - dependency-name: eslint            # eslint-plugin-jsx-a11y has no eslint 10 peer yet
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@eslint/js"      # moves together with eslint
+        update-types: ["version-update:semver-major"]
+      - dependency-name: msw               # msw 3 needs a newer TypeScript than 5.6
+        update-types: ["version-update:semver-major"]
+      - dependency-name: react-dom         # React 19 migration: react, react-dom and the types together
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"     # keep the types on the Node major the image and CI run (22)
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: docker
     directory: /deploy
     schedule:
       interval: weekly
+    ignore:
+      # The images CI builds and tests: Python 3.12 (image) and Node 22 LTS. Raise them by hand.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
+      # Red Hat registry needs a login; without one the update job fails on this image.
+      - dependency-name: openshift4/ose-oauth-proxy
