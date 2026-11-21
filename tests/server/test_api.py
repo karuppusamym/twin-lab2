@@ -334,6 +334,13 @@ class ApiTest(unittest.TestCase):
         bad = alice.post("/api/v1/recordings", data={"name": "Broken"}, files={"log": ("s.jsonl", b"{", "text/plain")})
         self.assertEqual(bad.status_code, 400)
         self.assertEqual(self.as_("carol").get(f"/api/v1/recordings/{RECORDING}").json()["code"], "restricted")
+        exported = alice.get(f"/api/v1/recordings/{RECORDING}/packages/download")  # every app's package
+        with ZipFile(io.BytesIO(exported.content)) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+        self.assertEqual({a["app_id"]: a["status"] for a in manifest["applications"]},
+                         {self.billing: "included", self.casedesk: "no_package"})
+        self.assertEqual(self.as_("bob").get(f"/api/v1/recordings/{RECORDING}/packages/download").json()["code"],
+                         "restricted")
         progress = alice.get(f"/api/recordings/{RECORDING}/upload")
         self.assertEqual(progress.json()["state"], "none")
 

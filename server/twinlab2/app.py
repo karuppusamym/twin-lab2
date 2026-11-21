@@ -77,7 +77,9 @@ def web_routes(secret):
             content = stream.read()
         headers = {"Cache-Control": "no-store"}
         if name:
-            headers["Content-Disposition"] = f'attachment; filename="{name}"'
+            from twinlab2.routes_portal import disposition
+
+            headers["Content-Disposition"] = disposition(name)
         return Response(content, media_type=ref.content_type, headers=headers)
 
     @routes.get("/assets/{name:path}", auth.public)

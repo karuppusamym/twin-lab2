@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 import re
 import uuid
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import File, Form, Response, UploadFile
 from fastapi.responses import RedirectResponse
@@ -31,6 +31,7 @@ from twinlab2 import completeness
 from twinlab2 import event_ids
 from twinlab2 import journey
 from twinlab2 import packages
+from twinlab2 import recording_export
 from twinlab2 import redact
 from twinlab2 import registry
 from twinlab2 import scenarios
@@ -69,9 +70,18 @@ def integer(data, key, default=None):
     return default if value is None else value
 
 
+def disposition(filename: str) -> str:
+    """`attachment; filename=…` (RFC 6266): a plain name as it is, any other (non-ASCII, such as
+    `請求-システム-4-rev1-….zip`) as an ASCII fallback plus `filename*` in UTF-8."""
+    if re.fullmatch(r"[A-Za-z0-9._-]+", filename):
+        return f"attachment; filename={filename}"
+    fallback = filename.encode("ascii", "ignore").decode().replace('"', "").replace("\\", "") or "download"
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
+
+
 def download(content: bytes, mimetype: str, filename: str):
     return Response(content, media_type=mimetype, headers={
-        "Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"})
+        "Content-Disposition": disposition(filename), "Cache-Control": "no-store"})
 
 
 def links(app_id):
@@ -621,6 +631,27 @@ def recording(recording_id: str):
     get_recording(recording_id)
     ensure_reviewer(recording_id)
     return recording_detail(recording_id)
+
+
+@routes.get(V1 + "/recordings/{recording_id}/packages/download", auth.signed_in)
+def download_recording_packages(recording_id: str):
+    """One ZIP with the latest builder-approved package of every application of the recording
+    the caller builds (recording_export), for a reviewer of the recording. Each included
+    package is audited as a download, as the single-package download is."""
+    get_recording(recording_id)
+    ensure_reviewer(recording_id)
+    try:
+        result = recording_export.export(db(), recording_id, g.user)
+    except LookupError:
+        fail(404, "There is no such recording.")
+    except ValueError as error:
+        fail(500, str(error))
+    with db():
+        for app_id, rev in result.included:
+            row = packages.get(db(), app_id, rev)
+            record("package.download", "builder_package", f"{app_id}/rev{rev}", app_id=app_id, rev=rev,
+                   sha256=row["sha256"], recording_id=recording_id, export_sha256=result.sha256)
+    return download(result.data, "application/zip", result.filename)
 
 
 def assignment(recording_id, app_id):
