@@ -77,6 +77,15 @@ items:
                   value: twinlab2-artifacts
                 - name: TWINLAB2_HOSTS
                   value: twinlab2.apps.example.test
+                - name: TWINLAB2_S3_SSE  # server-side encryption on every write (aws:kms + TWINLAB2_S3_SSE_KMS_KEY_ID for KMS)
+                  value: AES256
+                - name: TWINLAB2_LOG_FORMAT  # one JSON object per line, with request_id, user and app_id
+                  value: json
+              ports:
+                # GET /metrics only (Prometheus, deploy/openshift-monitoring.yaml); not in the Route
+                - {name: metrics, containerPort: 9090}
+              volumeMounts:
+                - {name: metrics, mountPath: /tmp/twinlab2-metrics}
               resources:
                 requests: {cpu: 50m, memory: 192Mi}
                 limits: {memory: 512Mi}
@@ -135,6 +144,8 @@ items:
                 - {name: tls, mountPath: /etc/tls/private}
                 - {name: proxy-secret, mountPath: /etc/proxy/secret}
           volumes:
+            - name: metrics  # gunicorn's workers' metric files (PROMETHEUS_MULTIPROC_DIR), per pod
+              emptyDir: {}
             - name: tls
               secret: {secretName: twinlab2-tls}
             - name: proxy-secret
@@ -182,6 +193,10 @@ items:
                   value: s3
                 - name: TWINLAB2_S3_BUCKET
                   value: twinlab2-artifacts
+                - name: TWINLAB2_S3_SSE
+                  value: AES256
+                - name: TWINLAB2_LOG_FORMAT
+                  value: json
               resources:
                 requests: {cpu: 20m, memory: 128Mi}
                 limits: {memory: 512Mi}
@@ -204,12 +219,15 @@ items:
     kind: Service
     metadata:
       name: twinlab2
+      labels: {app.kubernetes.io/name: twinlab2, app.kubernetes.io/component: portal}
       annotations:
         service.beta.openshift.io/serving-cert-secret-name: twinlab2-tls
     spec:
       selector: {app.kubernetes.io/name: twinlab2, app.kubernetes.io/component: portal}
       ports:
         - {name: https, port: 443, targetPort: https}
+        # in-cluster only (the Route targets https): the ServiceMonitor scrapes it
+        - {name: metrics, port: 9090, targetPort: metrics}
   - apiVersion: route.openshift.io/v1
     kind: Route
     metadata:

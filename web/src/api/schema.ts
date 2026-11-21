@@ -1742,6 +1742,221 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Storage, encryption, metrics, tracing and retention at a glance
+         * @description Portal admins. What the Operations page shows; what a retention run would delete now (`plan`).
+         */
+        get: operations["getOperations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set the retention policy
+         * @description Portal admins. Days to keep each kind (`null` keeps it forever; audit at least 30).
+         *     `schedule: daily` queues a retention run every 24 hours. Audited as `retention.policy`.
+         */
+        put: operations["saveRetentionPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/retention/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run the retention policy (or a dry run) as a worker job
+         * @description Portal admins. A dry run (the default) counts what would be deleted; a real run deletes it,
+         *     writes a tombstone per deleted object and an audit row `retention.apply`. Poll the run.
+         */
+        post: operations["startRetentionRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/retention/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: number;
+            };
+            cookie?: never;
+        };
+        /** A retention run and its result */
+        get: operations["getRetentionRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/audit-export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export the audit history (CSV or JSON lines), filtered by date
+         * @description Portal admins. Rows with `since` <= `at` < `until` (ISO dates or times, UTC), oldest first,
+         *     optionally of one application. CSV cells that a spreadsheet would run as a formula are
+         *     prefixed with `'`. Audited as `audit.export`.
+         */
+        get: operations["exportAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/tombstones": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What was deleted, newest first */
+        get: operations["listTombstones"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/files/{sha256}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sha256: components["schemas"]["Sha256"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Where a file is stored, by its SHA-256
+         * @description Portal admins. The artifacts that are this file, and the stored ZIPs (frozen packages,
+         *     release downloads, reports, recording bundles) that contain it. A purge deletes all of them.
+         */
+        get: operations["findFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/files/{sha256}/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sha256: components["schemas"]["Sha256"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete every stored copy of a file (a leaked picture)
+         * @description Portal admins. Deletes the artifacts that are this file (on S3 every version of its key),
+         *     the attachments that point at them, and every stored ZIP that contains it, whole. Writes
+         *     tombstones and an audit row `purge`. Backups keep their copies until they expire: see
+         *     docs/operations/leaked-picture.md.
+         */
+        post: operations["purgeFile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/apps/{app_id}/tombstones": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * What was deleted from this application (retention, owner requests, purges)
+         * @description Viewers of the application. Shown on its release pages, so a release still says what was deleted.
+         */
+        get: operations["getAppTombstones"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/recordings/{recording_id}/deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                recording_id: components["parameters"]["RecordingId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete a recording and its derived data (owner's request)
+         * @description The owners of every application the recording covers, or a portal admin. Deletes its steps,
+         *     assignments and evidence links, its uploaded bundles' bytes and, with `purge_packages`, the
+         *     frozen packages that include it. A tombstone per deleted object stays; audited as
+         *     `recording.delete`.
+         */
+        post: operations["deleteRecording"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agent/pair": {
         parameters: {
             query?: never;
@@ -1962,6 +2177,155 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Days to keep; null keeps it forever. */
+        RetentionDays: number | null;
+        RetentionPolicyInput: {
+            raw_recordings?: components["schemas"]["RetentionDays"];
+            evidence?: components["schemas"]["RetentionDays"];
+            frozen_packages?: components["schemas"]["RetentionDays"];
+            build_logs?: components["schemas"]["RetentionDays"];
+            audit?: components["schemas"]["RetentionDays"];
+            /** @enum {string} */
+            schedule?: "off" | "daily";
+        };
+        RetentionPolicy: {
+            raw_recordings: components["schemas"]["RetentionDays"];
+            evidence: components["schemas"]["RetentionDays"];
+            frozen_packages: components["schemas"]["RetentionDays"];
+            build_logs: components["schemas"]["RetentionDays"];
+            audit: components["schemas"]["RetentionDays"];
+            /** @enum {string} */
+            schedule: "off" | "daily";
+            updated_by?: string | null;
+            updated_at?: string | null;
+        };
+        RetentionPlanItem: {
+            days: number | null;
+            /** @description Objects (or rows, for build logs and audit) that go. */
+            count: number;
+            bytes: number;
+            /** @description Stored bytes removed (a real run). */
+            freed_bytes?: number;
+        };
+        RetentionPlan: {
+            raw_recordings: components["schemas"]["RetentionPlanItem"];
+            evidence: components["schemas"]["RetentionPlanItem"];
+            frozen_packages: components["schemas"]["RetentionPlanItem"];
+            build_logs: components["schemas"]["RetentionPlanItem"];
+            audit: components["schemas"]["RetentionPlanItem"];
+        };
+        RetentionRunInput: {
+            /** @default true */
+            dry_run: boolean;
+        };
+        RetentionRun: {
+            id: number;
+            requested_by: string;
+            dry_run: boolean;
+            /** @enum {string} */
+            state: "queued" | "running" | "done" | "failed";
+            policy: {
+                [key: string]: unknown;
+            };
+            result: components["schemas"]["RetentionPlan"] | null;
+            error: string | null;
+            created_at: components["schemas"]["Timestamp"];
+            finished_at: string | null;
+        };
+        Operations: {
+            /** @description The artifact store (backend, location or bucket, versioning, encryption). */
+            storage: {
+                [key: string]: unknown;
+            };
+            metrics: {
+                /** @description The internal port /metrics answers on. */
+                port: number | null;
+                /** @description Whether a bearer token also opens /metrics on any port. */
+                token: boolean;
+            };
+            tracing: boolean;
+            /** @enum {string} */
+            log_format: "json" | "text";
+            policy: components["schemas"]["RetentionPolicy"];
+            plan: components["schemas"]["RetentionPlan"];
+            runs: components["schemas"]["RetentionRun"][];
+            /** @description Jobs by state. */
+            queue: {
+                [key: string]: number;
+            };
+        };
+        Tombstone: {
+            id: number;
+            at: components["schemas"]["Timestamp"];
+            actor: string;
+            /** @enum {string} */
+            reason: "retention" | "owner_request" | "purge";
+            /** @description recording, upload, attachment, frozen_package, build_messages, audit_log, file, … */
+            object_type: string;
+            object_id: string;
+            app_id: number | null;
+            recording_id: string | null;
+            sha256: string | null;
+            size: number | null;
+            details: {
+                [key: string]: unknown;
+            };
+        };
+        TombstoneList: {
+            tombstones: components["schemas"]["Tombstone"][];
+        };
+        FileLocations: {
+            sha256: components["schemas"]["Sha256"];
+            artifacts: {
+                id: number;
+                kind: string;
+                app_id: number | null;
+                size: number;
+                created_at: string;
+            }[];
+            inside: {
+                id: number;
+                kind: string;
+                app_id: number | null;
+                size: number;
+                members: string[];
+            }[];
+        };
+        PurgeInput: {
+            /** @description Why (kept in the tombstone and the audit history). */
+            note: string;
+        };
+        PurgeResult: {
+            sha256: components["schemas"]["Sha256"];
+            tombstone_id: number;
+            artifacts_deleted: number;
+            containers_deleted: {
+                id: number;
+                kind: string;
+                members: string[];
+            }[];
+            other_versions_deleted: number;
+            freed_bytes: number;
+        };
+        RecordingDeletionInput: {
+            reason: string;
+            /**
+             * @description Also delete the frozen packages that include the recording.
+             * @default false
+             */
+            purge_packages: boolean;
+        };
+        RecordingDeletion: {
+            recording_id: string;
+            tombstone_id: number;
+            apps: number[];
+            uploads_deleted: number;
+            packages_deleted: {
+                app_id: number;
+                rev: number;
+            }[];
+            freed_bytes: number;
+        };
         /** @description RFC 9457 problem details; every error of /api/v1 has this shape. */
         Problem: {
             /**
@@ -1994,13 +2358,15 @@ export interface components {
             current?: {
                 [key: string]: unknown;
             };
+            /** @description With `code: gone`: the tombstone that records the deletion. */
+            tombstone_id?: number | null;
         };
         /**
          * @description The stable machine-readable reason of an error (see Errors); `x-twinlab-codes` says what each
          *     means. New codes may be added within v1: treat an unknown code by its HTTP status.
          * @enum {string}
          */
-        ErrorCode: "invalid_request" | "idempotency_key_mismatch" | "signed_out" | "wrong_credentials" | "forbidden" | "csrf" | "role" | "restricted" | "not_found" | "method_not_allowed" | "conflict" | "state_conflict" | "draft_changed" | "unchanged" | "incomplete_package" | "plan_changed" | "publish_locked" | "idempotency_in_progress" | "too_large" | "unsupported_media_type" | "idempotency_key_reused" | "internal" | "bad_gateway" | "unavailable" | "error";
+        ErrorCode: "invalid_request" | "idempotency_key_mismatch" | "signed_out" | "wrong_credentials" | "forbidden" | "csrf" | "role" | "restricted" | "not_found" | "method_not_allowed" | "conflict" | "state_conflict" | "draft_changed" | "unchanged" | "incomplete_package" | "plan_changed" | "publish_locked" | "idempotency_in_progress" | "too_large" | "unsupported_media_type" | "idempotency_key_reused" | "internal" | "bad_gateway" | "unavailable" | "gone" | "error";
         /** @description Where a page of a paginated list is (see Pagination). */
         Page: {
             /** @description Items matching the filters, on every page. */
@@ -3762,6 +4128,15 @@ export interface components {
         };
     };
     responses: {
+        /** @description The stored file was deleted; its tombstone says when and why. */
+        Gone: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["Problem"];
+            };
+        };
         /** @description The request is not acceptable; `detail` says why. */
         BadRequest: {
             headers: {
@@ -6212,6 +6587,261 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    getOperations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The operations summary. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Operations"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    saveRetentionPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetentionPolicyInput"];
+            };
+        };
+        responses: {
+            /** @description The policy now in force. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionPolicy"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    startRetentionRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetentionRunInput"];
+            };
+        };
+        responses: {
+            /** @description The run, queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionRun"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getRetentionRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The run. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionRun"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    exportAudit: {
+        parameters: {
+            query?: {
+                /** @description e.g. 2026-11-01 */
+                since?: string;
+                /** @description e.g. 2026-12-01 (exclusive) */
+                until?: string;
+                app_id?: number;
+                format?: "csv" | "json";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The rows, as an attachment. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                    "application/x-ndjson": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    listTombstones: {
+        parameters: {
+            query?: {
+                app_id?: number;
+                recording_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The tombstones. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TombstoneList"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    findFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sha256: components["schemas"]["Sha256"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Where it is. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileLocations"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    purgeFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sha256: components["schemas"]["Sha256"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PurgeInput"];
+            };
+        };
+        responses: {
+            /** @description What was deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurgeResult"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getAppTombstones: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: components["parameters"]["AppId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The tombstones. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TombstoneList"];
+                };
+            };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteRecording: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                recording_id: components["parameters"]["RecordingId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecordingDeletionInput"];
+            };
+        };
+        responses: {
+            /** @description What was deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecordingDeletion"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     agentPair: {

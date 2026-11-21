@@ -26,6 +26,7 @@ import { VerificationPage } from "./pages/VerificationPage";
 import { SetupPage } from "./pages/SetupPage";
 import { TriagePage } from "./pages/TriagePage";
 import { UsersPage } from "./pages/UsersPage";
+import { OperationsPage } from "./pages/OperationsPage";
 import { SessionProvider, useSessionQuery } from "./session";
 
 export function makeQueryClient() {
@@ -66,6 +67,7 @@ export function AppRoutes() {
       <Route path="/setup" element={<SetupPage />} />
       <Route path="/setup/builds" element={<BuildSetupPage />} />
       <Route path="/admin/users" element={<UsersPage />} />
+      <Route path="/admin/operations" element={<OperationsPage />} />
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );

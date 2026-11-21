@@ -34,6 +34,7 @@ const PAGES: [path: string, heading: RegExp, who?: Who][] = [
   ["/setup", /^Setup$/],
   ["/setup/builds", /Build sessions: Setup/, "admin"],
   ["/admin/users", /Users and portal admins/, "admin"],
+  ["/admin/operations", /^Operations$/, "admin"],
   ["/no/such/page", /Not found/],
 ];
 
