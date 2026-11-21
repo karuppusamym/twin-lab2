@@ -45,6 +45,28 @@ STATUS_LABELS = {
 # What an owner may choose: "discovered" is the state before a decision, never a choice.
 OWNER_CHOICES = ("known", "not_replicated")
 
+# The catalog's groups (the API's `AppFamily`), in the order the catalog shows them: the scope
+# decision first, then how far a replicated application got, out of scope last.
+FAMILY_LABELS = {
+    "decide": "Needs a scope decision",
+    "build": "In build",
+    "tested": "Tested",
+    "published": "Published",
+    "not_replicated": "Not replicated (used only)",
+}
+
+
+def family(status: str, release_states=()) -> str:
+    """The catalog group of an application with scope `status` and these release states."""
+    if status == "discovered":
+        return "decide"
+    if status == "not_replicated":
+        return "not_replicated"
+    states = set(release_states)
+    if "published" in states:
+        return "published"
+    return "tested" if "tested" in states else "build"
+
 # Build session states (builds.py) in which a session is still working on the package.
 BUILD_ACTIVE = {"queued", "starting", "running", "waiting_for_answer"}
 

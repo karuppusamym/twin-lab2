@@ -14,7 +14,16 @@ const SORTS = [
   { value: "-stage", label: "Stage (furthest first)" },
 ] as const;
 type Sort = Exclude<(typeof SORTS)[number]["value"], "">;
+type Family = Schemas["AppFamily"];
 const LIMIT = 50;
+const FAMILIES: Family[] = ["decide", "build", "tested", "published", "not_replicated"];
+
+/** The collapsed groups: the `collapsed` URL parameter (comma-separated; empty = none), else the
+ * out-of-scope group, unless the status filter asks for exactly those applications. */
+function collapsedOf(value: string | null, status: string): Family[] {
+  if (value === null) return status === "not_replicated" ? [] : ["not_replicated"];
+  return value.split(",").filter((f): f is Family => (FAMILIES as string[]).includes(f));
+}
 
 export function CatalogPage() {
   useTitle("Applications");
@@ -31,9 +40,10 @@ export function CatalogPage() {
     status: (get("status") || undefined) as Schemas["AppStatus"] | undefined, sort: (get("sort") || undefined) as Sort | undefined,
   };
   const offset = Number(get("offset")) || 0;
+  const collapsed = collapsedOf(params.get("collapsed"), get("status"));
   const catalog = useQuery({
-    queryKey: ["apps", filters, offset],
-    queryFn: async () => data(await api.GET("/api/v1/apps", { params: { query: { ...filters, limit: LIMIT, offset } } })),
+    queryKey: ["apps", filters, collapsed, offset],
+    queryFn: async () => data(await api.GET("/api/v1/apps", { params: { query: { ...filters, collapsed, limit: LIMIT, offset } } })),
     placeholderData: keepPreviousData,
   });
   /** Change one URL parameter (a filter goes back to the first page). */
@@ -41,6 +51,14 @@ export function CatalogPage() {
     const next = new URLSearchParams(p);
     if (value) next.set(key, value); else next.delete(key);
     if (key !== "offset") next.delete("offset");
+    return next;
+  }, { replace: true });
+  /** Open or close one group (kept in the URL: back, reload and links keep it); back to page one. */
+  const toggle = (family: Family) => setParams((p) => {
+    const next = new URLSearchParams(p);
+    const now = collapsed.includes(family) ? collapsed.filter((f) => f !== family) : [...collapsed, family];
+    next.set("collapsed", FAMILIES.filter((f) => now.includes(f)).join(","));
+    next.delete("offset");
     return next;
   }, { replace: true });
   const filtered = Boolean(filters.q || filters.owner || filters.stage || filters.status);
@@ -82,11 +100,21 @@ export function CatalogPage() {
               </div>
             </form>
             <p className="muted" role="status" aria-live="polite">
-              {c.page.total === 1 ? "1 application" : `${c.page.total} applications`}{filtered ? " match" : ""}
+              {(() => {
+                const all = c.groups.reduce((n, g) => n + g.count, 0);
+                const folded = all - c.page.total;
+                return `${all === 1 ? "1 application" : `${all} applications`}${filtered ? (all === 1 ? " matches" : " match") : ""}`
+                  + (folded > 0 ? ` · ${folded} in collapsed groups` : "");
+              })()}
               {catalog.isFetching && !catalog.isPending ? " · updating…" : ""}
             </p>
-            {c.apps.length ? (
-              view === "table" ? <AppTable apps={c.apps} /> : <div className="cards">{c.apps.map((app) => <AppCard key={app.id} app={app} />)}</div>
+            {c.groups.some((g) => g.count > 0) ? (
+              <div className="catalog-groups">
+                {c.groups.filter((g) => g.count > 0).map((g) => (
+                  <AppGroup key={g.family} group={g} apps={c.apps.filter((a) => a.family === g.family)} page={c.page} view={view}
+                    onToggle={() => toggle(g.family)} onShow={() => put("offset", g.offset ? String(g.offset) : "")} />
+                ))}
+              </div>
             ) : filtered ? (
               <p>No application matches. <button type="button" className="secondary" onClick={() => { setQ(""); setParams(view === "table" ? { view } : {}); }}>Clear the filters</button></p>
             ) : (
@@ -111,11 +139,44 @@ export function CatalogPage() {
   );
 }
 
+/** One status family: a heading that opens and closes it, with its count over every page, and
+ * the applications of this page in it. A group whose applications are on another page says so. */
+function AppGroup({ group, apps, page, view, onToggle, onShow }: {
+  group: Schemas["CatalogGroup"]; apps: Schemas["AppSummary"][]; page: Schemas["Page"]; view: "cards" | "table";
+  onToggle: () => void; onShow: () => void;
+}) {
+  const id = `group-${group.family}`;
+  const open = !group.collapsed;
+  const start = group.offset ?? 0;
+  const before = open && apps.length > 0 && start < page.offset;
+  const after = open && apps.length > 0 && start + group.count > page.offset + page.limit;
+  return (
+    <div className="catalog-group" role="region" aria-labelledby={`${id}-heading`} data-family={group.family}>
+      <h2 id={`${id}-heading`} className="group-heading">
+        <button type="button" className="group-toggle" aria-expanded={open} aria-controls={id} onClick={onToggle}>
+          <span className="chevron" aria-hidden="true" />
+          <span className="group-label">{group.label}</span>
+          {" "}<span className="count">{group.count}<span className="visually-hidden"> {group.count === 1 ? "application" : "applications"}</span></span>
+        </button>
+        {before && <span className="muted group-note">continued from the previous page</span>}
+      </h2>
+      <div id={id} hidden={!open}>
+        {apps.length ? (
+          view === "table" ? <AppTable apps={apps} label={group.label} /> : <div className="cards">{apps.map((app) => <AppCard key={app.id} app={app} />)}</div>
+        ) : open ? (
+          <p className="muted group-note">On another page. <button type="button" className="link" onClick={onShow}>Show {group.label.toLowerCase()}</button></p>
+        ) : null}
+        {after && <p className="muted group-note">More on the next page.</p>}
+      </div>
+    </div>
+  );
+}
+
 function AppCard({ app }: { app: Schemas["AppSummary"] }) {
   const j = app.journey;
   return (
     <article className="card">
-      <h2><Link to={`/apps/${app.id}`}>{app.name}</Link> <Badge kind={app.status}>{app.status_label}</Badge></h2>
+      <h3><Link to={`/apps/${app.id}`}>{app.name}</Link> <Badge kind={app.status}>{app.status_label}</Badge></h3>
       <dl className="about">
         <dt>Owner</dt><dd>{app.owner || "not set"}</dd>
         <dt>Purpose</dt><dd>{app.purpose || "not set"}</dd>
@@ -133,10 +194,10 @@ function AppCard({ app }: { app: Schemas["AppSummary"] }) {
 }
 
 /** The compact view: one row per application. */
-function AppTable({ apps }: { apps: Schemas["AppSummary"][] }) {
+function AppTable({ apps, label }: { apps: Schemas["AppSummary"][]; label: string }) {
   return (
     <div className="scroll">
-      <table className="flow apps-table" aria-label="Applications">
+      <table className="flow apps-table" aria-label={`Applications: ${label}`}>
         <thead><tr><th scope="col">Application</th><th scope="col">Status</th><th scope="col">Owner</th><th scope="col">Stage</th><th scope="col">Missing</th><th scope="col">Next step</th></tr></thead>
         <tbody>{apps.map((app) => (
           <tr key={app.id}>
