@@ -350,6 +350,19 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(self.ok(alice.get(f"/api/v1/recordings/{imported['id']}"))["name"], "Invoice")
         events = self.ok(alice.get(f"/api/v1/recordings/{imported['id']}/events?limit=1&ids=true"))
         self.assertEqual((len(events["events"]), events["page"]["total"], len(events["ids"])), (1, 2, 2))
+        # grouped and filtered by screen: the counts per screen, in first-reached order, and one screen
+        every = self.ok(alice.get(f"/api/v1/recordings/{RECORDING}/events?limit=500"))["events"]
+        screens = self.ok(alice.get(f"/api/v1/recordings/{RECORDING}/events?limit=1"))["screens"]
+        first = []
+        for e in every:
+            if e.get("screen") not in first:
+                first.append(e.get("screen"))
+        self.assertEqual([s["screen"] for s in screens], first)
+        self.assertEqual(sum(s["count"] for s in screens), len(every))
+        one = screens[0]
+        only = self.ok(alice.get(f"/api/v1/recordings/{RECORDING}/events", params={"screen": one["screen"] or "", "limit": 500}))
+        self.assertEqual(only["page"]["total"], one["count"])
+        self.assertTrue(all(e.get("screen") == one["screen"] for e in only["events"]))
         # removing an application's assignment from a recording (none saved: still recorded as removed)
         removed = self.ok(alice.delete(f"/api/v1/recordings/{imported['id']}/assignments/{self.casedesk}"))
         self.assertEqual((removed["removed"], removed["selected"]), (True, []))
@@ -445,6 +458,12 @@ class ApiTest(unittest.TestCase):
         wrong = alice.post(f"/api/v1/releases/{self.release}/tests", json={
             "commit": "f" * 40, "platform": "Web", "launch": "x", "reset_result": "pass", "results": {}})
         self.assertEqual(wrong.status_code, 400)
+        # a readable number next to the commit; reports latest first, each with its outcome
+        self.assertRegex(detail["release"]["label"], r"^\d+\.1$")
+        reports = detail["checks"]["reports"]
+        self.assertEqual([r["latest"] for r in reports], [True] + [False] * (len(reports) - 1))
+        self.assertEqual([r["number"] for r in reports], list(range(len(reports), 0, -1)))
+        self.assertTrue(all(r["tested"] in (True, False, None) for r in reports))
         report = detail["checks"]["reports"][0]["id"]
         downloaded = bob.get(f"/api/v1/releases/{self.release}/reports/{report}")
         self.assertEqual(json.loads(downloaded.content)["commit"], SHA)

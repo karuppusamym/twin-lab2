@@ -5,7 +5,7 @@ import { api, data, type Schemas } from "../api/client";
 import { DeploymentBadge } from "../components/shared";
 import { VerificationProgress, isActive } from "../components/Verification";
 import { ActionButton, Badge, ErrorText, Notice, QueryView, useAction, useTitle } from "../components/ui";
-import { capitalize, short } from "../lib/format";
+import { capitalize, commitUrl, releaseName, short, when } from "../lib/format";
 import { useCan } from "../session";
 
 export function ReleasePage() {
@@ -14,7 +14,7 @@ export function ReleasePage() {
     queryKey: ["release", releaseId],
     queryFn: async () => data(await api.GET("/api/v1/releases/{release_id}", { params: { path: { release_id: releaseId } } })),
   });
-  useTitle(release.data ? `${release.data.app.name} ${release.data.release.version}` : undefined);
+  useTitle(release.data ? releaseName(release.data.app.name, release.data.release) : undefined);
   return <QueryView query={release}>{(r) => <ReleaseView detail={r} />}</QueryView>;
 }
 
@@ -24,20 +24,23 @@ function ReleaseView({ detail }: { detail: Schemas["ReleaseDetail"] }) {
   const owner = can("owner", app.id);
   const builder = can("builder", app.id);
   const path = { params: { path: { release_id: release.id } } };
+  const name = releaseName(app.name, release);
+  const commit = commitUrl(checks.repository ?? release.repository, release.commit_sha);
   return (
     <>
       <p><Link to={`/apps/${app.id}`}>{app.name}</Link></p>
-      <h1>{app.name} {release.version} <Badge kind={release.state}>{capitalize(release.state)}</Badge></h1>
+      <h1>{app.name} {release.label} <span className="muted heading-sha">({short(release.commit_sha, 7)})</span> <Badge kind={release.state}>{capitalize(release.state)}</Badge></h1>
       <Notice>{detail.notice}</Notice>
       <p className="muted">Packaged → Tested → Published. A release is Tested once its test results are recorded here, and only a Tested release can be published.</p>
-      {(release.state === "published" || builder) && <p><a href={`/api/v1/releases/${release.id}/download`}>Download release ZIP</a></p>}
+      {(release.state === "published" || builder) && <p><a href={`/api/v1/releases/${release.id}/download`} aria-label={`Download the release ZIP of ${name}`}>Download release ZIP</a></p>}
       <dl className="release-details">
-        <dt>Git commit</dt><dd><code>{release.commit_sha}</code></dd>
+        <dt>Version</dt><dd>{release.label} <span className="muted">build {release.label.split(".")[1]} of package revision {release.label.split(".")[0]}</span></dd>
+        <dt>Git commit</dt><dd>{commit ? <a href={commit}><code>{release.commit_sha}</code></a> : <code>{release.commit_sha}</code>}</dd>
         <dt>Build brief</dt><dd>{builder
-          ? <a href={`/api/v1/apps/${app.id}/briefs/${release.revision}/download`}><code>{release.revision}</code></a>
+          ? <a href={`/api/v1/apps/${app.id}/briefs/${release.revision}/download`} aria-label={`Download build brief ${short(release.revision)} of ${name}`}><code>{release.revision}</code></a>
           : <code>{release.revision}</code>}</dd>
         <dt>ZIP checksum</dt><dd><code>{release.archive_sha}</code></dd>
-        {release.published_at && <><dt>Published</dt><dd>{release.published_at}</dd></>}
+        {release.published_at && <><dt>Published</dt><dd><time dateTime={release.published_at}>{when(release.published_at)}</time></dd></>}
       </dl>
 
       <section id="verification" aria-labelledby="verification-h">
@@ -89,9 +92,25 @@ function ReleaseView({ detail }: { detail: Schemas["ReleaseDetail"] }) {
           </>
         )}
         {detail.verification && <VerificationProgress key={detail.verification.id} initial={detail.verification} />}
-        {builder && checks.reports.map((rep) => (
-          <p key={rep.id}><a href={`/api/v1/releases/${release.id}/reports/${rep.id}`}>Verification report {rep.created_at}</a> <code className="muted">{short(rep.sha256)}</code></p>
-        ))}
+        {builder && checks.reports.length > 0 && (
+          <>
+            <h3 id="reports-h">Verification reports <span className="muted">latest first</span></h3>
+            <ul className="report-list" aria-labelledby="reports-h">{checks.reports.map((rep) => {
+              const outcome = rep.tested === true ? "passed" : rep.tested === false ? "failed" : "outcome unknown";
+              return (
+                <li key={rep.id}>
+                  <a href={`/api/v1/releases/${release.id}/reports/${rep.id}`}
+                    aria-label={`Verification report ${rep.number} of ${name}${rep.latest ? ", the latest" : ""}: ${outcome}, ${when(rep.created_at)}${rep.requested_by ? ` by ${rep.requested_by}` : ""}`}>
+                    Report {rep.number}</a>
+                  {rep.latest && <Badge kind="known">Latest</Badge>}
+                  <Badge kind={rep.tested === true ? "pass" : rep.tested === false ? "fail" : undefined}>{capitalize(outcome)}</Badge>
+                  <span><time dateTime={rep.created_at}>{when(rep.created_at)}</time>{rep.requested_by ? ` by ${rep.requested_by}` : ""}</span>
+                  <code className="muted" title={`SHA-256 ${rep.sha256}`}>{short(rep.sha256)}</code>
+                </li>
+              );
+            })}</ul>
+          </>
+        )}
       </section>
 
       <section aria-labelledby="tests-h">
@@ -103,7 +122,7 @@ function ReleaseView({ detail }: { detail: Schemas["ReleaseDetail"] }) {
               <dt>Supported platform</dt><dd>{detail.test.platform}</dd>
               <dt>Launch instructions</dt><dd className="notes">{detail.test.launch}</dd>
               <dt>Reset check</dt><dd><Badge kind={detail.test.reset_result}>{detail.test.reset_result}</Badge>{detail.test.reset_notes && ` ${detail.test.reset_notes}`}</dd>
-              <dt>Tested by</dt><dd>{detail.test.tested_by}{detail.test.scope.role && ` (${detail.test.scope.role})`}, {detail.test.tested_at}</dd>
+              <dt>Tested by</dt><dd>{detail.test.tested_by}{detail.test.scope.role && ` (${detail.test.scope.role})`}, <time dateTime={detail.test.tested_at}>{when(detail.test.tested_at)}</time></dd>
               <dt>What was verified</dt><dd data-testid="verified-scope">{detail.test.scope.label}</dd>
               <dt>Deployment</dt><dd>{detail.test.scope.deployment_url ?? "No verified deployment"}</dd>
             </dl>
@@ -117,14 +136,14 @@ function ReleaseView({ detail }: { detail: Schemas["ReleaseDetail"] }) {
           ? <TestForm detail={detail} />
           : <p>The build brief names no scenarios, so this release cannot be tested. Link a recording to the app and export a new brief.</p>)}
         {release.state === "tested" && owner && (
-          <ActionButton label="Publish this release" confirm={`Publish ${app.name} ${release.version}?`} run={async () => data(await api.POST("/api/v1/releases/{release_id}/publish", path))} />
+          <ActionButton label="Publish this release" confirm={`Publish ${name}?`} run={async () => data(await api.POST("/api/v1/releases/{release_id}/publish", path))} />
         )}
       </section>
 
       <section aria-labelledby="deployments-h">
         <h2 id="deployments-h">Deployments</h2>
         <p className="muted">A deployment is Verified when <code>GET &lt;URL&gt;/{detail.version_path}</code> reports this release's commit: it serves that commit, nothing more. What was tested is under Test results.</p>
-        {detail.can_download && <p><a href={`/api/v1/releases/${release.id}/openshift.yaml`}>OpenShift manifest (release)</a> <span className="muted">builds exactly commit <code>{short(release.commit_sha)}</code> and runs the built image by digest; its header says how to add the digest.</span></p>}
+        {detail.can_download && <p><a href={`/api/v1/releases/${release.id}/openshift.yaml`} aria-label={`OpenShift manifest of ${name}`}>OpenShift manifest (release)</a> <span className="muted">builds exactly commit <code>{short(release.commit_sha)}</code> and runs the built image by digest; its header says how to add the digest.</span></p>}
         {detail.deployments.map((d) => (
           <div key={d.environment}>
             <h3>{d.environment} <DeploymentBadge deployment={d} /></h3>
