@@ -121,7 +121,8 @@ def machine(row):
     row = _row(row)
     return {"id": row["id"], "name": row["name"], "paired_by": row["paired_by"], "paired_at": row["paired_at"],
             "last_seen": row.get("last_seen"), "recorder": row.get("recorder") or "",
-            "contract_version": row.get("contract_version"), "revoked_at": row.get("revoked_at")}
+            "contract_version": row.get("contract_version"), "revoked_at": row.get("revoked_at"),
+            "scopes": (row.get("scopes") or "record upload").split()}
 
 
 def automation(row):

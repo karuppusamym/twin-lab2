@@ -261,6 +261,7 @@ details.details-section > section { border: 0; padding: var(--space-2) 0; }
 .looks-like li { margin: .2rem 0; }
 .inline-check { display: inline-flex; align-items: center; gap: var(--space-1); font-weight: 600; }
 .inline-check input { width: auto; }
+fieldset .inline-check { margin-right: var(--space-4); }
 div.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-3); background: var(--color-surface); border: var(--border-width) solid var(--color-border); border-radius: var(--radius-lg); margin: var(--space-3) 0; }
 .triage-card form.inline label { display: inline-flex; align-items: center; gap: var(--space-1); }
 .triage-card form.inline select { width: auto; }

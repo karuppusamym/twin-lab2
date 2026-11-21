@@ -1098,6 +1098,9 @@ class NewCaptureSession(Model):
     targets: list[NewCaptureSession_TargetsItem]
 
 
+AgentScope = Literal['record', 'upload']
+
+
 class Machine(Model):
     id: int
     name: str
@@ -1107,6 +1110,7 @@ class Machine(Model):
     recorder: str
     contract_version: str | None
     revoked_at: str | None
+    scopes: list[AgentScope]
 
 
 class MachineList(Model):
@@ -1119,6 +1123,11 @@ class PairingCode(Model):
     display: str
     minutes: int
     expires_at: Timestamp
+    scopes: list[AgentScope]
+
+
+class PairingCodeInput(Model):
+    scopes: list[AgentScope] | None = None
 
 
 class Automation(Model):
@@ -1754,6 +1763,7 @@ PackageRevision.model_rebuild()
 PackageRevisionSummary.model_rebuild()
 Page.model_rebuild()
 PairingCode.model_rebuild()
+PairingCodeInput.model_rebuild()
 Preflight.model_rebuild()
 Problem.model_rebuild()
 Provider.model_rebuild()

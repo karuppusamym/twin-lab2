@@ -224,5 +224,70 @@ class ProxySecretTest(Base):
         self.assertEqual(good.json()["user"], "alice")
 
 
+class AgentScopesAndRateTest(unittest.TestCase):
+    """The machine token's scopes (record, upload) and the per-machine rate limit."""
+
+    def setUp(self):
+        from twinlab2_contract import recorder_contract
+        self.cv = recorder_contract.CONTRACT_VERSION
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        self.database = new_database(self.work.name)
+        self.app = create_app(self.database)
+        self.client = Client(self.app)
+
+    def pair(self, scopes=None):
+        body = {"scopes": scopes} if scopes is not None else None
+        made = self.client.post("/api/v1/machines/pairing-codes", json=body)
+        self.assertEqual(made.status_code, 201, made.text)
+        response = self.client.http.post("/api/agent/pair", json={"contract_version": self.cv, "code": made.json()["code"],
+                                                                  "name": "PC"})
+        self.assertEqual(response.status_code, 200, response.text)
+        return made.json()["scopes"], {"Authorization": f"Bearer {response.json()['token']}"}
+
+    def upload(self, headers):
+        return self.client.http.post("/api/uploads", headers=headers, json={
+            "contract_version": self.cv, "session_id": "ws-20261121T100000Z-0a1b2c3d", "size": 4, "sha256": "0" * 64})
+
+    def test_scopes(self):
+        scopes, both = self.pair()
+        self.assertEqual(scopes, ["record", "upload"])
+        self.assertEqual(self.client.http.get("/api/agent/sessions", headers=both).status_code, 200)
+        self.assertNotEqual(self.upload(both).status_code, 403)
+
+        scopes, upload_only = self.pair(["upload"])
+        self.assertEqual(scopes, ["upload"])
+        refused = self.client.http.get("/api/agent/sessions", headers=upload_only)
+        self.assertEqual((refused.status_code, refused.json()["scope"]), (403, "record"))
+        self.assertEqual(self.client.http.get("/api/agent/apps", headers=upload_only).status_code, 403)
+        self.assertNotEqual(self.upload(upload_only).status_code, 403)
+
+        _, record_only = self.pair(["record"])
+        self.assertEqual(self.client.http.get("/api/agent/apps", headers=record_only).status_code, 200)
+        refused = self.upload(record_only)
+        self.assertEqual((refused.status_code, refused.json()["scope"]), (403, "upload"))
+        machines = self.client.get("/api/v1/machines").json()["machines"]
+        self.assertEqual(sorted(tuple(m["scopes"]) for m in machines), [("record",), ("record", "upload"), ("upload",)])
+
+        bad = self.client.post("/api/v1/machines/pairing-codes", json={"scopes": []})
+        self.assertEqual(bad.status_code, 400)
+
+    def test_rate_limit(self):
+        _, headers = self.pair()
+        _, other = self.pair()
+        with mock.patch.dict(os.environ, {"TWINLAB2_AGENT_RATE": "3"}):
+            answers = [self.client.http.get("/api/agent/sessions", headers=headers) for _ in range(4)]
+            self.assertEqual([a.status_code for a in answers], [200, 200, 200, 429])
+            self.assertIn("retry_after", answers[-1].json())
+            self.assertTrue(answers[-1].headers["Retry-After"].isdigit())
+            # per machine: another machine is not affected
+            self.assertEqual(self.client.http.get("/api/agent/sessions", headers=other).status_code, 200)
+            # a bad token is not counted against anyone (and is 401)
+            self.assertEqual(self.client.http.get("/api/agent/sessions",
+                                                  headers={"Authorization": "Bearer " + "x" * 43}).status_code, 401)
+        with mock.patch.dict(os.environ, {"TWINLAB2_AGENT_RATE": "0"}):  # off
+            self.assertEqual(self.client.http.get("/api/agent/sessions", headers=headers).status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1243,7 +1243,9 @@ export interface paths {
         put?: never;
         /**
          * Make a pairing code
-         * @description Signed in. The code works once, within `minutes`, and is never shown again.
+         * @description Signed in. The code works once, within `minutes`, and is never shown again. `scopes`: what
+         *     the machine paired with it may do (default both): `record` (sessions offered, applications,
+         *     a recording's references) and `upload` (evidence uploads). See docs/AGENT-API-SECURITY.md.
          */
         post: operations["makePairingCode"];
         delete?: never;
@@ -1758,7 +1760,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Sessions offered to this machine, and the keys not to record in full */
+        /**
+         * Sessions offered to this machine, and the keys not to record in full
+         * @description Scope `record`.
+         */
         get: operations["agentSessions"];
         put?: never;
         post?: never;
@@ -1775,7 +1780,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Catalog applications with an identity, for a session started on the recorder */
+        /**
+         * Catalog applications with an identity, for a session started on the recorder
+         * @description Scope `record`.
+         */
         get: operations["agentApps"];
         put?: never;
         post?: never;
@@ -1794,7 +1802,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** The references of a finished recording (applications, steps, timeline, completeness) */
+        /**
+         * The references of a finished recording (applications, steps, timeline, completeness)
+         * @description Scope `record`.
+         */
         post: operations["agentReferences"];
         delete?: never;
         options?: never;
@@ -1811,7 +1822,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start a resumable upload of a recording's evidence */
+        /**
+         * Start a resumable upload of a recording's evidence
+         * @description Scope `upload` (the upload's own token, then, for its chunks, parts and completion).
+         */
         post: operations["agentUploadInit"];
         delete?: never;
         options?: never;
@@ -3020,6 +3034,8 @@ export interface components {
             recorder: string;
             contract_version: string | null;
             revoked_at: string | null;
+            /** @description What its token may do. */
+            scopes: components["schemas"]["AgentScope"][];
         };
         MachineList: {
             machines: components["schemas"]["Machine"][];
@@ -3031,7 +3047,17 @@ export interface components {
             display: string;
             minutes: number;
             expires_at: components["schemas"]["Timestamp"];
+            scopes: components["schemas"]["AgentScope"][];
         };
+        PairingCodeInput: {
+            /** @description What the paired machine may do; default both. */
+            scopes?: components["schemas"]["AgentScope"][];
+        };
+        /**
+         * @description `record`: sessions offered, applications, a recording's references; `upload`: evidence uploads.
+         * @enum {string}
+         */
+        AgentScope: "record" | "upload";
         Automation: {
             id: number;
             name: string;
@@ -5474,7 +5500,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PairingCodeInput"];
+            };
+        };
         responses: {
             /** @description The code. */
             201: {
@@ -5485,6 +5515,7 @@ export interface operations {
                     "application/json": components["schemas"]["PairingCode"];
                 };
             };
+            400: components["responses"]["BadRequest"];
         };
     };
     revokeMachine: {
@@ -6080,6 +6111,8 @@ export interface operations {
         responses: {
             200: components["responses"]["AgentJson"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentApps: {
@@ -6093,6 +6126,8 @@ export interface operations {
         responses: {
             200: components["responses"]["AgentJson"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentReferences: {
@@ -6111,8 +6146,10 @@ export interface operations {
             200: components["responses"]["AgentJson"];
             400: components["responses"]["AgentError"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
             409: components["responses"]["AgentError"];
             426: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentUploadInit: {
@@ -6132,6 +6169,8 @@ export interface operations {
             201: components["responses"]["AgentJson"];
             400: components["responses"]["AgentError"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentUploadStatus: {
@@ -6147,7 +6186,9 @@ export interface operations {
         responses: {
             200: components["responses"]["AgentJson"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
             404: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentUploadChunk: {
@@ -6168,7 +6209,9 @@ export interface operations {
             200: components["responses"]["AgentJson"];
             400: components["responses"]["AgentError"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
             409: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentUploadParts: {
@@ -6184,6 +6227,8 @@ export interface operations {
         responses: {
             200: components["responses"]["AgentJson"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     agentUploadComplete: {
@@ -6200,7 +6245,9 @@ export interface operations {
             200: components["responses"]["AgentJson"];
             400: components["responses"]["AgentError"];
             401: components["responses"]["AgentError"];
+            403: components["responses"]["AgentError"];
             409: components["responses"]["AgentError"];
+            429: components["responses"]["AgentError"];
         };
     };
     recordingUploadProgress: {
