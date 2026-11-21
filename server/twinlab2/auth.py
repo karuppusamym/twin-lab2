@@ -228,6 +228,7 @@ class Settings:
     force_local_dev: bool = False
     session_hours: float = SESSION_HOURS
     app_creators: str = "owners"
+    proxy_secret: str = ""  # TWINLAB2_PROXY_SECRET: the proxy also sends it as PROXY_SECRET_HEADER
 
     @classmethod
     def from_env(cls):
@@ -255,6 +256,7 @@ class Settings:
             force_local_dev=env("TWINLAB2_LOCAL_DEV_FORCE") == "1",
             session_hours=hours,
             app_creators=creators,
+            proxy_secret=env("TWINLAB2_PROXY_SECRET", ""),
         )
 
     @property
@@ -338,6 +340,71 @@ def from_proxy(req, settings):
     return _address_in(client_host(req), settings.trusted_proxies)
 
 
+PROXY_SECRET_HEADER = "X-TwinLab-Proxy-Secret"
+
+
+def proxy_secret_ok(req, settings):
+    """With TWINLAB2_PROXY_SECRET, the proxy proves itself with that value in PROXY_SECRET_HEADER
+    (a peer address alone is weak once the trusted proxies are a network, not loopback)."""
+    if not settings.proxy_secret:
+        return True
+    sent = req.headers.get(PROXY_SECRET_HEADER, "")
+    return bool(sent) and secrets.compare_digest(sent.encode("utf-8"), settings.proxy_secret.encode("utf-8"))
+
+
+# -- the address the portal listens on ----------------------------------------------------------
+
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]", "ip6-localhost"}
+
+
+def is_loopback(host):
+    """Whether `host` (an address or name the server binds) is reachable only from this machine.
+    A unix socket (`unix:/path`, `fd://3`) counts as local; an empty host is uvicorn's default."""
+    host = (host or "").strip()
+    if not host or host.startswith(("unix:", "fd:")):
+        return True
+    host = host.strip("[]")
+    if host in LOOPBACK_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False  # a name (or 0.0.0.0 / ::, which are addresses and not loopback)
+
+
+def bind_check(settings, connection, host):
+    """(refusal, warnings) for a portal listening on `host` in the auth mode in force: a
+    ConfigError message when it must not start there, else None, and the warnings to log. Only
+    an address other machines can reach is judged; `TWINLAB2_ALLOW_UNSAFE_BIND=1` turns the
+    refusal into a warning (a container whose published port is loopback, say)."""
+    if is_loopback(host):
+        return None, []
+    mode = mode_of(settings, connection)
+    warnings, refusal = [], None
+    if mode == LOCAL_DEV:
+        warnings.append(f"the portal listens on {host}, but auth mode local-dev serves only this machine: other "
+                        "machines are refused (403). Set TWINLAB2_AUTH_MODE=individual to serve them.")
+    elif mode == INDIVIDUAL and settings.password:
+        warnings.append(f"the portal listens on {host} with the shared password (TWINLAB2_PASSWORD): anyone who "
+                        f"reaches it and knows that password signs in as {settings.shared_user!r}. Use it for "
+                        "demos only; give people their own passwords, or listen on 127.0.0.1.")
+    elif mode == TRUSTED_PROXY and not settings.proxy_secret:
+        wide = [str(n) for n in settings.trusted_proxies if not n.network_address.is_loopback]
+        if wide:
+            refusal = (f"The portal listens on {host} and trusts identity headers from {', '.join(wide)} without "
+                       "TWINLAB2_PROXY_SECRET: any machine there could send X-Forwarded-User and sign in as anyone. "
+                       f"Set TWINLAB2_PROXY_SECRET (the proxy sends it as {PROXY_SECRET_HEADER}), trust only the "
+                       "sidecar on loopback, or listen on 127.0.0.1.")
+        else:
+            warnings.append(f"the portal listens on {host} in trusted-proxy mode: only loopback peers (the sidecar) "
+                            "are trusted, so other machines are refused. Listen on 127.0.0.1 behind the sidecar, or "
+                            "set TWINLAB2_PROXY_SECRET.")
+    if refusal and os.environ.get("TWINLAB2_ALLOW_UNSAFE_BIND") == "1":
+        warnings.append(refusal + " (allowed: TWINLAB2_ALLOW_UNSAFE_BIND=1)")
+        refusal = None
+    return refusal, warnings
+
+
 ONLY_THIS_MACHINE = ("This portal serves only this machine (auth mode local-dev): set TWINLAB2_AUTH_MODE=individual "
                      "and add users, or run it behind the SSO proxy.")
 LOCAL_DEV_REFUSED = ("Local users with passwords exist, so this machine's admin is not signed in automatically: "
@@ -390,7 +457,7 @@ def resolve(req=None):
     mode = mode_of(settings, connection)
     admin = False
     if mode == TRUSTED_PROXY:
-        if not from_proxy(req, settings):
+        if not from_proxy(req, settings) or not proxy_secret_ok(req, settings):
             return None, NOT_FROM_PROXY
         user, groups = proxy_identity(req)
         if not user:

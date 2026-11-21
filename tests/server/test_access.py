@@ -146,5 +146,83 @@ class CsrfRotationTest(unittest.TestCase):
         self.assertNotIn(after, (before, during))
 
 
+class BindCheckTest(unittest.TestCase):
+    """A portal that other machines can reach, in an auth mode that is not safe there."""
+
+    def check(self, host, **env):
+        settings_env = {k: v for k, v in env.items()}
+        with mock.patch.dict(os.environ, settings_env, clear=False):
+            settings = auth.Settings.from_env()
+            work = tempfile.TemporaryDirectory()
+            self.addCleanup(work.cleanup)
+            with closing(connect(new_database(work.name))) as db:
+                from twinlab2 import migrations
+                migrations.run(db)
+                return auth.bind_check(settings, db, host)
+
+    def test_loopback_is_never_judged(self):
+        for host in ("127.0.0.1", "localhost", "::1", "[::1]", "127.0.0.2", "unix:/run/portal.sock", ""):
+            self.assertEqual(self.check(host, TWINLAB2_AUTH_MODE="trusted-proxy",
+                                        TWINLAB2_TRUSTED_PROXIES="10.0.0.0/8"), (None, []), host)
+
+    def test_shared_password_warns(self):
+        refusal, warnings = self.check("0.0.0.0", TWINLAB2_AUTH_MODE="individual", TWINLAB2_PASSWORD="pw")
+        self.assertIsNone(refusal)
+        self.assertIn("shared password", warnings[0])
+        self.assertEqual(self.check("0.0.0.0", TWINLAB2_AUTH_MODE="individual", TWINLAB2_PASSWORD=""), (None, []))
+
+    def test_proxy_without_secret(self):
+        refusal, _ = self.check("0.0.0.0", TWINLAB2_AUTH_MODE="trusted-proxy", TWINLAB2_TRUSTED_PROXIES="10.0.0.0/8")
+        self.assertIn("TWINLAB2_PROXY_SECRET", refusal)
+        self.assertEqual(self.check("0.0.0.0", TWINLAB2_AUTH_MODE="trusted-proxy", TWINLAB2_TRUSTED_PROXIES="10.0.0.0/8",
+                                    TWINLAB2_PROXY_SECRET="s" * 32), (None, []))
+        refusal, warnings = self.check("0.0.0.0", TWINLAB2_AUTH_MODE="trusted-proxy",
+                                       TWINLAB2_TRUSTED_PROXIES="10.0.0.0/8", TWINLAB2_ALLOW_UNSAFE_BIND="1")
+        self.assertIsNone(refusal)
+        self.assertIn("allowed", warnings[0])
+        refusal, warnings = self.check("0.0.0.0", TWINLAB2_AUTH_MODE="trusted-proxy")  # loopback sidecar only
+        self.assertIsNone(refusal)
+        self.assertIn("only loopback peers", warnings[0])
+
+    def test_startup_refuses(self):
+        work = tempfile.TemporaryDirectory()
+        self.addCleanup(work.cleanup)
+        env = {"TWINLAB2_AUTH_MODE": "trusted-proxy", "TWINLAB2_TRUSTED_PROXIES": "10.0.0.0/8",
+               "TWINLAB2_BIND_HOST": "0.0.0.0"}
+        with mock.patch.dict(os.environ, env), self.assertRaises(auth.ConfigError):
+            create_app(new_database(work.name))
+        # no TWINLAB2_BIND_HOST: gunicorn's command line says where it listens
+        with mock.patch.dict(os.environ, {**env, "TWINLAB2_BIND_HOST": ""}),                 mock.patch("sys.argv", ["gunicorn", "--bind", "0.0.0.0:8080", "twinlab2.app:asgi()"]),                 self.assertRaises(auth.ConfigError):
+            create_app(new_database(work.name))
+        # a warning only: the shared password, listening on every interface
+        with mock.patch.dict(os.environ, {"TWINLAB2_AUTH_MODE": "individual", "TWINLAB2_PASSWORD": "pw",
+                                          "TWINLAB2_BIND_HOST": "0.0.0.0"}),                 self.assertLogs("twinlab2", "WARNING") as logged:
+            create_app(new_database(work.name))
+        self.assertTrue(any("shared password" in line for line in logged.output))
+
+    def test_bind_host_from_the_command_line(self):
+        from twinlab2.app import bind_host
+        self.assertEqual(bind_host(["gunicorn", "--bind", "0.0.0.0:8080"], {}), "0.0.0.0")
+        self.assertEqual(bind_host(["gunicorn", "-b", "127.0.0.1:8080", "-b", "[::]:8080"], {}), "[::]")
+        self.assertEqual(bind_host(["gunicorn"], {"GUNICORN_CMD_ARGS": "--bind=10.1.2.3:80"}), "10.1.2.3")
+        self.assertEqual(bind_host(["uvicorn", "--host", "0.0.0.0"], {}), "0.0.0.0")
+        self.assertEqual(bind_host(["gunicorn", "--bind", "127.0.0.1:8080"], {}), "127.0.0.1")
+        self.assertEqual(bind_host(["x"], {"TWINLAB2_BIND_HOST": "192.0.2.1"}), "192.0.2.1")
+        self.assertEqual(bind_host(["x"], {}), "")
+
+
+class ProxySecretTest(Base):
+    env = {"TWINLAB2_AUTH_MODE": "trusted-proxy", "TWINLAB2_PROXY_SECRET": "p" * 40}
+
+    def test_the_header_is_needed(self):
+        http = TestClient(self.app, base_url="http://localhost", client=("127.0.0.1", 50000))
+        refused = http.get("/api/v1/session", headers={"X-Forwarded-User": "mallory"})
+        self.assertFalse(refused.json()["signed_in"])
+        wrong = http.get("/api/v1/apps", headers={"X-Forwarded-User": "mallory", auth.PROXY_SECRET_HEADER: "nope"})
+        self.assertEqual(wrong.status_code, 403)
+        good = http.get("/api/v1/session", headers={"X-Forwarded-User": "alice", auth.PROXY_SECRET_HEADER: "p" * 40})
+        self.assertEqual(good.json()["user"], "alice")
+
+
 if __name__ == "__main__":
     unittest.main()
