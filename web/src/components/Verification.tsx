@@ -71,7 +71,7 @@ export function VerificationProgress({ initial, showRelease = false }: { initial
           })}</tbody>
         </table>
       )}
-      {v.report?.url && <p><a href={v.report.url}>Verification report</a> <code className="muted">{v.report.sha256.slice(0, 12)}</code></p>}
+      {v.report?.url && <p><a href={v.report.url}>Report of this verification</a> <code className="muted">{v.report.sha256.slice(0, 12)}</code>{!showRelease && <span className="muted"> · every report is listed below</span>}</p>}
     </div>
   );
 }

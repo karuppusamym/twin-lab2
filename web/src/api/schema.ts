@@ -885,8 +885,10 @@ export interface paths {
          * A recording's events, paginated and searchable
          * @description A reviewer of the recording. In recording order (`seq`). Paginated (default `limit` 100).
          *     `q` matches the action, key, control, label, screen, source and time (case-insensitive,
-         *     every word must match); `source` is one application (an event's `source`). `sources` counts
-         *     the events per source of the whole recording. With `ids=true` the answer also lists the
+         *     every word must match); `source` is one application (an event's `source`); `screen` is one
+         *     screen (empty: the events with no screen). `sources` counts the events per source of the whole
+         *     recording; `screens` counts the events per screen of the chosen source (or of all), in the order
+         *     the recording first reached each screen. With `ids=true` the answer also lists the
          *     `event_id` of every matching event (all pages), for "select every match".
          */
         get: operations["listRecordingEvents"];
@@ -1979,6 +1981,9 @@ export interface components {
         TestedRelease: {
             id: number;
             version: string;
+            /** @description The readable number (ReleaseSummary.label). */
+            label: string;
+            commit_sha: string;
             state: components["schemas"]["ReleaseState"];
             platform: string;
             counts: {
@@ -2779,6 +2784,12 @@ export interface components {
                 source: string;
                 count: number;
             }[];
+            /** @description The events per screen of the chosen source (or the whole recording), in first-reached order. */
+            screens: {
+                /** @description null: events with no screen. */
+                screen: string | null;
+                count: number;
+            }[];
             /** @description With `ids=true`: the event_id of every matching event. */
             ids?: string[];
         };
@@ -2996,7 +3007,14 @@ export interface components {
         };
         ReleaseSummary: {
             id: number;
+            /** @description The release's unique name in its application (the commit, 12 characters). */
             version: string;
+            /**
+             * @description The readable number `<package>.<build>`: the builder package revision the release was built
+             *     from and the count of releases built from it, oldest first (e.g. `1.2`). Shown as
+             *     `<app> <label> (<commit, 7 characters>)`.
+             */
+            label: string;
             revision: string;
             commit_sha: string;
             archive_sha: string;
@@ -3089,8 +3107,15 @@ export interface components {
             reasons: string[];
             reports: {
                 id: number;
+                /** @description 1 for the release's first report. */
+                number: number;
+                latest: boolean;
                 created_at: components["schemas"]["Timestamp"];
                 sha256: string;
+                /** @description The report's outcome: true when it made the release Tested; null when unknown. */
+                tested: boolean | null;
+                /** @description Who started the verification; null for a report stored before verification jobs. */
+                requested_by: string | null;
             }[];
         };
         ReleaseDetail: {
@@ -4940,6 +4965,7 @@ export interface operations {
                 offset?: components["parameters"]["Offset"];
                 q?: string;
                 source?: string;
+                screen?: string;
                 ids?: boolean;
             };
             header?: never;

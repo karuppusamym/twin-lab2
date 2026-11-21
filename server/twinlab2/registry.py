@@ -352,3 +352,25 @@ def recorder_of(doc, header=""):
         return str(rec["name"])[:60], str(rec["version"])[:40]
     name, _, version = (header or "").strip().partition(" ")
     return name[:60] or "unknown", version[:40] or "unknown"
+
+
+def release_labels(db, app_id):
+    """The readable number of each of an application's releases, by release id: `<package>.<build>`,
+    where <package> is the builder package revision the release was built from (its brief) and
+    <build> counts the releases built from that package, oldest first. A brief without a frozen
+    package (an older release) is numbered after the packages, in the order its first release came."""
+    rows = db.execute(
+        "SELECT releases.id, releases.revision, (SELECT MIN(rev) FROM builder_packages WHERE builder_packages.app_id = "
+        "releases.app_id AND builder_packages.revision = releases.revision) AS rev FROM releases WHERE app_id = ? "
+        "ORDER BY releases.id", (app_id,)).fetchall()
+    known = [r["rev"] for r in rows if r["rev"] is not None]
+    spare = max(known, default=0)
+    majors, builds, labels = {}, {}, {}
+    for r in rows:
+        if r["revision"] not in majors:
+            if r["rev"] is None:
+                spare += 1
+            majors[r["revision"]] = r["rev"] if r["rev"] is not None else spare
+        builds[r["revision"]] = builds.get(r["revision"], 0) + 1
+        labels[r["id"]] = f"{majors[r['revision']]}.{builds[r['revision']]}"
+    return labels

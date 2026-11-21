@@ -4,7 +4,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, data, newRequestKey, type Schemas } from "../api/client";
 import { PackageFiles } from "../components/shared";
 import { Badge, Crumbs, ErrorText, Notice, QueryView, useAction, useTitle } from "../components/ui";
-import { amount, plural, short, when } from "../lib/format";
+import { amount, plural, releaseName, short, when } from "../lib/format";
 import { useCan } from "../session";
 import { useAppId } from "./AppPage";
 
@@ -51,7 +51,7 @@ function BuildView({ page }: { page: Schemas["BuildPage"] }) {
             )}
             <p>This is exactly what the pack contains: {plural(pack.files.length, "file")}, {pack.size} bytes, archive SHA-256{" "}
               <code id="archive-sha256">{pack.sha256}</code>. Revision <code>{pack.revision}</code>.</p>
-            <p><a href={`/api/v1/apps/${app.id}/briefs/${pack.revision}/download`}>Download this build pack</a></p>
+            <p><a href={`/api/v1/apps/${app.id}/briefs/${pack.revision}/download`} aria-label={`Download the build pack ${short(pack.revision)} of ${app.name}`}>Download this build pack</a></p>
             <PackageFiles files={pack.files} full />
           </section>
           <StartSession page={page} pack={pack} gitUrl={gitUrl} />
@@ -169,7 +169,7 @@ function RegisterRelease({ page, gitUrl }: { page: Schemas["BuildPage"]; gitUrl:
   const ready = page.sessions.filter((b) => b.head_sha);
   const register = useAction(async (body: Schemas["ReleaseInput"]) => data(await api.POST("/api/v1/apps/{app_id}/releases", {
     params: { path: { app_id: page.app.id } }, body,
-  })), (r) => navigate(r.href, { state: { notice: r.created ? `Registered release ${r.release.version}. ${r.next}` : `Commit ${r.release.version} is already release ${r.release.id}. ${r.next}` } }),
+  })), (r) => navigate(r.href, { state: { notice: r.created ? `Registered release ${releaseName(null, r.release)}. ${r.next}` : `Commit ${short(r.release.commit_sha)} is already release ${releaseName(null, r.release)}. ${r.next}` } }),
   [["app", page.app.id], ["apps"], ["home"]]);
   return (
     <section id="register" aria-labelledby="register-h">

@@ -2,8 +2,10 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useDeferredValue, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
+import { Combobox } from "../components/Combobox";
+import { EventChooser, NO_SCREEN, type ChooserEvent } from "../components/EventChooser";
 import { FlowTable } from "../components/shared";
-import { ActionButton, Badge, ConflictView, Crumbs, DirtyNote, ErrorText, Pager, QueryView, conflictOf, useAction, useDraft, useLeaveWarning, useTitle } from "../components/ui";
+import { ActionButton, Badge, ConflictView, Crumbs, DirtyNote, ErrorText, QueryView, conflictOf, useAction, useDraft, useLeaveWarning, useTitle } from "../components/ui";
 import { Workboard } from "../components/Workboard";
 import { capitalize, plural, short, when, words } from "../lib/format";
 import { useCan } from "../session";
@@ -188,12 +190,8 @@ function Assignment({ rec }: { rec: Schemas["RecordingDetail"] }) {
       {rec.assignable_apps.length ? (
         <>
           <form id="app-picker" aria-label="Choose a demo app" onSubmit={(e) => { e.preventDefault(); if (choice) setParams({ app_id: choice }); }}>
-            <label>Demo app
-              <select required value={choice} onChange={(e) => setChoice(e.target.value)}>
-                <option value="">Choose an app</option>
-                {rec.assignable_apps.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
-            </label>
+            <Combobox label="Demo app" required value={choice} onChange={setChoice} placeholder="Type an application's name"
+              options={rec.assignable_apps.map((a) => ({ value: String(a.id), label: a.name }))} />
             <button>Open assignment</button>
           </form>
           {appId && allowed && <AssignmentForm key={appId} rec={rec} appId={appId} appName={rec.assignable_apps.find((a) => a.id === appId)?.name ?? ""} />}
@@ -274,15 +272,16 @@ function AssignmentEditor({ rec, appId, appName, server }: { rec: Schemas["Recor
   );
 }
 
-/** The recording's events as searchable rows, a page at a time (the server filters and pages). */
+/** The recording's events in the shared chooser: the server filters and pages them. */
 function EventPicker({ rec, selected, suggested, onSelect }: {
   rec: Schemas["RecordingDetail"]; selected: Set<string>; suggested: Set<string>; onSelect: (ids: string[], on: boolean) => void;
 }) {
   const [q, setQ] = useState("");
   const [source, setSource] = useState("");
+  const [screen, setScreen] = useState("");
   const [offset, setOffset] = useState(0);
   const query = useDeferredValue(q.trim());
-  const filters = { q: query || undefined, source: source || undefined };
+  const filters = { q: query || undefined, source: source || undefined, screen: screen ? (screen === NO_SCREEN ? "" : screen) : undefined };
   const events = useQuery({
     queryKey: ["recording", rec.id, "events", filters, offset],
     queryFn: async () => data(await api.GET("/api/v1/recordings/{recording_id}/events", {
@@ -296,45 +295,26 @@ function EventPicker({ rec, selected, suggested, onSelect }: {
     }));
     onSelect(all.ids ?? [], on);
   }, undefined, []);
+  const page = events.data;
+  if (!page) return <QueryView query={events} what="Loading events">{() => null}</QueryView>;
+  const rows: ChooserEvent[] = page.events.map((ev) => ({
+    id: ev.event_id, seq: ev.seq, action: `${ev.action}${ev.key ? ` ${ev.key}` : ""}`, label: ev.label, screen: ev.screen,
+    flow: ev.app ?? ev.source, time: ev.time,
+    note: <>{suggested.has(ev.event_id) && <Badge kind="suggested">new, not yet reviewed</Badge>}{ev.in_gap && <> <Badge kind="interrupted">in an interrupted period</Badge></>}</>,
+  }));
   return (
-    <fieldset className="event-picker">
-      <legend>Events</legend>
-      <div className="filters">
-        <label>Search events <input type="search" value={q} placeholder="Action, label, screen, app or time" onChange={(e) => { setQ(e.target.value); setOffset(0); }} /></label>
-        <label>Application
-          <select value={source} onChange={(e) => { setSource(e.target.value); setOffset(0); }}>
-            <option value="">All ({rec.events_total})</option>
-            {events.data?.sources.map((s) => <option key={s.source} value={s.source}>{s.source} ({s.count})</option>)}
-          </select>
-        </label>
-      </div>
-      <QueryView query={events} what="Loading events">
-        {(page) => (
-          <>
-            <div className="actions">
-              <span className="muted" role="status">{plural(page.page.total, "matching event")}</span>
-              <button type="button" className="secondary" disabled={matching.isPending || page.page.total === 0} onClick={() => matching.mutate(true)}>Select all {page.page.total} matching</button>
-              <button type="button" className="secondary" disabled={matching.isPending || page.page.total === 0} onClick={() => matching.mutate(false)}>Clear {page.page.total} matching</button>
-            </div>
-            <ErrorText error={matching.error} />
-            <div className="scroll">
-              <table className="flow events-table" aria-label="Recording events">
-                <thead><tr><th scope="col"><span className="visually-hidden">Selected</span></th><th scope="col">#</th><th scope="col">Action</th><th scope="col">Label</th><th scope="col">App</th><th scope="col">Screen</th><th scope="col">Time</th><th scope="col"><span className="visually-hidden">Notes</span></th></tr></thead>
-                <tbody>{page.events.map((ev) => (
-                  <tr key={ev.event_id} className={selected.has(ev.event_id) ? "selected" : undefined}>
-                    <td><input type="checkbox" aria-label={`${ev.seq} · ${ev.action}${ev.label ? ` ${ev.label}` : ""}`} checked={selected.has(ev.event_id)} onChange={(e) => onSelect([ev.event_id], e.target.checked)} /></td>
-                    <td>{ev.seq}</td><td>{ev.action}{ev.key && ` ${ev.key}`}</td><td>{ev.label ?? ""}</td><td>{ev.app ?? ev.source}</td><td>{ev.screen ?? ""}</td>
-                    <td>{ev.time ? <time dateTime={ev.time}>{ev.time.slice(11, 19)}</time> : ""}</td>
-                    <td>{suggested.has(ev.event_id) && <Badge kind="suggested">new, not yet reviewed</Badge>}{ev.in_gap && <> <Badge kind="interrupted">in an interrupted period</Badge></>}</td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            </div>
-            {page.events.length === 0 && <p className="muted">No event matches.</p>}
-            <Pager page={page.page} onOffset={setOffset} label="Event pages" />
-          </>
-        )}
-      </QueryView>
-    </fieldset>
+    <>
+      <ErrorText error={events.error} />
+      <EventChooser
+        legend="Recording events" events={rows} page={page.page} selected={selected} onSelect={onSelect}
+        q={q} onQ={(v) => { setQ(v); setOffset(0); }} loading={events.isFetching}
+        flow={{ label: "Application", value: source, onChange: (v) => { setSource(v); setScreen(""); setOffset(0); },
+                options: page.sources.map((src) => ({ value: src.source, label: src.source, count: src.count })) }}
+        screen={{ label: "Screen", value: screen, onChange: (v) => { setScreen(v); setOffset(0); },
+                  options: page.screens.map((sc) => ({ value: sc.screen ?? NO_SCREEN, label: sc.screen ?? "No screen", count: sc.count })) }}
+        onSelectMatching={(on) => matching.mutate(on)} matchingBusy={matching.isPending} matchingError={matching.error}
+        onOffset={setOffset}
+      />
+    </>
   );
 }
