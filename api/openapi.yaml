@@ -1214,7 +1214,7 @@ paths:
           application/json:
             schema: { $ref: "#/components/schemas/ToolDecision" }
             examples:
-              approve: { value: { decision: approve, request_key: "tool:32" } }
+              approve: { value: { decision: approve, request_key: "tool:32:approve" } }
       responses:
         "200": { $ref: "#/components/responses/BuildDetail" }
         "400": { $ref: "#/components/responses/BadRequest" }
