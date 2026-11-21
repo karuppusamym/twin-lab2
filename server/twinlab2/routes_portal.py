@@ -706,12 +706,24 @@ def share_attachment(app_id: int, attachment_id: int, body: m.ShareInput):
 @routes.delete(V1 + "/apps/{app_id:int}/attachments/{attachment_id:int}", require_role("owner"), status_code=204)
 def remove_attachment(app_id: int, attachment_id: int):
     get_app(app_id)
+    from twinlab2 import lifecycle
+
     with db():
+        row = db().execute("SELECT title, artifact_id FROM attachments WHERE app_id = ? AND id = ?",
+                           (app_id, attachment_id)).fetchone()
         removed = db().execute("DELETE FROM attachments WHERE app_id = ? AND id = ?",
                                (app_id, attachment_id)).rowcount
         if removed:
             readiness_cache.forget(db(), app_id)
             record("evidence.remove", "attachment", attachment_id, app_id=app_id)
+            # the stored bytes go too, unless another attachment holds the same object
+            if row["artifact_id"] is not None and db().execute(
+                    "SELECT 1 FROM attachments WHERE artifact_id = ?", (row["artifact_id"],)).fetchone() is None:
+                ref = artifacts.load(db(), row["artifact_id"], include_deleted=True)
+                stone = lifecycle.tombstone(db(), actor=g.user, reason="owner_request", object_type="attachment",
+                                            object_id=attachment_id, app_id=app_id, sha256=ref.sha256, size=ref.size,
+                                            title=row["title"])
+                lifecycle.delete_artifact(db(), row["artifact_id"], stone, "owner_request")
     return Response(status_code=204)
 
 # -- recordings ----------------------------------------------------------------------------

@@ -113,5 +113,5 @@ def check(method, path, status, content_type, body_bytes):
     kind = content_type.split(";")[0].strip()
     assert kind in content, f"{where}: answered {kind}, declared {sorted(content)}"
     schema = content[kind].get("schema")
-    if schema and "json" in kind:
+    if schema and "json" in kind and "ndjson" not in kind:  # JSON lines are not one JSON document
         validate(schema, json.loads(body_bytes), where)

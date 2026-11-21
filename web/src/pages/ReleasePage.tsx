@@ -7,6 +7,7 @@ import { VerificationProgress, isActive } from "../components/Verification";
 import { ActionButton, Badge, ErrorText, Notice, QueryView, useAction, useTitle } from "../components/ui";
 import { capitalize, commitUrl, releaseName, short, when } from "../lib/format";
 import { useCan } from "../session";
+import { TombstoneTable } from "./OperationsPage";
 
 export function ReleasePage() {
   const releaseId = Number(useParams().releaseId);
@@ -42,6 +43,8 @@ function ReleaseView({ detail }: { detail: Schemas["ReleaseDetail"] }) {
         <dt>ZIP checksum</dt><dd><code>{release.archive_sha}</code></dd>
         {release.published_at && <><dt>Published</dt><dd><time dateTime={release.published_at}>{when(release.published_at)}</time></dd></>}
       </dl>
+
+      <Deleted appId={app.id} />
 
       <section id="verification" aria-labelledby="verification-h">
         <h2 id="verification-h">Verification of commit <code>{short(release.commit_sha)}</code></h2>
@@ -222,5 +225,21 @@ function DeploymentForm({ releaseId }: { releaseId: number }) {
         <button disabled={save.isPending}>Save deployment</button>
       </form>
     </details>
+  );
+}
+
+/** What retention, an owner's request or a purge deleted from the application: the release still says so. */
+function Deleted({ appId }: { appId: number }) {
+  const stones = useQuery({
+    queryKey: ["app-tombstones", appId],
+    queryFn: async () => data(await api.GET("/api/v1/apps/{app_id}/tombstones", { params: { path: { app_id: appId } } })),
+  });
+  if (!stones.data?.tombstones.length) return null;
+  return (
+    <section id="deleted" aria-labelledby="deleted-h">
+      <h2 id="deleted-h">Deleted since</h2>
+      <p className="muted">Stored files of this application that were deleted. A download that needed one answers that it is gone.</p>
+      <TombstoneTable tombstones={stones.data.tombstones} />
+    </section>
   );
 }
