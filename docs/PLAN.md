@@ -1,8 +1,8 @@
 # TwinLab2 implementation plan
 
-The first delivery follows one demo from evidence import to a coding agent's inbox. The portal runs on the workstation and stores its catalog in SQLite. See the [design proposal](../README.md) for the full workflow and recorder priorities.
+The first delivery follows one demo from evidence import to a coding agent's inbox. The portal runs on the workstation and stores its catalog in SQLite. See the [design](design.md) for the full workflow and recorder priorities.
 
-Status labels (**Implemented**, **Locally tested**, **Externally validated**) are defined in the README's *What works today*. Nothing is externally validated yet.
+Status labels (**Implemented**, **Locally tested**, **Externally validated**) are defined in *What works today* in [design.md](design.md). Nothing is externally validated yet.
 
 | Stage | Outcome | Acceptance | Status |
 |---|---|---|---|

@@ -10,7 +10,7 @@ before it can merge. By taking part you agree to follow the [Code of Conduct](CO
 - **No secrets** in configuration, logs, fixtures or test output. Credentials come from the
   environment and are never shown or stored in the catalog.
 - **Be honest about status.** A capability is *Implemented*, *Locally tested* or *Externally
-  validated* (see the README); raise a label only with the evidence it needs, and record it in
+  validated* (see *What works today* in docs/design.md); raise a label only with the evidence it needs, and record it in
   [VERIFICATION.md](docs/VERIFICATION.md).
 - **Do not loosen a test to make it pass.** If a test is wrong, fix it in its own pull request
   and say why.
@@ -34,7 +34,7 @@ editable packages. Run the tests with `python -m pytest` (`tests/server`, `tests
 python -m twinlab2.portal
 ```
 
-The portal opens on http://127.0.0.1:8765. The README explains the database and artifact
+The portal opens on http://127.0.0.1:8765. docs/design.md explains the database and artifact
 storage options.
 
 ## Making a change
@@ -52,7 +52,7 @@ python -m pytest -q
 ```
 
 That runs on SQLite. CI runs the same suite on SQLite and on PostgreSQL 16; to run the
-PostgreSQL leg locally, set `TWINLAB2_TEST_DATABASE_URL` as the README's *The portal database*
+PostgreSQL leg locally, set `TWINLAB2_TEST_DATABASE_URL` as *The portal database* in docs/design.md
 section shows.
 
 ## Review and merge

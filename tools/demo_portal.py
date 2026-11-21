@@ -1,5 +1,5 @@
-"""A demo portal: the real app, seeded with one recording across ten applications, and test fakes
-for everything outside it.
+"""A demo portal: the real app, seeded with seven catalog applications and one recording that
+registers six more (13 in the catalog), and test fakes for everything outside it.
 
     python tools/demo_portal.py [--port 8782] [--state DIR] [--scale]
 

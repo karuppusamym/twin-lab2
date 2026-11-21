@@ -22,7 +22,7 @@ services:
       POSTGRES_USER: twinlab2
       POSTGRES_PASSWORD: twinlab2
       POSTGRES_DB: twinlab2
-      # byte-order collation, as SQLite sorts (see "Portable SQL rules" in the README)
+      # byte-order collation, as SQLite sorts (see "Portable SQL rules" in docs/design.md)
       POSTGRES_INITDB_ARGS: --locale=C --encoding=UTF8
     ports: ["127.0.0.1:55433:5432"]
     volumes: [postgres:/var/lib/postgresql/data]
