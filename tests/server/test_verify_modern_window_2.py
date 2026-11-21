@@ -96,3 +96,36 @@ class NestingInTheBrief(unittest.TestCase):
         self.assertEqual(buildpack._region({"kind": "Group", "id": "NumberPad", "in": "NavView"}),
                          "`Group#NumberPad` (in `NavView`)")
         self.assertEqual(buildpack._region({"kind": "Custom", "id": "NavView"}), "`Custom#NavView`")
+
+
+class PackageBytesPerRevision(unittest.TestCase):
+    """The same brief revision (manifest hash) packed by a newer portal is other bytes: freezing it
+    again must not serve the earlier revision's zip (the live rerun's rev 2 download failed its
+    SHA-256 check)."""
+
+    def test_other_bytes_of_one_revision_are_kept_apart(self):
+        import tempfile
+
+        from twinlab2 import artifacts, packages
+        from twinlab2.portal import create_app
+        from support import connect, new_database
+
+        work = tempfile.TemporaryDirectory()
+        self.addCleanup(work.cleanup)  # last: after the catalog is closed (Windows)
+        database = new_database(work.name)
+        app = create_app(database)
+        bound = artifacts.bind(artifacts.Binding(app.state.artifacts))
+        self.addCleanup(artifacts.unbind, bound)
+        db = connect(database)
+        self.addCleanup(db.close)
+        with db:
+            app_id = db.execute("INSERT INTO apps(name, git_url, requirements, status, surface) "
+                                "VALUES ('Calculator', '', '', 'known', 'desktop') RETURNING id").fetchone()[0]
+            db.execute("INSERT INTO briefs(revision, app_id, manifest) VALUES ('r1', ?, '{}')", (app_id,))
+            first = packages.put_package(db, app_id, "r1", b"old bytes", "{}")
+            again = packages.put_package(db, app_id, "r1", b"old bytes", "{}")
+            other = packages.put_package(db, app_id, "r1", b"new bytes", "{}")
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
+        self.assertEqual(packages.open_package(db, first), b"old bytes")
+        self.assertEqual(packages.open_package(db, other), b"new bytes")
