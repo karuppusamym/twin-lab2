@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 
-import registry
+from twinlab2 import registry
 
 API = "https://api.github.com"
 SHA = re.compile(r"[0-9a-f]{40}")

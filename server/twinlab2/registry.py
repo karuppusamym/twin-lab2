@@ -2,7 +2,7 @@
 
 The workstation recorder (agent/) never uploads a recording. It sends **references** at the end
 of a session: the session, the applications it recorded (identity and level), and per
-application a flow of filtered step labels (Twin Lab's labctl.workstation.flow). This module:
+application a flow of filtered step labels (twinlab2_recorder.workstation.flow, from Twin Lab). This module:
 
 - pairs machines: a signed-in user makes a one-time code (10 characters from a 32-symbol
   alphabet, valid 10 minutes, single use); the recorder exchanges it for a machine token, of
@@ -29,12 +29,12 @@ from urllib.parse import urlsplit
 from flask import abort, g, jsonify, redirect, render_template, request, session, url_for
 import yaml
 
-import audit
-import auth
-from auth import require_role
-import completeness as compl
-import event_ids
-import recorder_contract as contract
+from twinlab2 import audit
+from twinlab2 import auth
+from twinlab2.auth import require_role
+from twinlab2 import completeness as compl
+from twinlab2 import event_ids
+from twinlab2_contract import recorder_contract as contract
 
 # The tables are created and changed only by migrations.py.
 

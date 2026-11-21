@@ -2,6 +2,19 @@
 
 Every result below is **Locally tested** (on the developer's Windows PC) unless it says otherwise; labels as in the README's *What works today*. **Nothing here is externally validated**: there has been no recorder trial on a live managed PC and no OpenShift deployment. The Orders-to-Billing milestone (next section) did a fresh blind rebuild from exported packs and a clean-container install, all on the same PC; the older Orders/Billing release replay below used previously built fixture apps.
 
+## Standalone: Twin Lab code absorbed, packages and folders (2026-11-21)
+
+TwinLab2 no longer downloads Twin Lab: the code it runs was copied from twin-lab 90bdd91 and trimmed to the paths it reaches ([UPSTREAM.md](UPSTREAM.md)), and the flat modules moved into `server/`, `recorder/` and `contract/`. Paths in the sections below are as they were at the time.
+
+| Area | Status | Result |
+|---|---|---|
+| Test suite, SQLite | Locally tested | `python -m pytest`: 225 passed, 3 skipped (the CaseDesk e2e and the two live-provider tests, all opt-in). 228 collected, as on `main` before: the 3 pin tests went, 3 tests for cut paths and the replay entry point came. No fetch step. |
+| Test suite, PostgreSQL 16 (UTF8) | Locally tested | 224 passed, 3 skipped; the one failure was a connection timeout during a run that was suspended for over two hours, and that test file passed on its own (15 passed). CI runs both. |
+| Replay copy against the milestone v3 build | Locally tested | `judge-recordings/ws-20261120T173343Z-fa325a22` against Orders 3.0.0 on its clean-machine image: the pinned labctl and `python -m twinlab2.replay` both give **PASS WITHIN DECLARED SCOPE**, 8/8 acceptance cases, 65 steps, the same report but for artifact paths. `independent.run` with the copy: scenario pass, outcome MET, reset pass ("reset restored the baseline (1 table(s))"), as Verify reported on 2026-11-20. |
+| Built program | Locally tested | `python recorder/build.py` (208 MB, unsigned); `_build.json` names Twin Lab 90bdd91 and the source commit. `--help` runs; a `--portable-data record` with a mainframe target ran its collector in a spawned process (ready, ended, complete, no restarts), and one with `--exe notepad.exe` passed preflight (UI Automation answers) and recorded 2 Notepad steps. |
+| CaseDesk end to end | Locally tested | `TWINLAB_AGENT_E2E=1 python -m pytest tests/recorder/test_agent_e2e.py`: passed (36 s). CaseDesk's sources still come from `../twin-lab`; its steps run with the copied desktop Driver (`tests/recorder/desktop_drive.py`). |
+| Portal image | Locally tested | `docker build -f deploy/Dockerfile .`, then gunicorn `twinlab2.portal:wsgi()`: `/` redirects to sign-in, `/static/portal.css` 200, signed in with the password the Applications page renders (templates from the installed package). The image does not have the browser replay. |
+
 ## Orders-to-Billing milestone: record, freeze, blind rebuild, clean container, Tested (2026-11-20)
 
 Full report with every step, failure and cause: `../milestone-trial/REPORT.md` (beside this repository; not committed). Portal from this branch, Twin Lab pinned at 4385949.

@@ -11,14 +11,14 @@ import tempfile
 import unittest
 from zipfile import ZipFile
 
-import completeness
-import event_ids
-import journey
-import portal
-from portal import create_app
+from twinlab2 import completeness
+from twinlab2 import event_ids
+from twinlab2 import journey
+from twinlab2 import portal
+from twinlab2.portal import create_app
 from support import freeze
-import registry
-import scenarios
+from twinlab2 import registry
+from twinlab2 import scenarios
 from test_registry import (DESK, EVENT_1, EVENT_2, EVENT_5, WEB, CV, completeness_report, eid, references,
                            references_1_1)
 from support import connect, new_database

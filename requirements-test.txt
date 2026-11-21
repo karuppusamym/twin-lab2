@@ -1,4 +1,5 @@
--r requirements.txt
-pytest>=8
-jsonschema>=4.18
-moto[s3,server]>=5.0
+# The test suite (tests/server, tests/recorder): the portal with its test and replay extras, and the
+# recorder package (the recorder tests run it against a portal).
+-e ./contract
+-e ./server[test,replay]
+-e ./recorder

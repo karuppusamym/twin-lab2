@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-from providers.base import NotConfigured, ProviderError  # noqa: F401 - re-exported
+from twinlab2.providers.base import NotConfigured, ProviderError  # noqa: F401 - re-exported
 
 NAMES = ("devin", "claude", "copilot")
 LABELS = {"devin": "Devin", "claude": "Claude", "copilot": "GitHub Copilot"}
@@ -43,13 +43,13 @@ def adapter_class(name):
     if name in _extra:
         return _extra[name]
     if name == "devin":
-        from providers.devin_provider import DevinProvider
+        from twinlab2.providers.devin_provider import DevinProvider
         return DevinProvider
     if name == "claude":
-        from providers.claude_provider import ClaudeProvider
+        from twinlab2.providers.claude_provider import ClaudeProvider
         return ClaudeProvider
     if name == "copilot":
-        from providers.copilot_provider import CopilotProvider
+        from twinlab2.providers.copilot_provider import CopilotProvider
         return CopilotProvider
     raise NotConfigured(f"Unknown build provider {name!r}.")
 

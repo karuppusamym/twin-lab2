@@ -27,13 +27,13 @@ from moto import mock_aws  # noqa: E402
 from moto.server import ThreadedMotoServer  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
 
-import artifacts  # noqa: E402
-from agent.client import Portal, PortalError  # noqa: E402
-from agent.upload_queue import UploadQueue  # noqa: E402
-from portal import create_app  # noqa: E402
+from twinlab2 import artifacts  # noqa: E402
+from twinlab2_recorder.client import Portal, PortalError  # noqa: E402
+from twinlab2_recorder.upload_queue import UploadQueue  # noqa: E402
+from twinlab2.portal import create_app  # noqa: E402
 from support import freeze  # noqa: E402
 from test_registry import CV, references  # noqa: E402
-from db import state_dir
+from twinlab2.db import state_dir
 from support import connect, new_database
 
 SESSION = "20261119T100000Z-0a1b2c3d"
@@ -103,7 +103,7 @@ class LocalStoreTest(unittest.TestCase):
             self.assertIn("pack.zip", response.headers["Content-Disposition"])
         with client.get(path[:-3] + "xyz") as response:
             self.assertEqual(response.status_code, 403)
-        with mock.patch("artifacts.time.time", return_value=time.time() + 120), client.get(path) as response:
+        with mock.patch("twinlab2.artifacts.time.time", return_value=time.time() + 120), client.get(path) as response:
             self.assertEqual(response.status_code, 403)
 
 
@@ -221,7 +221,7 @@ class MigrationTest(unittest.TestCase):
             (store.root / "objects" / ref.key / ref.version_id).write_bytes(b"corrupt")
             return ref
 
-        with mock.patch("artifacts.put", corrupting_put):
+        with mock.patch("twinlab2.artifacts.put", corrupting_put):
             create_app(self.database)
         self.assertEqual(self.rows()["packs"][0][0], None)
         self.assertEqual(create_app(self.database).test_client().get("/apps/1/briefs/r1").data, self.pack)
@@ -323,7 +323,7 @@ class UploadApiTest(unittest.TestCase):
         short = self.client.put(f"/api/uploads/{up['upload_id']}?offset=0", data=b"short",
                                 headers={"Authorization": f"Bearer {up['upload_token']}"})
         self.assertEqual(short.status_code, 400)  # only the last chunk may be short
-        with mock.patch("uploads._now", return_value=datetime.now(timezone.utc) + timedelta(hours=2)):
+        with mock.patch("twinlab2.uploads._now", return_value=datetime.now(timezone.utc) + timedelta(hours=2)):
             expired = self.put(up, 0)
         self.assertEqual((expired.status_code, expired.json["expired"]), (401, True))
         self.assertEqual(self.client.get("/api/uploads/nope", headers={"Authorization": "Bearer x"}).status_code, 404)

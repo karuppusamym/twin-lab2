@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 
-from providers.runner import AgentResult
+from twinlab2.providers.runner import AgentResult
 
 
 async def claude(prompt, ctx):

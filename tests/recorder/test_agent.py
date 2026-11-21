@@ -9,10 +9,10 @@ from unittest import mock
 
 from werkzeug.serving import make_server
 
-from agent import settings as st
-from agent.client import Portal, PortalError, check_portal, clean_targets
-from agent import main as agent_main
-from portal import create_app
+from twinlab2_recorder import settings as st
+from twinlab2_recorder.client import Portal, PortalError, check_portal, clean_targets
+from twinlab2_recorder import main as agent_main
+from twinlab2.portal import create_app
 from test_registry import references
 from support import new_database
 

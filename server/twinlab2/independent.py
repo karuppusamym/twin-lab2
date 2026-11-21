@@ -1,28 +1,30 @@
-"""Independent checks of a built app with the pinned Twin Lab (`twinlab.lock.json`).
+"""Independent checks of a built app with TwinLab2's own replay and lab-agent check.
 
-Besides GitHub CI, a release is checked by Twin Lab's own tools against a deployment that reports
-the release's commit at /.twinlab/version (so the checks ran on exactly the built commit):
+Besides GitHub CI, a release is checked against a deployment that reports the release's commit at
+/.twinlab/version (so the checks ran on exactly the built commit):
 
 - **scenario replay**: each brief scenario's recordings are replayed with
-  `labctl behaviour fidelity <recording> --base-url <deployment> --json` (DOM comparison after
-  every step, plus the acceptance cases declared beside the recording);
+  `python -m twinlab2.replay <recording> --base-url <deployment> --json <report>` (DOM
+  comparison after every step, plus the acceptance cases declared beside the recording);
 - **business outcome**: the required acceptance cases of those replays. MET when all passed,
   NOT_MET when one failed, CANNOT_CHECK when none is declared or one was blocked;
 - **reset check**: the app's lab agent is reset (`POST /_lab/reset`) and its data must then equal
-  its baseline (`labctl.lab.Agent`).
+  its baseline (`twinlab2.labagent.Agent`).
 
 A scenario passes only when every replay passed and its outcome is MET; it fails when a replay
-failed or the outcome is NOT_MET; otherwise it is not-run (no recording, or nothing that judges
-the business result), never reported as passed.
+failed or the outcome is NOT_MET; otherwise it is not-run (no recording, nothing that judges the
+business result, or a replay that reached a Twin Lab path TwinLab2 did not copy), never reported
+as passed.
 
-labctl runs in a subprocess with the vendored pinned tree on PYTHONPATH (`agent.twinlab`), after
-the tree is checked against the lock. Recording folders (`<recording id>/steps.jsonl`, or a
-`web/` folder inside it) come from `TWINLAB2_RECORDINGS`; the lab agent token from
-`TWINLAB2_LAB_TOKEN`.
+The replay and the lab-agent client are Twin Lab's, copied at 90bdd91 (docs/UPSTREAM.md); each
+runs in its own process with a timeout. The replay needs Playwright and Chromium
+(`pip install -e "server[replay]"`). Recording folders (`<recording id>/steps.jsonl`, or a `web/`
+folder inside it) come from `TWINLAB2_RECORDINGS`; the lab agent token from `TWINLAB2_LAB_TOKEN`.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -30,11 +32,13 @@ import subprocess
 import sys
 import tempfile
 
-from agent import twinlab
+from twinlab2 import paths
+from twinlab2.paths import STATE
+from twinlab2_contract.upstream import UPSTREAM_COMMIT
 
 RESET_SCRIPT = r"""
 import json, sys
-from labctl.lab import Agent, LabError
+from twinlab2.labagent import Agent, LabError
 agent = Agent(sys.argv[1], token=sys.argv[2])
 try:
     agent.reset()
@@ -52,24 +56,30 @@ else:
 """
 
 
-class PinnedTwinLab:
-    """Runs the pinned labctl. Tests replace it with a fake that has the same three methods."""
+class ReplayUnavailable(Exception):
+    """The replay cannot run on this machine (Playwright is not installed)."""
+
+
+class TwinLabChecks:
+    """Runs the replay and the reset check. Tests replace it with a fake with the same methods."""
 
     def __init__(self, recordings=None, lab_token=None, timeout=900):
         self.recordings = Path(recordings or os.environ.get("TWINLAB2_RECORDINGS") or
-                               Path(__file__).parent / ".state" / "recordings")
+                               STATE / "recordings")
         self.lab_token = lab_token if lab_token is not None else os.environ.get("TWINLAB2_LAB_TOKEN", "")
         self.timeout = timeout
 
-    def pin(self):
-        """{commit, tree_sha256} of the Twin Lab used; PinError when it is not vendored as locked."""
-        pin = twinlab.lock()
-        twinlab.verify(pin)
-        return {"commit": pin["commit"], "tree_sha256": pin["tree_sha256"]}
+    def source(self):
+        """What runs the checks: {commit (the Twin Lab commit the copy came from), replay}.
+        ReplayUnavailable when Playwright is missing here."""
+        missing = [name for name in ("playwright", "pydantic", "PIL") if importlib.util.find_spec(name) is None]
+        if missing:
+            raise ReplayUnavailable(f"the replay needs {', '.join(missing)}: pip install -e \"server[replay]\", "
+                                    "then python -m playwright install chromium")
+        return {"commit": UPSTREAM_COMMIT, "replay": "twinlab2.replay"}
 
     def _env(self):
-        env = dict(os.environ)
-        env["PYTHONPATH"] = os.pathsep.join([str(twinlab.labctl_parent()), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+        env = paths.child_env()
         env["PYTHONIOENCODING"] = "utf-8"
         return env
 
@@ -88,13 +98,12 @@ class PinnedTwinLab:
         with tempfile.TemporaryDirectory() as work:
             out = Path(work) / "fidelity.json"
             done = subprocess.run(
-                [sys.executable, "-m", "labctl", "behaviour", "fidelity", str(folder),
-                 "--base-url", base_url, "--json", str(out)],
+                [sys.executable, "-m", "twinlab2.replay", str(folder), "--base-url", base_url, "--json", str(out)],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 env=self._env(), timeout=self.timeout, check=False)
             if not out.is_file():
                 return {"status": "blocked", "problems": [
-                    "labctl did not write a report: " + (done.stderr or done.stdout).strip()[-500:]]}
+                    "the replay did not write a report: " + (done.stderr or done.stdout).strip()[-500:]]}
             return json.loads(out.read_text(encoding="utf-8"))
 
     def reset(self, lab_url):
@@ -134,10 +143,10 @@ def run(runner, scenarios, manifest, base_url, lab_url):
     """Twin Lab's verification of one deployment: {twinlab, scenarios: [...], reset: {...}}."""
     report = {"base_url": base_url, "lab_url": lab_url, "scenarios": [], "reset": None}
     try:
-        report["twinlab"] = runner.pin()
-    except (twinlab.PinError, OSError) as error:
+        report["twinlab"] = runner.source()
+    except (ReplayUnavailable, OSError) as error:
         report["twinlab"] = {"error": str(error)}
-        report["problems"] = [f"Twin Lab is not available as pinned: {error}"]
+        report["problems"] = [f"The replay is not available here: {error}"]
         return report
     # A replay changes the deployment's data (it saves what the recording saved), so a recording is
     # replayed once per verification and its report is shared by every scenario linked to it:
@@ -160,8 +169,14 @@ def run(runner, scenarios, manifest, base_url, lab_url):
                 "cases": [{key: case.get(key) for key in ("id", "check", "required", "status", "note")}
                           for case in result.get("cases") or []]})
         entry["outcome"] = outcome(reports)
+        not_run = [r for r in reports if r.get("status") == "not-run"]
         if not reports:
             entry["result"], entry["why"] = "not-run", "No recording of this scenario is available to replay."
+        elif not_run and entry["outcome"] != "NOT_MET" and all(r.get("status") in ("pass", "not-run") for r in reports):
+            # the replay reached a Twin Lab path that TwinLab2 did not copy (NotAbsorbed)
+            entry["result"] = "not-run"
+            entry["why"] = "The replay could not finish here: " + "; ".join(
+                str(p) for r in not_run for p in (r.get("problems") or ["no reason given"]))[:500]
         elif any(r.get("status") != "pass" for r in reports) or entry["outcome"] == "NOT_MET":
             entry["result"] = "fail"
             entry["why"] = "A replay did not pass." if entry["outcome"] != "NOT_MET" else "The business outcome was not met."

@@ -18,31 +18,22 @@ import unittest
 from unittest import mock
 from zipfile import ZipFile
 
-from agent import twinlab
 from support import freeze as freeze_package
-import builds
-import jobqueue
-from portal import create_app
-import worker
+from twinlab2 import builds
+from twinlab2 import jobqueue
+from twinlab2.portal import create_app
+from twinlab2 import paths
+from twinlab2 import worker
 from fakes import FakeDevin, FakeGitHub
-from db import IntegrityError
+from twinlab2.db import IntegrityError
 from support import new_database
 
-PROJECT = Path(__file__).resolve().parents[1]
+SERVER = Path(__file__).resolve().parents[2] / "server"
 REPO = "acme/orders-demo"
 BASE = "b" * 40
 HEAD = "c" * 40
 
 
-def pinned_labctl_available():
-    try:
-        twinlab.verify()
-        return True
-    except (twinlab.PinError, OSError):
-        return False
-
-
-@unittest.skipUnless(pinned_labctl_available(), "the pinned Twin Lab is not vendored: python -m agent.twinlab fetch")
 class BuildTest(unittest.TestCase):
     def setUp(self):
         self.work = tempfile.TemporaryDirectory()
@@ -260,8 +251,8 @@ class BuildTest(unittest.TestCase):
         self.request_build(app_id, revision)
         env = {**os.environ, **self.env, "TWINLAB2_RECONCILE_SECONDS": "0", "TWINLAB2_RECONCILE_CHECKS": "1",
                "TWINLAB2_POLL_SECONDS": "0"}
-        proc = subprocess.Popen([sys.executable, str(PROJECT / "worker.py"), "--database", str(self.database),
-                                 "--lease", "1", "--idle", "0.1"], cwd=PROJECT, env=env,
+        proc = subprocess.Popen([sys.executable, "-m", "twinlab2.worker", "--database", str(self.database),
+                                 "--lease", "1", "--idle", "0.1"], cwd=SERVER, env=paths.child_env(env),
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         self.assertTrue(self.devin.received.wait(30), "the worker never reached Devin")
@@ -388,7 +379,7 @@ class BuildTest(unittest.TestCase):
         self.assertIn("changed evidence.json", prompt)
 
     def test_every_build_route_requires_a_role(self):
-        source = (PROJECT / "builds_web.py").read_text(encoding="utf-8")
+        source = (SERVER / "twinlab2" / "builds_web.py").read_text(encoding="utf-8")
         routes = re.findall(r"@app\.(?:get|post|route)\([^\n]*\n\s+(@[^\n]*)\n\s+def \w+", source)
         self.assertGreater(len(routes), 10)
         for decorator in routes:

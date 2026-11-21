@@ -33,7 +33,7 @@ import shutil
 import time
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
-from agent.client import PortalError
+from twinlab2_recorder.client import PortalError
 
 CHUNK = 1024 * 1024
 MAX_ATTEMPTS = 5

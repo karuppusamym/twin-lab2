@@ -11,13 +11,13 @@ import threading
 import unittest
 from zipfile import ZipFile
 
-from agent import twinlab
-import independent
-import portal
+from unittest import mock
+from twinlab2 import independent
+from twinlab2 import portal
 from support import freeze
-from portal import create_app
+from twinlab2.portal import create_app
 from test_registry import eid
-import verification
+from twinlab2 import verification
 from support import connect, new_database
 
 REPO = "acme/billing"
@@ -125,7 +125,7 @@ def page_reasons(test, release_id):
 
 
 class FakeTwinLab:
-    """Stands in for independent.PinnedTwinLab: the replay and reset results it is told."""
+    """Stands in for independent.TwinLabChecks: the replay and reset results it is told."""
 
     def __init__(self):
         self.replays = {}
@@ -134,8 +134,8 @@ class FakeTwinLab:
         self.reset_result = {"result": "pass", "notes": "reset restored the baseline (3 table(s))"}
         self.calls = []
 
-    def pin(self):
-        return {"commit": "430dfe538965b46ccbe824f8f2b4f415c5576483", "tree_sha256": "e763f0ee"}
+    def source(self):
+        return {"commit": "430dfe538965b46ccbe824f8f2b4f415c5576483", "replay": "twinlab2.replay"}
 
     def replay(self, recording_id, base_url):
         self.calls.append(("replay", recording_id, base_url))
@@ -464,19 +464,48 @@ class IndependentChecksTest(unittest.TestCase):
         self.assertEqual([c for c in twin.calls if c[0] == "replay"], [("replay", "r1", "http://app.test/")])
         self.assertEqual([s["result"] for s in report["scenarios"]], ["pass", "pass"])
 
-    def test_twin_lab_must_be_the_pinned_tree(self):
-        class Unpinned(FakeTwinLab):
-            def pin(self):
-                raise twinlab.PinError("not vendored")
-        report = independent.run(Unpinned(), self.scenarios, self.manifest, "http://app.test/", "")
+    def test_no_scenario_is_checked_without_the_replay(self):
+        class NoPlaywright(FakeTwinLab):
+            def source(self):
+                raise independent.ReplayUnavailable("the replay needs Playwright")
+        report = independent.run(NoPlaywright(), self.scenarios, self.manifest, "http://app.test/", "")
         self.assertEqual(report["scenarios"], [])
-        self.assertIn("not vendored", report["problems"][0])
+        self.assertIn("needs Playwright", report["problems"][0])
 
-    def test_pinned_runner_finds_recording_folders(self):
+    def test_a_replay_that_reaches_a_cut_path_is_not_run_never_passed(self):
+        twin = FakeTwinLab()
+        twin.default = {"status": "not-run", "verdict": None, "cases": [], "problems": [
+            "Twin Lab's conformance is not part of TwinLab2 (cut from the copy of Twin Lab 90bdd91)"]}
+        report = independent.run(twin, self.scenarios, self.manifest, "http://app.test/", "")
+        scenario = report["scenarios"][0]
+        self.assertEqual(scenario["result"], "not-run")
+        self.assertIn("could not finish here", scenario["why"])
+        self.assertIn("conformance", scenario["why"])
+
+    def test_cut_paths_raise_not_absorbed(self):
+        from twinlab2.replay import durable, fidelity
+        from twinlab2_contract.upstream import NotAbsorbed
+        for call in (lambda: fidelity.save(Path("."), "app", None), lambda: durable.assess(Path("."), "app", None)):
+            with self.assertRaises(NotAbsorbed):
+                call()
+
+    def test_replay_entry_point_reports_a_cut_path_as_not_run(self):
+        from twinlab2.replay import __main__ as entry, fidelity
+        from twinlab2_contract.upstream import NotAbsorbed
+        with tempfile.TemporaryDirectory() as work:
+            out = Path(work) / "report.json"
+            with mock.patch.object(fidelity, "replay", side_effect=NotAbsorbed("Twin Lab's har")):
+                code = entry.main([work, "--base-url", "http://app.test/", "--json", str(out)])
+            self.assertEqual(code, 1)
+            report = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "not-run")
+            self.assertIn("Twin Lab's har", report["problems"][0])
+
+    def test_runner_finds_recording_folders(self):
         with tempfile.TemporaryDirectory() as root:
             (Path(root) / "r1" / "web").mkdir(parents=True)
             (Path(root) / "r1" / "web" / "steps.jsonl").write_text("{}\n", encoding="utf-8")
-            runner = independent.PinnedTwinLab(recordings=root)
+            runner = independent.TwinLabChecks(recordings=root)
             self.assertEqual(runner.recording("r1"), Path(root) / "r1" / "web")
             self.assertIsNone(runner.recording("r2"))
             self.assertIsNone(runner.replay("r2", "http://app.test/"))

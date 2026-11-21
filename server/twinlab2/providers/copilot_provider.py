@@ -13,8 +13,8 @@ from __future__ import annotations
 import importlib.util
 import os
 
-from providers import base
-from providers.local_runner import LocalRunnerProvider
+from twinlab2.providers import base
+from twinlab2.providers.local_runner import LocalRunnerProvider
 
 MAX_REQUESTS = 1000
 

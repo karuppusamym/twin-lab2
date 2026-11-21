@@ -8,10 +8,10 @@ import tempfile
 import unittest
 from unittest import mock
 
-from portal import create_app
-import event_ids
-import recorder_contract
-import registry
+from twinlab2.portal import create_app
+from twinlab2 import event_ids
+from twinlab2_contract import recorder_contract
+from twinlab2 import registry
 from support import connect, new_database
 
 DESK = "desktop:Twin Lab reference/CaseDesk"

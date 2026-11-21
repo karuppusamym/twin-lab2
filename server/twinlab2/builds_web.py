@@ -17,16 +17,16 @@ import uuid
 from flask import abort, flash, g, redirect, render_template, request, url_for
 from werkzeug.exceptions import HTTPException
 
-import audit
-import auth
-from auth import require_role
-import builds
-import devin
-import github
-import jobqueue
-import packages
-import providers
-from providers import base
+from twinlab2 import audit
+from twinlab2 import auth
+from twinlab2.auth import require_role
+from twinlab2 import builds
+from twinlab2 import devin
+from twinlab2 import github
+from twinlab2 import jobqueue
+from twinlab2 import packages
+from twinlab2 import providers
+from twinlab2.providers import base
 
 
 def new_key():

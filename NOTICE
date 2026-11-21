@@ -3,6 +3,10 @@ Copyright 2026 The TwinLab2 contributors
 
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
-TwinLab2 builds its recorder from Twin Lab (https://github.com/karuppusamym/twin-lab), also
-licensed under the Apache License, Version 2.0, at the commit pinned in twinlab.lock.json
-(see UPSTREAM.md).
+This product includes code from Twin Lab (https://github.com/karuppusamym/twin-lab), licensed
+under the Apache License, Version 2.0, copied at commit 90bdd917414a24a4da7f09fb66e8edb49ba3bfee
+(the labctl package's lab/labctl/labctl tree) and changed: imports renamed, unused paths cut.
+The copied modules are twinlab2_contract.evidence, twinlab2_recorder.workstation,
+twinlab2_recorder.desktop, twinlab2_recorder.web, twinlab2_recorder.botlog, twinlab2_recorder.ocr,
+twinlab2.replay, twinlab2.labagent and twinlab2.devinapi, and tests/recorder/desktop_drive.py.
+docs/UPSTREAM.md lists each module's source and what was left out.

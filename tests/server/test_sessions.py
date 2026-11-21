@@ -13,18 +13,18 @@ import tempfile
 import unittest
 from unittest import mock
 
-import builds
+from twinlab2 import builds
 import fake_provider
 from fakes import FakeGitHub
-import jobqueue
-import migrations
-import packages
-from portal import create_app
-import portal
+from twinlab2 import jobqueue
+from twinlab2 import migrations
+from twinlab2 import packages
+from twinlab2.portal import create_app
+from twinlab2 import portal
 from support import connect, freeze as freeze_package, new_database
 import test_verification
-import verification
-import worker
+from twinlab2 import verification
+from twinlab2 import worker
 
 REPO = "acme/orders-demo"
 BASE = "b" * 40

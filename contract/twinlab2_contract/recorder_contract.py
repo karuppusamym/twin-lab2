@@ -1,7 +1,7 @@
 """The versioned boundary between a workstation recorder and the portal.
 
-`contract/recorder-contract.schema.json` is the machine-checkable contract and
-`RECORDER-CONTRACT.md` explains it. This module is what both sides run:
+`recorder-contract.schema.json` (beside this module) is the machine-checkable contract and
+`docs/RECORDER-CONTRACT.md` explains it. This module is what both sides run:
 
 - `CONTRACT_VERSION`: the version this portal and this repository's recorder implement;
 - `compatibility(version)`: whether a sender's `contract_version` is accepted, and if not, what
@@ -27,7 +27,7 @@ CONTRACT_VERSION = "1.1.0"
 OLDEST_SUPPORTED = "1.0.0"  # the oldest contract version this portal still accepts
 RECORDER_MIN = "0.2.0"  # the first TwinLabRecorder that declares a contract version
 EVENT_IDS_FROM = (1, 1, 0)  # the first contract version whose steps carry event_id
-SCHEMA_PATH = Path(__file__).resolve().parent / "contract" / "recorder-contract.schema.json"
+SCHEMA_PATH = Path(__file__).resolve().parent / "recorder-contract.schema.json"
 VERSION = re.compile(r"^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$")
 
 

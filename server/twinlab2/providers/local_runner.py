@@ -16,9 +16,9 @@ import subprocess
 import sys
 import time
 
-from providers import base
+from twinlab2 import paths
+from twinlab2.providers import base
 
-PROJECT = Path(__file__).resolve().parents[1]
 STALE_SECONDS = float(os.environ.get("TWINLAB2_RUNNER_STALE_SECONDS", 60))
 MAX_RESTARTS = 2
 DEFAULT_REMOTE = "https://github.com/{repo}.git"
@@ -53,11 +53,11 @@ class LocalRunnerProvider(base.Provider):
             if name.startswith(("DEVIN_", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "TWINLAB2_GITHUB_TOKEN",
                                 "DATABASE_URL", "TWINLAB2_PASSWORD")):
                 env.pop(name)
-        env["PYTHONPATH"] = os.pathsep.join([str(PROJECT), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+        env = paths.child_env(env)
         try:
-            proc = subprocess.Popen([sys.executable, "-m", "providers.runner", "--workspace", str(folder),
+            proc = subprocess.Popen([sys.executable, "-m", "twinlab2.providers.runner", "--workspace", str(folder),
                                      "--backend", self.backend] + (["--resume"] if resume else []),
-                                    cwd=PROJECT, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
+                                    cwd=paths.SOURCE, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
                                     env=env, **flags)
             proc.stdin.write((json.dumps(self.secrets) + "\n").encode())
             proc.stdin.close()
@@ -155,7 +155,7 @@ class LocalRunnerProvider(base.Provider):
                "data": json.loads(message.get("data") or "{}")}
         tmp = inbox / f".{message['id']}.tmp"
         tmp.write_text(json.dumps(doc), encoding="utf-8")
-        from providers.runner import replace
+        from twinlab2.providers.runner import replace
         replace(tmp, inbox / f"{message['id']}.json")  # the runner acknowledges it once it used it
 
     def interrupt(self, build):

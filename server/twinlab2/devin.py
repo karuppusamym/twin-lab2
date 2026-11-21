@@ -1,19 +1,18 @@
-"""Devin for TwinLab2 builds: Twin Lab's own client, imported from the pinned commit.
+"""Devin for TwinLab2 builds: Twin Lab's Devin client, as copied into `twinlab2.devinapi`.
 
-The client (`labctl.devin.client`: attachment upload, session creation, polling, messages,
+The client (`twinlab2.devinapi.client`: attachment upload, session creation, polling, messages,
 termination, and recognising a create that may have happened after a timeout or a 5xx), the
-settings loader (`labctl.devin.config`) and the Devin-status mapping (`labctl.devin.jobs.map_status`)
-come from the Twin Lab tree pinned in `twinlab.lock.json`, checked against its digest before it
-is imported (`python -m agent.twinlab fetch` puts it in `vendor/`). Nothing here is a copy.
+settings loader (`twinlab2.devinapi.config`) and the Devin-status mapping
+(`twinlab2.devinapi.jobs.map_status`) are Twin Lab's, copied at 90bdd91 (docs/UPSTREAM.md).
 
-What TwinLab2 adds on top, in a subclass, are two reads the pinned client lacks:
+What TwinLab2 adds on top, in a subclass, are two reads that client lacks:
 
 - `find_sessions(tag)`: the sessions carrying an idempotency tag. The Devin v3 API has no
   idempotency key on create, so a build tags its session and, after an uncertain create, looks
   for that tag before it ever creates again.
 - `list_messages(session)`: the session's messages, to show Devin's questions.
 
-Both are GET requests, retried by the pinned transport like any other read.
+Both are GET requests, retried by the client's transport like any other read.
 """
 
 from __future__ import annotations
@@ -21,58 +20,49 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import re
-import sys
 
-PROJECT = Path(__file__).resolve().parent
+
+from twinlab2 import paths
+
 _loaded = None
 
 
 class DevinUnavailable(Exception):
-    """The pinned Twin Lab client cannot be imported (not vendored, or not the pinned tree)."""
+    """The Devin client cannot be imported (httpx is not installed)."""
 
 
-def _pinned():
-    """The pinned `labctl.devin` modules (client, config, jobs), verified once per process."""
+def _modules():
+    """The `twinlab2.devinapi` modules (client, config, jobs), imported once per process."""
     global _loaded
     if _loaded is not None:
         return _loaded
-    if "labctl" not in sys.modules:
-        from agent import twinlab
-
-        try:
-            twinlab.verify()
-        except (twinlab.PinError, OSError) as exc:
-            raise DevinUnavailable(f"Twin Lab's Devin client: {exc}") from exc
-        parent = str(twinlab.labctl_parent())
-        if parent not in sys.path:
-            sys.path.insert(0, parent)
     try:
-        from labctl.devin import client, config, jobs
-    except ImportError as exc:  # httpx missing, or a labctl that is not the pinned one
-        raise DevinUnavailable(f"Twin Lab's Devin client cannot be imported: {exc}") from exc
+        from twinlab2.devinapi import client, config, jobs
+    except ImportError as exc:  # httpx missing
+        raise DevinUnavailable(f"The Devin client cannot be imported: {exc}") from exc
     _loaded = (client, config, jobs)
     return _loaded
 
 
 def client_module():
-    return _pinned()[0]
+    return _modules()[0]
 
 
 def error_class():
-    """The pinned client's `DevinError`."""
+    """The client's `DevinError`."""
     return client_module().DevinError
 
 
 def map_status(status, detail):
     """Twin Lab's mapping of a Devin status, in TwinLab2's build states."""
-    state, note = _pinned()[2].map_status(status, detail)
+    state, note = _modules()[2].map_status(status, detail)
     return {"finished": "ready_for_verification", "waiting_for_user": "waiting_for_answer"}.get(state, state), note
 
 
 def settings(secrets=None, env=None):
     """{api_key, org_id, base_url, sources}: Twin Lab's loader (environment, then the Git-ignored
     twinlab.local.yaml), then the secrets saved under Setup for what is still missing."""
-    config = _pinned()[1].load_config(PROJECT, os.environ if env is None else env)
+    config = _modules()[1].load_config(paths.ROOT, os.environ if env is None else env)
     secrets = secrets or {}
     out = {"api_key": config.api_key, "org_id": config.org_id, "base_url": config.base_url,
            "sources": dict(config.sources)}
@@ -134,7 +124,7 @@ def _subclass():
 
 def uncertain(error):
     """True when a failed create may still have made a (paid) session: no answer at all, or a
-    5xx. The pinned client marks exactly these with its UNCERTAIN_SESSION wording."""
+    5xx. The client marks exactly these with its UNCERTAIN_SESSION wording."""
     module = client_module()
     return error.status == 0 or error.status >= 500 or module.UNCERTAIN_SESSION in (error.detail or "")
 

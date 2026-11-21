@@ -11,8 +11,8 @@ from __future__ import annotations
 import itertools
 import threading
 
-from providers import base
-import providers
+from twinlab2.providers import base
+from twinlab2 import providers
 
 
 class World:

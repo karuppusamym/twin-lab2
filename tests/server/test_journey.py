@@ -6,8 +6,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from journey import JOURNEY, STATUS_LABELS, app_journey
-from portal import create_app
+from twinlab2.journey import JOURNEY, STATUS_LABELS, app_journey
+from twinlab2.portal import create_app
 from support import new_database
 
 

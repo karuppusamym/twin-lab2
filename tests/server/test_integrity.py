@@ -10,12 +10,12 @@ import tempfile
 import unittest
 from zipfile import ZipFile
 
-import migrations
-import migrations
-import portal
+from twinlab2 import migrations
+from twinlab2 import migrations
+from twinlab2 import portal
 from support import freeze
-from portal import create_app
-import registry
+from twinlab2.portal import create_app
+from twinlab2 import registry
 from support import connect, new_database
 from test_registry import CV, DESK, WEB, by_number, eid, numbers, references
 from support import connect, new_database

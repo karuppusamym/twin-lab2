@@ -15,11 +15,11 @@ from unittest import mock
 import zlib
 from zipfile import ZipFile
 
-import auth
-from portal import create_app
-import redact
+from twinlab2 import auth
+from twinlab2.portal import create_app
+from twinlab2 import redact
 from test_registry import eid
-from db import Error as database_errors
+from twinlab2.db import Error as database_errors
 from support import connect, new_database
 
 RECORDING_LOG = b'{"seq":1,"action":"submit","url":"http://billing.local/?customer=jane@corp.com"}\n' \

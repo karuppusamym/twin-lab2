@@ -12,8 +12,8 @@ import unittest
 from zipfile import ZipFile
 
 from support import freeze
-from portal import create_app
-import scenarios
+from twinlab2.portal import create_app
+from twinlab2 import scenarios
 from support import connect, new_database
 from test_registry import CV, DESK, WEB, eid, references
 

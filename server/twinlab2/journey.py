@@ -2,7 +2,7 @@
 
 Choose application -> Add examples -> Review required behaviour -> Build -> Verify -> Open or download
 
-The approach (and much of the wording) follows Twin Lab's `labctl.portal.guide`: pure functions
+The approach (and much of the wording) follows Twin Lab's portal guide (`portal/guide.py`): pure functions
 over facts the portal already has, so the catalog, the application page and the tests agree.
 The first required step not done is the current stage; its hint is the single next action.
 
@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 
-import completeness as compl
+from twinlab2 import completeness as compl
 
 JOURNEY = ("Choose application", "Add examples", "Review required behaviour", "Build", "Verify",
            "Open or download")  # fmt: skip

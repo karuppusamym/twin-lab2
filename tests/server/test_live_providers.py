@@ -30,7 +30,7 @@ def synthetic_pack():
 @unittest.skipUnless(LIVE, "live Claude test: set TWINLAB2_LIVE_CLAUDE=1 and ANTHROPIC_API_KEY (spends API credits)")
 class LiveClarifyTest(unittest.TestCase):
     def test_review_asks_and_an_answer_continues_the_conversation(self):
-        from providers.clarify import Clarifier, questions_of
+        from twinlab2.providers.clarify import Clarifier, questions_of
 
         clarifier = Clarifier(os.environ["ANTHROPIC_API_KEY"], os.environ.get("CLAUDE_MODEL") or None)
         try:
@@ -46,7 +46,7 @@ class LiveClarifyTest(unittest.TestCase):
 @unittest.skipUnless(LIVE_AGENT, "live agent test: set TWINLAB2_LIVE_CLAUDE_AGENT=1 and ANTHROPIC_API_KEY (spends money)")
 class LiveAgentTest(unittest.TestCase):
     def test_one_turn_edits_the_working_tree(self):
-        from providers import agents
+        from twinlab2.providers import agents
 
         class Ctx:
             resume, restarted, remaining, budget = None, False, 0.5, 0.5

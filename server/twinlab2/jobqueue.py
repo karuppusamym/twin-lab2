@@ -36,7 +36,7 @@ def later(seconds):
 
 def migrate(db):
     """The queue's tables (migration 3) and every other pending migration."""
-    import migrations
+    from twinlab2 import migrations
     migrations.run(db)
 
 

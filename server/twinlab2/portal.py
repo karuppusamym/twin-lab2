@@ -19,26 +19,26 @@ from flask import Flask, abort, g, redirect, render_template, request, send_file
 from werkzeug.exceptions import HTTPException
 from werkzeug.routing import RequestRedirect
 
-import audit
-import auth
-from auth import require_role
-import artifacts
-import buildpack
-import db as database
-import completeness
-import event_ids
-import independent
-import journey
-import builds
-import builds_web
-import jobqueue
-import migrations
-import packages
-import redact
-import registry
-import scenarios
-import uploads
-import verification as commit_checks
+from twinlab2 import audit
+from twinlab2 import auth
+from twinlab2.auth import require_role
+from twinlab2 import artifacts
+from twinlab2 import buildpack
+from twinlab2 import db as database
+from twinlab2 import completeness
+from twinlab2 import event_ids
+from twinlab2 import independent
+from twinlab2 import journey
+from twinlab2 import builds
+from twinlab2 import builds_web
+from twinlab2 import jobqueue
+from twinlab2 import migrations
+from twinlab2 import packages
+from twinlab2 import redact
+from twinlab2 import registry
+from twinlab2 import scenarios
+from twinlab2 import uploads
+from twinlab2 import verification as commit_checks
 
 LOCAL = auth.LOCAL
 
@@ -191,7 +191,7 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
             reasons.append(f"{base_url} reports " + (f"commit {observed[:12]}" if observed else "no commit") +
                            f", not {sha[:12]}: Twin Lab's checks need the built commit.")
         else:
-            twin = independent.run(runner or independent.PinnedTwinLab(), brief_scenarios(manifest), manifest,
+            twin = independent.run(runner or independent.TwinLabChecks(), brief_scenarios(manifest), manifest,
                                    base_url, app["lab_url"] or "")
             reasons += twin.get("problems") or []
     tested = False

@@ -16,13 +16,13 @@ import time
 import unittest
 from unittest import mock
 
-import builds
+from twinlab2 import builds
 from fakes import FakeAnthropic, FakeGitHub
-import packages
-from portal import create_app
-from providers import local_runner
+from twinlab2 import packages
+from twinlab2.portal import create_app
+from twinlab2.providers import local_runner
 from support import freeze as freeze_package, new_database
-import worker
+from twinlab2 import worker
 
 REPO = "acme/orders-demo"
 TESTS = Path(__file__).resolve().parent
@@ -324,7 +324,7 @@ class CopilotSessionTest(ClaudeSessionTest):
 
 class ClarifyTest(unittest.TestCase):
     def test_a_wrong_checksum_is_refused_before_any_call(self):
-        from providers.clarify import Clarifier
+        from twinlab2.providers.clarify import Clarifier
         fake = FakeAnthropic().start()
         self.addCleanup(fake.stop)
         clarifier = Clarifier(fake.key, base_url=fake.url, timeout=2)
@@ -334,7 +334,7 @@ class ClarifyTest(unittest.TestCase):
         self.assertEqual(fake.bodies, [])
 
     def test_questions_and_ready(self):
-        from providers.clarify import questions_of
+        from twinlab2.providers.clarify import questions_of
         self.assertEqual(questions_of("Intro\nQUESTION: A?\nquestion: B?"), (["A?", "B?"], False))
         self.assertEqual(questions_of("All agreed.\nREADY TO BUILD"), ([], True))
 

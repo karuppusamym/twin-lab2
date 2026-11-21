@@ -5,9 +5,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-import db
-import migrations
-from portal import create_app
+from twinlab2 import db
+from twinlab2 import migrations
+from twinlab2.portal import create_app
 from support import ENGINE, connect, new_database
 
 

@@ -1,6 +1,6 @@
 """The isolated worker process of a Claude or Copilot build session.
 
-    python -m providers.runner --workspace <session folder>        (secrets as one JSON line on stdin)
+    python -m twinlab2.providers.runner --workspace <session folder>        (secrets as one JSON line on stdin)
 
 One process per session, started by the session's adapter (providers/claude_provider.py,
 providers/copilot_provider.py) and detached from the portal and the job worker. Everything it
@@ -42,7 +42,7 @@ import traceback
 import urllib.error
 import urllib.request
 
-PROJECT = Path(__file__).resolve().parents[1]
+PROJECT = Path(__file__).resolve().parents[2]  # server/
 HEARTBEAT_SECONDS = 2.0
 WAIT_STEP = 0.2
 READ_ONLY_TOOLS = {"Read", "Glob", "Grep", "LS", "TodoWrite", "NotebookRead"}
@@ -266,7 +266,7 @@ def publish(session):
 
 
 async def clarify(session):
-    from providers.clarify import Clarifier, ClarifyError, questions_of
+    from twinlab2.providers.clarify import Clarifier, ClarifyError, questions_of
 
     spec = session.spec
     clarifier = Clarifier(session.secrets.get("anthropic_api_key"), spec["model"], base_url=spec.get("anthropic_base_url"),
@@ -314,7 +314,7 @@ def _last_text(messages):
 
 def load_agent(backend):
     """The agent entry point: TWINLAB2_<BACKEND>_AGENT=module:function, else the SDK's."""
-    entry = os.environ.get(f"TWINLAB2_{backend.upper()}_AGENT") or f"providers.agents:{backend}"
+    entry = os.environ.get(f"TWINLAB2_{backend.upper()}_AGENT") or f"twinlab2.providers.agents:{backend}"
     module, _, name = entry.partition(":")
     return getattr(importlib.import_module(module), name)
 
@@ -332,7 +332,7 @@ async def implement(session, backend, clarified):
     # a restart continues the agent's own session when it got far enough to have one; else the
     # turn starts again on the same working tree (its edits so far are still there)
     text = prompt if not resume else "Continue the build where you stopped."
-    from providers.clarify import questions_of
+    from twinlab2.providers.clarify import questions_of
 
     while True:
         session.interrupted.clear()

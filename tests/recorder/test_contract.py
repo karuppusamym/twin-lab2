@@ -1,5 +1,5 @@
 """The recorder contract: the schema, version compatibility, the portal's checks, the recorder's
-stamping, and the pinned Twin Lab that produces the references."""
+stamping, and the collectors' timeline that produces the references."""
 
 import copy
 import json
@@ -13,10 +13,10 @@ import tempfile
 import unittest
 from unittest import mock
 
-from agent import main as agent_main
-from agent import twinlab
-from agent.client import PortalError
-import recorder_contract as contract
+from twinlab2_recorder import main as agent_main
+from twinlab2_recorder.workstation import timeline
+from twinlab2_recorder.client import PortalError
+from twinlab2_contract import recorder_contract as contract
 from support import connect
 from test_registry import EVENT_1, RegistryTest, completeness_report, references, references_1_1
 
@@ -25,18 +25,10 @@ try:
 except ImportError:  # the cross-check with a full JSON Schema implementation is optional
     jsonschema = None
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 SESSION = FIXTURES / "workstation-session"
-BUILT = FIXTURES / "references-from-pinned-twinlab.json"
+BUILT = FIXTURES / "references-from-the-collectors.json"
 CV = contract.CONTRACT_VERSION
-
-
-def pinned_labctl_available():
-    try:
-        twinlab.verify()
-        return True
-    except (twinlab.PinError, OSError):
-        return False
 
 
 def pair_message(**extra):
@@ -48,10 +40,9 @@ class SchemaTest(unittest.TestCase):
     def test_one_version_everywhere(self):
         self.assertEqual(contract.schema()["x-contract-version"], CV)
         self.assertIsNotNone(contract.parse(CV))
-        # the lock names the version the pinned Twin Lab's collectors emit (1.0.0 until the pin
-        # moves to collectors with event ids); this portal must accept it
-        pinned = json.loads(twinlab.LOCK.read_text(encoding="utf-8"))["contract_version"]
-        self.assertEqual(contract.compatibility(pinned), contract.parse(pinned))
+        # the version the collectors' timeline writes on every outbox: this portal accepts it
+        self.assertEqual(timeline.CONTRACT_VERSION, CV)
+        self.assertEqual(contract.compatibility(timeline.CONTRACT_VERSION), contract.parse(CV))
 
     @unittest.skipIf(jsonschema is None, "jsonschema is not installed")
     def test_the_schema_is_valid_json_schema_2020_12(self):
@@ -150,9 +141,9 @@ class SchemaTest(unittest.TestCase):
 
 
 class FixtureRecordingTest(unittest.TestCase):
-    """References that Twin Lab's own collectors built from a recorded session folder."""
+    """References that the collectors' timeline built from a recorded session folder."""
 
-    def test_the_fixture_built_by_the_pinned_twinlab_conforms(self):
+    def test_the_fixture_built_by_the_collectors_conforms(self):
         built = json.loads(BUILT.read_text(encoding="utf-8"))
         # Twin Lab stamps 1.1.0 on every outbox since 4385949, also on this session, which was
         # recorded before event ids: no step has one, so the recorder sends it as contract 1.0
@@ -169,22 +160,13 @@ class FixtureRecordingTest(unittest.TestCase):
         for leak in ("X-999", "C-100", "Xxxx", "notepad", "s-1a2b"):
             self.assertNotIn(leak, text)
 
-    @unittest.skipUnless(pinned_labctl_available(), "the pinned Twin Lab is not vendored: python -m agent.twinlab fetch")
-    def test_the_pinned_twinlab_still_builds_the_fixture(self):
-        code = (
-            "import json, shutil, sys, tempfile\n"
-            "from pathlib import Path\n"
-            "sys.path.insert(0, sys.argv[1])\n"
-            "from labctl.workstation import timeline\n"
-            "with tempfile.TemporaryDirectory() as tmp:\n"
-            "    folder = Path(tmp) / 's'\n"
-            "    shutil.copytree(sys.argv[2], folder, ignore=shutil.ignore_patterns('README.md'))\n"
-            "    print(json.dumps(timeline.build(folder)))\n"
-        )  # in its own process: labctl stays off this test run's sys.path
-        out = subprocess.run([sys.executable, "-c", code, str(twinlab.labctl_parent()), str(SESSION)],
-                             capture_output=True, text=True, check=True, encoding="utf-8").stdout  # fmt: skip
-        self.assertEqual(json.loads(out), json.loads(BUILT.read_text(encoding="utf-8")),
-                         "the pinned Twin Lab builds other references from the fixture: review, then regenerate")
+    def test_the_collectors_still_build_the_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "s"
+            shutil.copytree(SESSION, folder, ignore=shutil.ignore_patterns("README.md"))
+            built = json.loads(json.dumps(timeline.build(folder)))
+        self.assertEqual(built, json.loads(BUILT.read_text(encoding="utf-8")),
+                         "the timeline builds other references from the fixture: review, then regenerate")
 
 
 class PortalContractTest(unittest.TestCase):
@@ -281,52 +263,6 @@ class RecorderStampTest(unittest.TestCase):
         with self.assertRaises(PortalError) as caught:
             agent_main.contract_references(broken)
         self.assertIn("outside recorder contract", str(caught.exception))
-
-
-class PinTest(unittest.TestCase):
-    def setUp(self):
-        self.work = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.work, ignore_errors=True)
-
-    def test_digest_ignores_line_endings_and_caches_but_not_content(self):
-        a, b = self.work / "a", self.work / "b"
-        for folder, eol in ((a, "\n"), (b, "\r\n")):
-            (folder / "pkg" / "__pycache__").mkdir(parents=True)
-            (folder / "pkg" / "x.py").write_bytes(f"one{eol}two{eol}".encode())
-            (folder / "pkg" / "__pycache__" / "x.cpython-313.pyc").write_bytes(os.urandom(8))
-        self.assertEqual(twinlab.tree_digest(a), twinlab.tree_digest(b))
-        (b / "pkg" / "x.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
-        self.assertNotEqual(twinlab.tree_digest(a), twinlab.tree_digest(b))
-
-    def test_fetch_takes_exactly_the_pinned_tree_and_refuses_another(self):
-        repo = self.work / "twin-lab"
-        pkg = repo / "lab" / "labctl" / "labctl"
-        pkg.mkdir(parents=True)
-        (pkg / "__init__.py").write_text("PINNED = True\n", encoding="utf-8")
-        (repo / "README.md").write_text("not vendored\n", encoding="utf-8")
-        git = ["git", "-C", str(repo), "-c", "user.email=t@example.test", "-c", "user.name=t"]
-        subprocess.run([*git, "init", "-q"], check=True)
-        subprocess.run([*git, "add", "."], check=True)
-        subprocess.run([*git, "commit", "-qm", "pin"], check=True)
-        commit = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-        pin = {"repository": "local", "commit": commit, "archive": "https://example.test/none",
-               "path": "lab/labctl/labctl", "tree_sha256": twinlab.tree_digest(pkg)}  # fmt: skip
-        with mock.patch.dict(os.environ, {"TWINLAB_VENDOR": str(self.work / "vendor")}):
-            folder = twinlab.fetch(from_checkout=repo, pin=pin)
-            self.assertTrue((folder / "__init__.py").is_file())
-            self.assertFalse(any(p.name == "README.md" for p in (self.work / "vendor").rglob("*")))
-            self.assertEqual(twinlab.labctl_parent(pin), folder.parent)
-            (folder / "__init__.py").write_text("PINNED = False\n", encoding="utf-8")
-            with self.assertRaises(twinlab.PinError):
-                twinlab.verify(pin)
-            with self.assertRaises(twinlab.PinError):
-                twinlab.fetch(from_checkout=repo, pin=dict(pin, tree_sha256="0" * 64))
-
-    def test_the_lock_names_a_full_commit_and_digest(self):
-        pin = twinlab.lock()
-        self.assertRegex(pin["commit"], r"^[0-9a-f]{40}$")
-        self.assertRegex(pin["tree_sha256"], r"^[0-9a-f]{64}$")
-        self.assertTrue(pin["archive"].startswith("https://") and pin["commit"] in pin["archive"])
 
 
 if __name__ == "__main__":

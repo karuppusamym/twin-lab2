@@ -30,9 +30,9 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
-import artifacts
-import redact
-import scenarios
+from twinlab2 import artifacts
+from twinlab2 import redact
+from twinlab2 import scenarios
 
 FORMAT = 2
 TEXT_EXTENSIONS = {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".sql", ".har"}

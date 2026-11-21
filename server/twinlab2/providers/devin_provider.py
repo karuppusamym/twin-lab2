@@ -11,9 +11,9 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-import devin
-import github
-from providers import base
+from twinlab2 import devin
+from twinlab2 import github
+from twinlab2.providers import base
 
 MAX_ACU_BUDGET = 1000
 

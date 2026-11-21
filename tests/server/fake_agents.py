@@ -18,7 +18,7 @@ import json
 import os
 from pathlib import Path
 
-from providers.runner import AgentResult
+from twinlab2.providers.runner import AgentResult
 
 _held = False
 

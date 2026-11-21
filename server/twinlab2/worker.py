@@ -1,7 +1,7 @@
 """The TwinLab2 build worker: works the job queue in the catalog database.
 
-    python worker.py                         the catalog at TWINLAB2_DATABASE or .state/catalog.db
-    python worker.py --database <path> [--once] [--lease 60]
+    python -m twinlab2.worker                         the catalog at TWINLAB2_DATABASE or .state/catalog.db
+    python -m twinlab2.worker --database <path> [--once] [--lease 60]
 
 Run one. Each job is leased; a heartbeat thread extends the lease while the job runs. When this
 process dies mid-job its lease runs out and the next worker (this one restarted, or another)
@@ -18,9 +18,9 @@ from pathlib import Path
 import threading
 import traceback
 
-import builds
-import db as database
-import jobqueue
+from twinlab2 import builds
+from twinlab2 import db as database
+from twinlab2 import jobqueue
 
 TYPES = ("build", "build.cancel", "build.message", "build.interrupt")
 log = logging.getLogger("twinlab2.worker")

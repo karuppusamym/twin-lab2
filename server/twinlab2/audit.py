@@ -24,7 +24,7 @@ import json
 
 def migrate(db):
     """The audit table and its guards (migration 6), with every other pending migration."""
-    import migrations
+    from twinlab2 import migrations
     migrations.run(db)
 
 

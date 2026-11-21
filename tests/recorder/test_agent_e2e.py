@@ -8,10 +8,13 @@ discovered, with their flows, and nothing of the applications that were not targ
 
 It takes the foreground and clicks in CaseDesk, so it runs only when asked:
 
-    python -m agent.twinlab fetch        the pinned collectors (twinlab.lock.json)
     set TWINLAB_AGENT_E2E=1
-    set TWINLAB_REFERENCE=<a twin-lab checkout>   only for the CaseDesk reference application
-    python -m pytest -q tests/test_agent_e2e.py   (from twin-lab2)
+    set TWINLAB_REFERENCE=<a twin-lab checkout>   only for CaseDesk's sources (default ../twin-lab)
+    python -m pytest -q tests/recorder/test_agent_e2e.py   (from twin-lab2)
+
+CaseDesk (a WinForms app built with dotnet) is an external fixture from twin-lab's
+reference/desktop/CaseDesk; its steps are driven here with the copied desktop Driver
+(desktop_drive.py).
 
 Leave the PC alone while it runs: a click or a window of yours in the foreground can still
 make the flow refuse to click, and then the session's note says why.
@@ -33,9 +36,9 @@ from unittest import mock
 
 from werkzeug.serving import make_server
 
-from agent import main as agent_main
-from agent import settings as st
-from portal import create_app
+from twinlab2_recorder import main as agent_main
+from twinlab2_recorder import settings as st
+from twinlab2.portal import create_app
 from support import new_database
 
 PAGE = b"""<!DOCTYPE html><html><head><title>Orders</title></head><body>
@@ -57,12 +60,47 @@ class Site(BaseHTTPRequestHandler):
         pass
 
 
+def casedesk_flow(flow, pids: set[int], pause: float = 0.6) -> None:
+    """The steps of CaseDesk's own flow (twin-lab reference/desktop/CaseDesk/flow.py at 90bdd91),
+    driven with the copied desktop Driver: sign in (a wrong password first), search, refresh,
+    open a case, change it, save twice, exit."""
+    from desktop_drive import Driver
+
+    d = Driver(pids, pause)
+    w = d.window("uia:AutomationId=LoginForm;ControlType=Window")
+    d.type(w, "uia:AutomationId=txtUser;ControlType=Edit", flow.USER)
+    d.type(w, "uia:AutomationId=txtPassword;ControlType=Edit", flow.BAD_PASSWORD)
+    d.click(w, "uia:AutomationId=btnSignIn;ControlType=Button")
+    box = d.window("uia:Name=Sign in;ControlType=Window;ClassName=#32770")
+    d.click(box, "uia:Name=OK;ControlType=Button")
+    d.type(w, "uia:AutomationId=txtPassword;ControlType=Edit", flow.PASSWORD)
+    d.click(w, "uia:AutomationId=btnSignIn;ControlType=Button")
+
+    main = d.window("uia:AutomationId=MainForm;ControlType=Window")
+    d.type(main, "uia:AutomationId=txtSearch;ControlType=Edit", "C-100")
+    if not d.key("Enter"):  # Enter presses Search (the form's AcceptButton)
+        d.click(main, "uia:AutomationId=btnSearch;ControlType=Button")
+    d.click_menu(main, "Case", "Refresh")
+    d.click(main, "uia:AutomationId=btnOpen;ControlType=Button")
+
+    case = d.window("uia:AutomationId=CaseDetailForm;ControlType=Window")
+    d.type(case, "uia:AutomationId=txtSummary;ControlType=Edit", "Done")
+    d.choose(case, "uia:AutomationId=cboStatus;ControlType=ComboBox", "Resolved")
+    d.click(case, "uia:AutomationId=chkUrgent;ControlType=CheckBox")
+    d.click(case, "uia:AutomationId=btnSave;ControlType=Button")
+    box = d.window("uia:Name=Case;ControlType=Window;ClassName=#32770")
+    d.click(box, "uia:Name=OK;ControlType=Button")
+    d.type(case, "uia:AutomationId=txtSummary;ControlType=Edit", "Card resent by courier")
+    d.click(case, "uia:AutomationId=btnSave;ControlType=Button")
+
+    d.click_menu(main, "File", "Exit")
+
+
 @unittest.skipUnless(sys.platform == "win32" and os.environ.get("TWINLAB_AGENT_E2E") == "1",
                      "starts Edge and CaseDesk and clicks: set TWINLAB_AGENT_E2E=1")
 class EndToEndTest(unittest.TestCase):
     def test_pair_offer_record_send_and_see_it_mapped(self):
-        agent_main._labctl()
-        twinlab = Path(os.environ.get("TWINLAB_REFERENCE") or Path(__file__).resolve().parents[2] / "twin-lab")
+        twinlab = Path(os.environ.get("TWINLAB_REFERENCE") or Path(__file__).resolve().parents[3] / "twin-lab")
         casedesk = twinlab / "reference" / "desktop" / "CaseDesk"
         spec = importlib.util.spec_from_file_location("casedesk_flow", casedesk / "flow.py")
         flow = importlib.util.module_from_spec(spec)
@@ -101,7 +139,7 @@ class EndToEndTest(unittest.TestCase):
                                                  s["automation_id"], minutes=5)
 
                 def script(session):
-                    from labctl.desktop import win
+                    from twinlab2_recorder.desktop import win
                     from playwright.sync_api import sync_playwright
 
                     end = time.monotonic() + 30
@@ -124,7 +162,7 @@ class EndToEndTest(unittest.TestCase):
                         pids = {p for p in win.pids_by_name("CaseDesk.exe") if win.top_windows({p})}
                         time.sleep(0.3)
                     time.sleep(1.0)
-                    flow.flow(pids)  # the Driver takes the foreground and waits itself (twin-lab 90bdd91)
+                    casedesk_flow(flow, pids)  # the Driver takes the foreground and waits itself
 
                 folder = agent_main.run_session(cfg, conf, script=script)
                 # a failing script only leaves a note in the session; say it rather than a missing step

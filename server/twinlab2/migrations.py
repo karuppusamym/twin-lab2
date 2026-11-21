@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-import db as database
+from twinlab2 import db as database
 
 LOCK = 72_401_913  # pg_advisory_xact_lock key for migrations
 
@@ -425,7 +425,7 @@ def latest():
 
 def run(connection):
     """Apply every pending migration; returns the versions applied."""
-    from registry import now
+    from twinlab2.registry import now
 
     done = []
     for version, name, steps in MIGRATIONS:

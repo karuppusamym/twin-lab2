@@ -1,8 +1,8 @@
 """The recorder runs Twin Lab's preflight before it records, refuses to start when a check fails
 unless the person overrides it, and sends the checks (`preflight`) with the references.
 
-The recordings run in their own process (`python agent/main.py`), so Twin Lab's collectors stay
-off this test run's sys.path. The session's one target is a mainframe host that does not answer:
+The recordings run in their own process (`python recorder/twinlab2_recorder/main.py`), as the
+window starts them. The session's one target is a mainframe host that does not answer:
 its check fails on every PC, and the recorder's mainframe channel (a local proxy) needs nothing
 else to start.
 """
@@ -16,20 +16,11 @@ import subprocess
 import sys
 import unittest
 
-from agent import main as agent_main
-from agent import twinlab
-import recorder_contract as contract
+from twinlab2_recorder import main as agent_main
+from twinlab2_contract import recorder_contract as contract
 from test_agent import AgentPortalTest
 
 MAIN = Path(agent_main.__file__).resolve()
-
-
-def pinned_labctl_available():
-    try:
-        twinlab.verify()
-        return True
-    except (twinlab.PinError, OSError):
-        return False
 
 
 def unused_port() -> int:
@@ -60,15 +51,13 @@ class PreflightUnitTest(unittest.TestCase):
         self.assertNotIn("FAILED CHECKS", agent_main.describe(box))
 
 
-@unittest.skipUnless(pinned_labctl_available(), "the pinned Twin Lab is not vendored: python -m agent.twinlab fetch")
 class PreflightRecordTest(unittest.TestCase):
-    """`record` and `run-session` against the pinned collectors, with a portal on this machine."""
+    """`record` and `run-session` against the collectors, with a portal on this machine."""
 
     setUp, code = AgentPortalTest.setUp, AgentPortalTest.code
 
     def recorder(self, *args, timeout=180):
         env = dict(os.environ, PYTHONIOENCODING="utf-8")
-        env.pop("TWINLAB_PATH", None)
         return subprocess.run([sys.executable, str(MAIN), *args], capture_output=True, text=True,
                               encoding="utf-8", env=env, timeout=timeout)  # fmt: skip
 
@@ -90,7 +79,7 @@ class PreflightRecordTest(unittest.TestCase):
         self.assertEqual(self.recordings(), [])
 
     def test_run_session_refuses_a_failed_block_without_the_override(self):
-        # as the window writes it (session_config would import labctl into this process)
+        # as the window writes it
         conf = {"id": "20261120T120000Z-0123abcd", "name": "From the window", "deny_keys": [],
                 "targets": [{"origin": "https://billing.example.test"}], "minutes": 1, "preflight": FAILED}  # fmt: skip
         path = self.root / "next-session.json"

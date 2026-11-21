@@ -18,7 +18,7 @@ from pathlib import Path
 import uuid
 from urllib.parse import urlsplit, urlunsplit
 
-from db import connect  # noqa: F401 - tests open the database with it
+from twinlab2.db import connect  # noqa: F401 - tests open the database with it
 
 URL = os.environ.get("TWINLAB2_TEST_DATABASE_URL", "").strip()
 ENGINE = "postgresql" if URL else "sqlite"
@@ -47,7 +47,7 @@ def _drop():
     if not _created:
         return
     import shutil
-    from db import state_dir
+    from twinlab2.db import state_dir
 
     parts = urlsplit(URL)
     with _admin() as admin:

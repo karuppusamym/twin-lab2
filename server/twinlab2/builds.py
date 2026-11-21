@@ -54,17 +54,17 @@ import sys
 import tempfile  # noqa: F401 - kept for callers that patch it
 import uuid
 
-import artifacts
-import audit
-import buildpack
-import db as database
-import devin
-import github
-import jobqueue
-import providers
-from providers import base
+from twinlab2 import artifacts
+from twinlab2 import audit
+from twinlab2 import buildpack
+from twinlab2 import db as database
+from twinlab2 import devin
+from twinlab2 import github
+from twinlab2 import jobqueue
+from twinlab2 import paths
+from twinlab2 import providers
+from twinlab2.providers import base
 
-PROJECT = Path(__file__).resolve().parent
 # The tables are created by migrations.py (3: build jobs, 7: build sessions).
 STATES = ("queued", "starting", "checking_started", "running", "waiting_for_answer",
           "ready_for_verification", "failed", "cancelled")
@@ -521,7 +521,7 @@ def propose_scope_change(db, build, text, user, key, reply_to):
     """An answer that changes agreed behaviour: a new proposed scenario, so the application's draft
     package changes and an owner must review and approve a new revision. The revision this
     session builds is untouched, and nothing is sent to the provider."""
-    import scenarios
+    from twinlab2 import scenarios
 
     stamp = now()
     name = f"Agreed in build session #{build['id']}"[:200]
@@ -937,7 +937,7 @@ _dev_worker = None
 
 
 def start_dev_worker(target):
-    """Start `python worker.py` for this catalog, unless the one started here still runs."""
+    """Start `python -m twinlab2.worker` for this catalog, unless the one started here still runs."""
     global _dev_worker
     if _dev_worker is not None and _dev_worker.poll() is None:
         return _dev_worker.pid, False
@@ -946,8 +946,8 @@ def start_dev_worker(target):
     log = folder / "worker.log"
     flags = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == "win32" else {"start_new_session": True}
     with open(log, "ab") as out:
-        _dev_worker = subprocess.Popen([sys.executable, str(PROJECT / "worker.py"), "--database", str(target)],
-                                       cwd=PROJECT, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **flags)
+        _dev_worker = subprocess.Popen([sys.executable, "-m", "twinlab2.worker", "--database", str(target)],
+                                       cwd=paths.ROOT, env=paths.child_env(), stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **flags)
     return _dev_worker.pid, True
 
 

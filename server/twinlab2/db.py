@@ -25,7 +25,9 @@ import os
 from pathlib import Path
 import sqlite3
 
-DEFAULT_PATH = Path(__file__).resolve().parent / ".state" / "catalog.db"
+from twinlab2.paths import STATE
+
+DEFAULT_PATH = STATE / "catalog.db"
 
 try:  # PostgreSQL support is optional for local development
     import psycopg

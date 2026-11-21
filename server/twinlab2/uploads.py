@@ -29,10 +29,10 @@ import secrets
 
 from flask import abort, jsonify, request
 
-import artifacts
-import auth
-import recorder_contract as contract
-import registry
+from twinlab2 import artifacts
+from twinlab2 import auth
+from twinlab2_contract import recorder_contract as contract
+from twinlab2 import registry
 
 MACHINE_PATHS = ("/api/agent/", "/api/uploads")
 STATES = ("receiving", "verifying", "confirmed", "rejected")
@@ -43,7 +43,7 @@ CONTENT_TYPES = {"application/zip", "application/x-ndjson", "application/json", 
 
 def migrate(db):
     """The `uploads` table (migration 5), with every other pending migration."""
-    import migrations
+    from twinlab2 import migrations
     migrations.run(db)
 
 

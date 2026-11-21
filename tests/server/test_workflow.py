@@ -8,10 +8,10 @@ import tempfile
 import unittest
 from zipfile import ZipFile
 
-from capture import recover
-from openshift import resources
+from twinlab2_recorder.capture import recover
+from twinlab2.openshift import resources
 from support import freeze
-from portal import add_release, create_app
+from twinlab2.portal import add_release, create_app
 from support import new_database
 from test_registry import eid
 

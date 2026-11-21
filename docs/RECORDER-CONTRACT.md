@@ -1,8 +1,8 @@
 # Recorder contract 1.1.0
 
 What a workstation recorder sends to the TwinLab2 portal, and how the two sides agree on a version. The
-machine-checkable form is [`contract/recorder-contract.schema.json`](contract/recorder-contract.schema.json)
-(JSON Schema 2020-12). [`recorder_contract.py`](recorder_contract.py) holds the version rules and a
+machine-checkable form is [`contract/twinlab2_contract/recorder-contract.schema.json`](contract/twinlab2_contract/recorder-contract.schema.json)
+(JSON Schema 2020-12). [`twinlab2_contract.recorder_contract`](recorder_contract.py) holds the version rules and a
 small validator for that schema. The portal and this repository's recorder both run it.
 
 ## Version
@@ -255,31 +255,31 @@ it is. A resend with different completeness withdraws that acceptance.
 
 ## Who implements it
 
-- **TwinLabRecorder** (`agent/`, version 0.2.0 or later) speaks contract 1.x. The references are
-  built by Twin Lab's collectors (`labctl.workstation.timeline.outbox`) at the commit pinned in
-  `twinlab.lock.json`. Since `4385949` that outbox declares `contract_version` 1.1.0 itself, with
+- **TwinLabRecorder** (`recorder/`, version 0.2.0 or later) speaks contract 1.x. The references are
+  built by the collectors' timeline (`twinlab2_recorder.workstation.timeline.outbox`, copied from
+  Twin Lab 90bdd91, [UPSTREAM.md](UPSTREAM.md)). Since Twin Lab `4385949` that outbox declares `contract_version` 1.1.0 itself, with
   event ids assigned at capture time and a completeness manifest. The recorder stamps itself on
-  the outbox, then validates it, before it sends (`agent.main.contract_references`). An outbox
+  the outbox, then validates it, before it sends (`twinlab2_recorder.main.contract_references`). An outbox
   without a version (an older Twin Lab) gets the version its shape is (1.1.0 when it reports
   `completeness`, else 1.0.0). Twin Lab also writes 1.1.0 when it rebuilds a session recorded
   before event ids: if no step has an `event_id`, the recorder sends it as 1.0.0 without
   `completeness` (that manifest was computed without a capture journal), and the portal derives
   stable ids at ingest. A recording in which only some steps have ids is refused.
-- **The portal** (`registry.py`) checks every pairing and upload with `recorder_contract.validate`.
-  `uploads.py` serves recording uploads and stores them with `artifacts.py`.
-- **The recorder's upload queue** (`agent/upload_queue.py`, commands `upload` and `uploads`) keeps
+- **The portal** (`twinlab2.registry`) checks every pairing and upload with `recorder_contract.validate`.
+  `twinlab2.uploads` serves recording uploads and stores them with `twinlab2.artifacts`.
+- **The recorder's upload queue** (`twinlab2_recorder.upload_queue`, commands `upload` and `uploads`) keeps
   each upload on disk, resumes it after a restart or a network failure, and deletes its copy only
   once the portal confirms.
 
 ## Changing the contract
 
 1. Change the schema and the tables above. Set `x-contract-version` in the schema and
-   `CONTRACT_VERSION` in `recorder_contract.py` to the new version (a test checks that they
-   agree). `contract_version` in `twinlab.lock.json` is the version the pinned collectors emit:
-   change it when the pin moves. A minor version whose new fields are required of its senders
+   `CONTRACT_VERSION` in `twinlab2_contract.recorder_contract` to the new version (a test checks that they
+   agree), and `CONTRACT_VERSION` in `twinlab2_recorder.workstation.timeline`, the version the
+   collectors write on every outbox (a test checks that one too). A minor version whose new fields are required of its senders
    gets its own definition (as `references_1_1`), chosen by `recorder_contract.definition`.
 2. For a MAJOR change, decide whether the portal still accepts the old MAJOR for a while. If it
    does, handle both versions explicitly. If it does not, raise `OLDEST_SUPPORTED`.
-3. Add samples to `tests/test_contract.py`.
+3. Add samples to `tests/recorder/test_contract.py`.
 4. When the change comes from Twin Lab's collectors, move the pin (`UPSTREAM.md`) and regenerate
-   `tests/fixtures/references-from-pinned-twinlab.json` in the same commit.
+   `tests/fixtures/references-from-the-collectors.json` in the same commit.

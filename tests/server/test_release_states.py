@@ -12,7 +12,7 @@ import unittest
 from zipfile import ZipFile
 
 from support import freeze
-from portal import VERSION_PATH, add_release, create_app
+from twinlab2.portal import VERSION_PATH, add_release, create_app
 from support import connect, new_database
 from test_registry import eid
 

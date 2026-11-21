@@ -14,8 +14,8 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote, urlsplit
 
-from agent.settings import APP, VERSION
-from recorder_contract import CONTRACT_VERSION
+from twinlab2_recorder.settings import APP, VERSION
+from twinlab2_contract.recorder_contract import CONTRACT_VERSION
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 

@@ -41,11 +41,13 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+
+from twinlab2.paths import STATE
 import secrets
 import tempfile
 import time
 
-from db import state_dir  # where local files go for a database
+from twinlab2.db import state_dir  # where local files go for a database
 
 KINDS = ("restricted_evidence", "builder_package", "verification_report", "release_download")
 CHUNK = 1024 * 1024
@@ -289,7 +291,7 @@ def from_env(database=None, environ=None):
     prefix = prefix + "/" if prefix else ""
     if backend == "local":
         root = env.get("TWINLAB2_ARTIFACT_DIR") or (
-            state_dir(database) / "artifacts" if database else Path(__file__).parent / ".state" / "artifacts")
+            state_dir(database) / "artifacts" if database else STATE / "artifacts")
         return LocalStore(root)
     if backend == "s3":
         return S3Store(env.get("TWINLAB2_S3_BUCKET", "").strip(), prefix=prefix,
@@ -452,7 +454,7 @@ _COLUMNS = "id, backend, bucket, object_key, version_id, sha256, size, content_t
 def migrate(db) -> None:
     """The `artifacts` table and the blob tables' `artifact_id` (migration 5), with every other
     pending migration."""
-    import migrations
+    from twinlab2 import migrations
     migrations.run(db)
 
 

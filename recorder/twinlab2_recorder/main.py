@@ -21,8 +21,9 @@ Options for every command: `--portable-data` (keep everything in `data\\` beside
 
 The recordings stay in the data folder. The references go to the portal only when the person
 agrees; a recording itself only when the person uploads it (`upload`), through the offline queue
-in `upload-queue\\` (agent.upload_queue), which keeps its copy until the portal confirms it.
-The collectors are Twin Lab's (`labctl.workstation`), run in this process.
+in `upload-queue\\` (twinlab2_recorder.upload_queue), which keeps its copy until the portal
+confirms it. The collectors (`twinlab2_recorder.workstation`, `.desktop`, `.web`) are Twin
+Lab's, copied at 90bdd91 (docs/UPSTREAM.md), and run in this process.
 """
 
 from __future__ import annotations
@@ -39,38 +40,16 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-if __package__ in (None, ""):  # run as a script: python agent/main.py
+if __package__ in (None, ""):  # run as a script: python recorder/twinlab2_recorder/main.py
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    if (Path(__file__).resolve().parents[2] / "contract").is_dir():  # a checkout: the shared package too
+        sys.path.insert(1, str(Path(__file__).resolve().parents[2] / "contract"))
 
-from agent import settings as st  # noqa: E402
-from agent.client import Portal, PortalError, check_portal  # noqa: E402
-from agent.upload_queue import UploadQueue, describe as describe_upload  # noqa: E402
-import recorder_contract as contract  # noqa: E402
-
-
-def _labctl() -> None:
-    """Make Twin Lab's collectors importable: bundled in a frozen build; else the pinned copy
-    in vendor/ (twinlab.lock.json, `python -m agent.twinlab fetch`), checked against its digest.
-    TWINLAB_PATH names another checkout for development only: it is not the pinned release."""
-    if getattr(sys, "frozen", False) or "labctl" in sys.modules:
-        return  # bundled at build time (from the pin, see _build.json), or already chosen
-    from agent import twinlab  # never a labctl that pip put in site-packages: the pin comes first
-
-    override = os.environ.get("TWINLAB_PATH")
-    if override:
-        if not (Path(override) / "lab" / "labctl" / "labctl").is_dir():
-            raise SystemExit(f"TWINLAB_PATH={override} has no lab/labctl/labctl")
-        print(f"note: Twin Lab's collectors from TWINLAB_PATH={override}, not the pinned commit",
-              file=sys.stderr)  # fmt: skip
-        sys.path.insert(0, str(Path(override) / "lab" / "labctl"))
-        return
-    try:
-        twinlab.verify()
-    except twinlab.PinError as exc:
-        raise SystemExit(f"Twin Lab's collectors: {exc}") from exc
-    sys.path.insert(0, str(twinlab.labctl_parent()))
-    # The vendored folder is not a Git checkout: say which commit it is.
-    os.environ.setdefault("TWINLAB_COMMIT", twinlab.lock()["commit"])
+from twinlab2_recorder import settings as st  # noqa: E402
+from twinlab2_recorder.client import Portal, PortalError, check_portal  # noqa: E402
+from twinlab2_recorder.upload_queue import UploadQueue, describe as describe_upload  # noqa: E402
+from twinlab2_contract import recorder_contract as contract  # noqa: E402
+from twinlab2_contract.upstream import UPSTREAM_COMMIT  # noqa: E402
 
 
 def _build_info() -> dict:
@@ -96,7 +75,7 @@ def session_config(targets: list[dict], deny_keys: list[str], name: str, portal_
                    automation_id=None, minutes: float = 240, keep_browser_profile: bool = False,
                    cdp: str | None = None, browser: str | None = None, pictures: bool = False,
                    robot: bool = True) -> dict:  # fmt: skip
-    from labctl.workstation.session import new_id
+    from twinlab2_recorder.workstation.session import new_id
 
     return {"id": new_id(), "name": name, "targets": targets, "deny_keys": deny_keys,
             "portal_session_id": portal_session_id, "automation_id": automation_id,
@@ -130,14 +109,13 @@ class NotReady(Exception):
 
 
 def preflight_checks(cfg: st.Settings, conf: dict) -> dict:
-    """Twin Lab's preflight (labctl.workstation.preflight) for this session, before anything is
+    """Twin Lab's preflight (twinlab2_recorder.workstation.preflight) for this session, before anything is
     recorded: the collectors write the contract this recorder speaks, free disk where the
     recordings go, the browser (or the attached one) and each web target answer, UI Automation
     answers for desktop targets, each mainframe host answers and its terminal port is free.
     -> {"checks": [{"name", "ok", "detail"}], "ready": bool}"""
-    _labctl()
-    from labctl.workstation.levels import Targets
-    from labctl.workstation.preflight import preflight
+    from twinlab2_recorder.workstation.levels import Targets
+    from twinlab2_recorder.workstation.preflight import preflight
 
     targets = Targets.from_list(conf["targets"], conf.get("deny_keys"))
     got = preflight(targets, out=cfg.recordings, browser=conf.get("browser") or None,
@@ -172,13 +150,11 @@ def run_session(cfg: st.Settings, conf: dict, script=None, parent_pid: int | Non
     it) goes into session.json and the outbox. A session whose checks failed is not recorded
     (NotReady) unless `conf["override_preflight"]` says the person chose to record anyway; its
     references then carry the failed checks and `"ready": false`."""
-    _labctl()
-    from labctl.workstation.levels import Targets
-    from labctl.workstation.session import Session, recover_all
+    from twinlab2_recorder.workstation.levels import Targets
+    from twinlab2_recorder.workstation.session import Session, recover_all
 
-    commit = _build_info().get("twinlab_commit")
-    if commit:
-        os.environ.setdefault("TWINLAB_COMMIT", commit)
+    # the Twin Lab commit the collectors were copied from (session.json, the references)
+    os.environ.setdefault("TWINLAB_COMMIT", _build_info().get("twinlab_commit") or UPSTREAM_COMMIT)
     pre = conf.get("preflight")
     if not isinstance(pre, dict) or not isinstance(pre.get("checks"), list):
         pre = preflight_checks(cfg, conf)
@@ -209,7 +185,7 @@ def contract_references(box: dict) -> dict:
     """The outbox as recorder contract references: the contract version and this recorder
     stamped on it, then checked against the schema here, before anything leaves the PC.
 
-    Twin Lab's outbox (labctl.workstation.timeline) declares contract 1.1.0 since 4385949. An
+    The outbox (twinlab2_recorder.workstation.timeline) declares contract 1.1.0 since 4385949. An
     outbox without a version (an older Twin Lab) is stamped with the version its shape is: 1.1.0
     when it reports the recording's `completeness`, else 1.0.0. A 1.1 outbox in which no step has
     an event id is a session recorded before event ids and is sent as 1.0.0 (see below). An
@@ -593,12 +569,10 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
         if not sel:
             messagebox.showinfo("TwinLab Recorder", "Choose a session first.")
             return
-        _labctl()
         s = state["offered"][sel[0]]
         start(session_config(s["targets"], state["deny"], s["name"], s["id"], s["automation_id"]))
 
     def on_start_own():
-        _labctl()
         targets = [dict(a["target"]) for var, a in own_vars if var.get()]
         for line in extra.get("1.0", "end").splitlines():
             line = line.strip()
@@ -652,8 +626,7 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
         if state["proc"] is not None:
             messagebox.showinfo("TwinLab Recorder", "Stop the recording first.")
             return
-        _labctl()
-        from labctl.workstation.session import open_profile
+        from twinlab2_recorder.workstation.session import open_profile
 
         try:
             open_profile(browser_profile(cfg), url="https://microsoftedge.microsoft.com/addons/search/uipath")
@@ -671,8 +644,7 @@ def gui(cfg: st.Settings, ca_bundle: str | None) -> None:  # noqa: C901 - one wi
         folder = filedialog.askdirectory(title="The UiPath project folder (with Main.xaml)")
         if not folder:
             return
-        _labctl()
-        from labctl.workstation.propose import propose
+        from twinlab2_recorder.workstation.propose import propose
 
         try:
             got = propose(Path(folder))
@@ -796,7 +768,6 @@ def main(argv: list[str] | None = None) -> int:
             if not doc["sessions"]:
                 print("no session is offered to this machine")
         elif args.command == "record":
-            _labctl()
             deny: list[str] = []
             targets = [{"exe": e} for e in args.exe] + [{"origin": o} for o in args.origin]
             targets += [{"exe": e, "level": "steps"} for e in args.steps_exe]
@@ -878,15 +849,13 @@ def main(argv: list[str] | None = None) -> int:
             if not jobs:
                 print("nothing is queued for upload")
         elif args.command == "browser":
-            _labctl()
-            from labctl.workstation.session import open_profile
+            from twinlab2_recorder.workstation.session import open_profile
 
             open_profile(browser_profile(cfg), url="https://microsoftedge.microsoft.com/addons/search/uipath")
             print(f"opened the kept profile {browser_profile(cfg)}: install UiPath's extension, close "
                   "the browser, then record with --keep-browser-profile")  # fmt: skip
         elif args.command == "propose":
-            _labctl()
-            from labctl.workstation.propose import propose
+            from twinlab2_recorder.workstation.propose import propose
 
             got = propose(Path(args.project))
             for t in got["targets"]:
@@ -899,8 +868,7 @@ def main(argv: list[str] | None = None) -> int:
                                  if t.get("origin") else ("--tn3270 " + t["tn3270"]) for t in got["targets"])  # fmt: skip
             print(f"record with: record {args_line}" + (f" --browser {got['browser']}" if got["browser"] else ""))
         elif args.command == "recover":
-            _labctl()
-            from labctl.workstation.session import recover_all
+            from twinlab2_recorder.workstation.session import recover_all
 
             done = recover_all(cfg.recordings)
             print("recovered: " + (", ".join(done) if done else "nothing"))

@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "twinlab2-contract"
+version = "0.2.0"
+description = "What the TwinLab2 recorder and portal share: the recorder contract and the recording format"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = ["PyYAML>=6"]
+
+[tool.setuptools.packages.find]
+include = ["twinlab2_contract*"]
+
+[tool.setuptools.package-data]
+twinlab2_contract = ["recorder-contract.schema.json"]

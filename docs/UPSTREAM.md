@@ -1,127 +1,105 @@
-# Twin Lab: the pinned recorder dependency
+# Twin Lab: the code TwinLab2 copied
 
-TwinLab2 builds its recorder from Twin Lab's collectors, `labctl` in
-[karuppusamym/twin-lab](https://github.com/karuppusamym/twin-lab) (Apache-2.0). It uses one pinned
-commit, never a sibling checkout or a branch. The portal and the recorder agree on what crosses
-between them through the versioned [recorder contract](RECORDER-CONTRACT.md).
+TwinLab2 depends on no other repository. The recorder's collectors, the recording format, Verify's
+scenario replay, the lab-agent client and the Devin client came from Twin Lab,
+[karuppusamym/twin-lab](https://github.com/karuppusamym/twin-lab) (Apache-2.0), at commit
+`90bdd917414a24a4da7f09fb66e8edb49ba3bfee` (twin-lab `main`, 2026-11-20). Until then TwinLab2
+downloaded that commit's `lab/labctl/labctl` tree at build and test time (`twinlab.lock.json`,
+`agent/twinlab.py`); that pin is gone.
 
-## The pin
+Only what TwinLab2 runs was copied: the transitive imports of the modules it used, and inside them
+only the paths it can reach. Twin Lab's command line, pack builder, data tools and lab runner were
+left out. Each copied file starts with a header naming the commit; its imports were renamed to
+this repository's packages. Nothing else in a copied module was changed except where listed under
+*Changes*.
 
-[`twinlab.lock.json`](twinlab.lock.json):
+`twinlab2_contract.upstream` holds the commit (`UPSTREAM_COMMIT`), and the recorder still reports
+it as `twinlab_commit` (in `session.json`, the references and `_build.json`): it is the commit
+the collectors' code is from.
 
-| Field | Value |
-|---|---|
-| Repository | `https://github.com/karuppusamym/twin-lab` |
-| Commit | `90bdd917414a24a4da7f09fb66e8edb49ba3bfee` (twin-lab `main`, 2026-11-20: merge of #64, the desktop Driver waits for the foreground, a covered point and a filling list; on top of #61-#63: isolated collectors, capture preflight, event ids at capture time, a durable capture journal, crash recovery and the completeness manifest) |
-| Tree | `lab/labctl/labctl` |
-| Tree SHA-256 | `8eea5b58d9ca2bb670a077883bf67d12413b52817525dee965267ba6dc5c323a` |
-| Recorder contract | `1.1.0` |
-| Previous pins | `4385949ffd0c6878e8402083e596fb8f7a1dd00b` (2026-11-20, contract 1.1.0); `430dfe538965b46ccbe824f8f2b4f415c5576483` (2026-11-19, contract 1.0.0) |
+## What came from where
+
+About 21,100 lines in 50 files (with their headers), from 47 Twin Lab modules out of 172.
+
+| TwinLab2 module | Twin Lab source (`lab/labctl/labctl/...`) | Used by |
+|---|---|---|
+| `twinlab2_contract.evidence.sanitize`, `.typedvalues`, `.dom`, `.locate`, `.recording`, `.publicdata` | `sanitize.py`, `typedvalues.py`, `behaviour/dom.py`, `locate.py`, `botlog/recording.py`, `publicdata.py` | the recorder (writes recordings) and the replay (reads them) |
+| `twinlab2_recorder.workstation.*` (13 modules) | `workstation/` (`session`, `levels`, `preflight`, `propose`, `timeline`, `completeness`, `recovery`, `robot`, `supervisor`, `tn3270`, `flow`, `journal`, `__init__`) | the recorder (`twinlab2_recorder.main`) |
+| `twinlab2_recorder.desktop.*` (8 modules) | `desktop/` (`__init__`, `detect`, `locator`, `privacy`, `recorder`, `win`, `winlook`, `pictures`) | desktop recording |
+| `twinlab2_recorder.web.recorder` | `recorder.py` | browser recording |
+| `twinlab2_recorder.ocr` | `ocr.py` | the desktop picture check and the web recorder |
+| `twinlab2_recorder.botlog.robotlog`, `.models` | `botlog/robotlog.py`, `botlog/models.py` | the UiPath robot log read at the end of a session |
+| `twinlab2_recorder.botlog.uipath` | `to_css`, `_wild`, `TEXT_ONLY_ATTRS` from `analyse/uipath.py` | `robotlog` |
+| `twinlab2_recorder.botlog.base` | `Contract` from `models.py` | `botlog.models` |
+| `twinlab2.replay.*` (9 modules) | `behaviour/` (`__init__`, `fidelity`, `acceptance`, `baseline`, `bindings`, `durable`, `judging`, `scope`, `visual`) | Verify (`twinlab2.independent`, through `python -m twinlab2.replay`) |
+| `twinlab2.replay.extracts` | `normalise_origin`, `DEFAULT_PORTS` from `split.py`; `BUSY_JS` from `jsfviews.py` | the replay |
+| `twinlab2.replay.selectors` | `_PART`, `_compound`, `_parse`, `_fits`, `_matches` from `behaviour/drafts.py` | `replay.scope` (element exclusions) |
+| `twinlab2.labagent` | `LabError`, `Agent` from `lab.py` | Verify's reset check |
+| `twinlab2.devinapi.client`, `.config` | `devin/client.py`, `devin/config.py` | Build with Devin (`twinlab2.devin`) |
+| `twinlab2.devinapi.jobs` | `_MONEY_WORDS`, `map_status` from `devin/jobs.py` | `twinlab2.devin` |
+| `tests/recorder/desktop_drive.py` (test only) | `desktop/drive.py` | the CaseDesk end to end |
+
+## What was cut, and why
+
+A replay of a TwinLab2 pack, a recording and the portal never reach these paths. Each import was
+replaced by `raise NotAbsorbed(...)` (`twinlab2_contract.upstream`) and the dead code after it
+removed, so a caller that reaches one anyway gets a plain error. Verify turns that into a scenario
+that was **not run** (with the reason), never a pass.
+
+| Cut | Where | Why it is not reached |
+|---|---|---|
+| `fidelity.reports_dir`, `fidelity.save` (Twin Lab's `lab`, `conformance`) | `twinlab2.replay.fidelity` | Twin Lab's CLI keeps reports under its lab state (`--app`); TwinLab2 stores the report with the release |
+| `durable.add_app`, `durable.assess` (`conformance`) | `twinlab2.replay.durable` | only `save` and Twin Lab's readiness gate call them |
+| `visual.unsettled_pictures` (`recorder.next_action`) | `twinlab2.replay.visual` | only `visual.template`, which writes Twin Lab's `visual.yaml` template from the CLI; the server never imports the recorder package |
+| `Public.collect`, `active_for`, `draft` (`har`, `factory`, `lookfeel`) | `twinlab2_contract.evidence.publicdata` | the owner's public-data declaration is drafted and collected by Twin Lab's pack builder; recording and replay only read the active declaration (`current`, `refused`) |
+| the rest of `split.py` (1,260 lines), `jsfviews.py` (760), `behaviour/drafts.py` (650), `lab.py`, `devin/jobs.py`, `analyse/uipath.py`, `models.py` | (only the definitions above were taken) | they build packs, run labs, or analyse automation projects |
+
+How this was decided: an AST walk over the pinned tree gave each module's imports, at module level
+and inside functions; every import into a module outside the copied set was then checked against
+its callers. The milestone v3 replay (`milestone-trial/judge-recordings/ws-20261120T173343Z-fa325a22`,
+Orders 3.0.0 on its clean-machine image) was run with the pinned tree, tracing the modules it
+loads (18 of labctl's), and again with the copy: both PASS WITHIN DECLARED SCOPE, 8/8 acceptance
+cases, 65 steps, the same report but for artifact paths; Verify's `independent.run` with the copy
+also passed the reset check ("reset restored the baseline (1 table(s))"), as Verify did on
+2026-11-20.
+
+## Changes
+
+- Imports renamed (`labctl.workstation` to `twinlab2_recorder.workstation`, and so on); Twin Lab
+  module names in comments and messages refer to "Twin Lab's ..." where the module was not copied.
+- The supervisor's collector entry points (`"twinlab2_recorder.workstation.supervisor:run_web"`
+  and the others) and the `recorder` names written into recordings
+  (`twinlab2_recorder.desktop.recorder`, ...) follow the rename.
+- `botlog.models` takes `Contract` from `botlog.base`; `KINDS` there is an empty dict (TwinLab2
+  does not load Twin Lab's YAML contracts).
+- `twinlab2.replay.__main__` is new: the entry Verify runs, writing a `not-run` report when the
+  replay raises `NotAbsorbed`.
+
+## Taking a later Twin Lab change
+
+There is no pin to move. To take a fix from twin-lab, diff the upstream module against the
+copied commit and apply the change here by hand:
 
 ```powershell
-python -m agent.twinlab fetch
-python -m agent.twinlab verify
+git -C ../twin-lab diff 90bdd917414a24a4da7f09fb66e8edb49ba3bfee..origin/main -- lab/labctl/labctl/workstation/timeline.py
 ```
 
-`fetch` downloads that commit's archive from GitHub. It takes only `lab/labctl/labctl`, only regular
-files, never links or paths outside the tree. It computes the tree digest and refuses the copy when
-the digest is not the lock's. The copy goes to `vendor/twin-lab-90bdd917414a/`, which Git ignores.
-Without network access, use `--from-checkout <a twin-lab clone>`. It takes the same commit with
-`git archive` and passes the same check.
+Read changes to `workstation/timeline.py` (`outbox`) and `workstation/flow.py` (`label_step`)
+with particular care: they decide what a recorder sends. Then run the tests:
+`test_the_collectors_still_build_the_fixture` fails when the references built from
+`tests/fixtures/workstation-session/` change. Review the difference; if it is still contract 1.x
+(only optional fields added), regenerate `tests/fixtures/references-from-the-collectors.json`,
+otherwise the contract needs a new MAJOR version first
+([Changing the contract](RECORDER-CONTRACT.md#changing-the-contract)). Say in the commit which
+upstream commit the change came from.
 
-The digest covers file paths and contents, with line endings normalised to LF and `__pycache__`
-left out. It is therefore the same from GitHub's archive, from `git archive` and from a Windows
-checkout with `autocrlf`. All three were checked for this pin. The archive's own bytes are not
-pinned, because GitHub does not promise byte-stable archives.
+## Open notes from the time of the pin
 
-## Why a pinned, digest-checked source and a built folder
-
-Managed PCs never see Twin Lab. They get the built `TwinLabRecorder` folder. `python agent/build.py`
-bundles Python, the pinned `labctl` and the contract schema into it. It writes `_build.json` with the
-commit, the tree digest, `"pinned": true` and the contract version, and it signs the folder when a
-certificate is given. A PC therefore needs no Python, no Git, no network access to GitHub and no
-second repository. The build host checks the one thing that matters, that the collectors are
-exactly the reviewed commit.
-
-The alternatives considered:
-
-- **A requirements pin.** twin-lab's root `pyproject.toml` packages `labctl` as `twin-lab`, so
-  `twin-lab[desktop] @ git+https://github.com/karuppusamym/twin-lab@<commit>` would work. It is
-  weaker on three counts. pip cannot hash-check a Git requirement. GitHub does not promise that
-  archive bytes stay the same, so a hash of the archive file could break. And it installs all of
-  twin-lab's dependencies on the build host (PostgreSQL, SQL Server and Oracle drivers, FastAPI…),
-  where the recorder needs only a few. Those few are in `requirements-recorder.txt`.
-- **Committing a vendored copy** (about 200 files). It is reproducible offline, but the copy can be
-  edited in place without anyone noticing, and it bloats every diff that moves the pin. The digest
-  check makes the copy fetched at build time just as trustworthy.
-
-When twin-lab publishes a release of the recorder, either a wheel on an index or a release
-asset with its checksum, switch to that version with pip's `--require-hashes`. The contract does
-not change.
-
-`TWINLAB_PATH=<checkout>` remains for development only, to try collectors that are not pinned yet.
-The recorder run from source then prints a note. `agent/build.py` refuses it unless
-`TWINLAB_ALLOW_UNPINNED=1` is set, and the resulting `_build.json` says `"pinned": false`.
-
-## Moving the pin
-
-1. Review what changed upstream in a separate twin-lab clone:
-
-   ```powershell
-   git -C ../twin-lab log --oneline 90bdd917414a24a4da7f09fb66e8edb49ba3bfee..origin/main -- lab/labctl/labctl
-   git -C ../twin-lab diff --stat 90bdd917414a24a4da7f09fb66e8edb49ba3bfee..origin/main -- lab/labctl/labctl
-   ```
-
-   Read the changes to `workstation/timeline.py` (`outbox`) and `workstation/flow.py` (`label_step`)
-   with particular care: they decide what a recorder sends. Also compare the dependencies in
-   `pyproject.toml` with `requirements-recorder.txt`.
-2. Put the new commit in `twinlab.lock.json`, both `commit` and the `archive` address, and set
-   `tree_sha256` to the output of `python -m agent.twinlab digest <clone>/lab/labctl/labctl`, with
-   that clone at the new commit and clean. Run `python -m agent.twinlab fetch`.
-3. Run `python -m unittest discover -s tests`. `test_the_pinned_twinlab_still_builds_the_fixture`
-   fails when the new collectors build different references from `tests/fixtures/workstation-session/`.
-   Review the difference. If the new output is still contract 1.x (only optional fields added),
-   regenerate `tests/fixtures/references-from-pinned-twinlab.json`. Otherwise the contract needs a
-   new MAJOR version first ([Changing the contract](RECORDER-CONTRACT.md#changing-the-contract)).
-4. Build, record a check run (RECORDING-GUIDE.md, *A check run*) and update this file's table in
-   the same commit.
-
-## Integration points
-
-| Integration | Upstream entry point |
-|---|---|
-| Workstation recorder (`agent/`) | `labctl.workstation` (`session`, `levels`, `timeline`, `flow`, `tn3270`, `robot`, `propose`) |
-| References sent to the portal | `labctl.workstation.timeline.outbox`, then stamped and validated by `agent.main.contract_references` |
-| Browser launch or attach (`capture.py`) | `lab/labctl/labctl/evidence_cli.py` and `lab/labctl/labctl/recorder.py` |
-| Windows desktop attach (`capture.py`) | `lab/labctl/labctl/desktop/cli.py` and `lab/labctl/labctl/desktop/recorder.py` |
-| Build with Devin (`devin.py`) | `labctl.devin.client` (`DevinClient`, `DevinError`, `UNCERTAIN_SESSION`), `labctl.devin.config.load_config`, `labctl.devin.jobs.map_status` |
-| Manual OpenShift deployment reference | `lab/labctl/labctl/ocp_manual.py`. TwinLab2 renders its own smaller resource set for prebuilt images. |
-
-`capture.py` uses the pinned copy by default. It records the lock's commit in `session.json`. It can
-still be pointed at a clean checkout with `--twin-lab`.
-
-## Follow-up for twin-lab
-
-Since `4385949`, `timeline.outbox` writes `contract_version` itself (1.1.0). Still open:
-
-- `timeline.outbox` should write a `recorder` object (`name`, `version`, `twinlab_commit`); until
-  then the recorder stamps it.
-- `timeline.outbox` writes 1.1.0 also for a session recorded before event ids, whose steps carry
-  none. It could write 1.0.0 (and no `completeness`) for such a session itself; until then
-  `agent.main.contract_references` does.
-- Collectors now run in "spawn" processes (`workstation/supervisor.py`), so a frozen recorder must
-  call `multiprocessing.freeze_support()` before anything else; `agent/main.py` does.
-
-Separately, tagged releases with a published wheel or a checksummed asset would allow a hashed
-requirements pin.
-
-For Build with Devin, `devin.py` subclasses the pinned `DevinClient` for two reads it lacks.
-twin-lab could take them over:
-
-- `DevinClient.list_sessions` takes only `first`. A `tags=` filter and paging (`after`) would let
-  a caller find the session an uncertain create may have started; `devin.BuildDevin.find_sessions`
-  does this today and also checks each session's tags itself.
-- There is no call for a session's messages. `BuildDevin.list_messages` reads
-  `GET /sessions/{id}/messages` and returns `[]` on 404, so Devin's questions can be shown.
-- `labctl.devin.mock` cannot simulate a create that times out or answers 5xx after creating, and
-  its session list ignores tags; TwinLab2's tests use their own fake (`tests/fakes.py`) for that.
+- The outbox could write a `recorder` object (`name`, `version`, `twinlab_commit`) itself; the
+  recorder stamps it (`twinlab2_recorder.main.contract_references`).
+- The outbox writes 1.1.0 also for a session recorded before event ids; the recorder sends such a
+  session as 1.0.0.
+- Collectors run in "spawn" processes (`workstation/supervisor.py`), so the frozen recorder calls
+  `multiprocessing.freeze_support()` first (`twinlab2_recorder/main.py`, `__main__.py`).
+- `twinlab2.devin.BuildDevin` adds two reads to the Devin client: `find_sessions(tag)` (the
+  sessions an uncertain create may have started) and `list_messages(session)` (Devin's questions).

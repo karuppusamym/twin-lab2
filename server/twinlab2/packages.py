@@ -23,9 +23,9 @@ from __future__ import annotations
 import difflib
 import json
 
-import artifacts
-import audit
-import buildpack
+from twinlab2 import artifacts
+from twinlab2 import audit
+from twinlab2 import buildpack
 
 # The table and its guards are created by migrations.py (6: roles and audit).
 
@@ -36,7 +36,7 @@ def migrate(db):
     """builder_packages and its immutability guards (migration 6), with every other pending
     migration. brief_packages rows move their blob to the artifact store, so only
     builder_packages is guarded; a package's bytes are checked against its sha256."""
-    import migrations
+    from twinlab2 import migrations
     migrations.run(db)
 
 
