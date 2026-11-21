@@ -33,6 +33,7 @@ DIR = "pictures"
 MANIFEST = "pictures.json"
 MIN_SECRET = 4  # shorter values are not looked for (OCR noise); the masks still cover them
 NO_VALUE_TYPES = {"Window", "Pane", "TitleBar", "ScrollBar", "Slider", "ProgressBar", "Thumb"}
+TEXT_TYPES = {"Edit", "Document"}  # where a person types: always painted over
 
 
 def norm(text: str) -> str:
@@ -67,15 +68,20 @@ def places(raw: dict, clean: dict) -> list[dict]:
         rect = r.get("rect")
         if _rect_ok(rect) and r.get("visible", True) and t not in NO_VALUE_TYPES:
             value = r.get("value")
-            if r.get("password") or (value is not None and str(value).strip()):
+            # A text box is painted over even when its tree showed it empty: the pixels are
+            # read after the tree, and what is typed in between must not show (an empty box
+            # painted in its own background looks the same).
+            typable = t in TEXT_TYPES
+            if r.get("password") or typable or (value is not None and str(value).strip()):
                 rr = list(rect)
                 if t == "ComboBox":  # keep the drop-down button: it is structure
                     btn = [k["rect"][0] for k in kids_r
                            if k.get("type") == "Button" and _rect_ok(k.get("rect"))]  # fmt: skip
                     if btn and btn[0] > rr[0]:
                         rr[2] = btn[0] - rr[0]
+                blank = r.get("password") or value is None or not str(value).strip()
                 out.append({"rect": rr, "text": "" if r.get("password") else c.get("value") or "",
-                            "hwnd": h, "secret": None if r.get("password") else str(value),
+                            "hwnd": h, "secret": None if blank else str(value),
                             "multiline": bool((r.get("win32") or {}).get("multiline"))})  # fmt: skip
                 return  # what it holds is covered
             name = (r.get("name") or "").strip()

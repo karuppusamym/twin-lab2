@@ -33,8 +33,11 @@ A recording is a folder holding:
   placeholder of its type; a credential-like key keeps no shape), `indexedDB` as database and
   store names, `cookies` as names only (and `cookies_by_domain`: the names of every cookie the
   browser holds, per domain), and `origin`. No stored value or cookie value is ever written;
-- `mask_boxes` on a step whose picture had what shows a typed value painted over: each
-  rectangle as {x, y, width, height} in CSS pixels of the viewport;
+- `mask_boxes` on a step whose picture had something painted over: every text field and
+  editable region that shows text (whether or not its value is known yet: a field still being
+  typed into is marked at its first input event and painted over as the picture is taken), and
+  text that shows a typed value; each rectangle as {x, y, width, height} in CSS pixels of the
+  viewport;
 - `recording.json`: the browser and its version, the viewport (1280x720 for `record()`, the
   robot's own for `attach()`) and the device scale factor.
 
@@ -729,6 +732,20 @@ LISTENER_JS = r"""
     if (tag !== "input") return false;
     return !/^(checkbox|radio|button|submit|reset|image|hidden|file)$/.test((el.type || "").toLowerCase());
   }
+  // A field being typed into is marked at its first input event, before the character is drawn
+  // (and, inside a closed shadow root, its host, which is what a picture's mask can reach). Every
+  // picture paints over what is marked as it is taken (`[data-tl-typed]` is resolved at capture
+  // time), so a picture taken while the next field is being typed never shows that field's value,
+  // which the recorder does not know yet. Snapshots leave `data-tl-*` attributes out.
+  function markTyped(el) {
+    try {
+      if (!el.hasAttribute("data-tl-typed")) el.setAttribute("data-tl-typed", "");
+      const root = el.getRootNode ? el.getRootNode() : null;
+      if (root && root.host && root.mode === "closed" && !root.host.hasAttribute("data-tl-typed")) {
+        root.host.setAttribute("data-tl-typed", "");
+      }
+    } catch (e) {}
+  }
   function onInput(e) {
     const el = realTarget(e);
     if (!typable(el)) return;
@@ -740,6 +757,7 @@ LISTENER_JS = r"""
     // previous field does may not be rendered yet: then that step does not say it was left
     // (`leftLook`), and its snapshot and its replay agree.
     if (!dirty.has(el) && TOP && pending.length) flush();
+    markTyped(el);
     const d = dirty.get(el) || {typed: ""};
     if (el.type === "password") d.typed = null;
     else if (e.inputType && e.inputType.startsWith("delete")) d.typed = null;
@@ -813,6 +831,7 @@ LISTENER_JS = r"""
       // of the value (a list clearing its input): that is no typing.
       const afterEnter = lastKey && lastKey.key === "Enter" && Date.now() - lastKey.at < 500;
       if (!dirty.has(el) && !afterEnter && written.get(el) !== valueOf(el)) dirty.set(el, {typed: null});
+      markTyped(el);
       emitType(el);
       return;
     }
@@ -1017,7 +1036,8 @@ LOCATOR_KINDS = {"testid", "id", "role", "label", "placeholder", "text", "struct
 LOCATOR_FIELDS = {"kind", "attr", "value", "role", "name", "text", "tag", "css", "index", "count",
                   "rows", "control"}  # fmt: skip
 
-# Marks, in one frame, the fields and text that show a value typed there (for the picture mask).
+# Marks, in one frame, what a picture must paint over: every text field and editable region that
+# shows text, and text that shows a value typed there. With `check`, counts what is unmasked.
 MARK_TYPED_JS = r"""([values, check]) => {
   // check: count what shows a typed value and is not marked (the page changed since marking).
   if (!check) for (const el of document.querySelectorAll("[data-tl-mask]")) el.removeAttribute("data-tl-mask");
@@ -1035,12 +1055,45 @@ MARK_TYPED_JS = r"""([values, check]) => {
     return pats.some((p) => p.test(t)) || shorts.includes(t.trim().toLowerCase());
   };
   let n = 0;
-  const mark = (el) => {
-    if (!check) { el.setAttribute("data-tl-mask", ""); n++; }
-    else if (!el.closest("[data-tl-mask]") && el.getClientRects().length) n++;
+  // An element inside a closed shadow root cannot be reached by a mask: its host is painted over.
+  const reach = (el) => {
+    const root = el.getRootNode ? el.getRootNode() : null;
+    return root && root.host && root.mode === "closed" ? reach(root.host) : el;
   };
-  for (const el of document.querySelectorAll("input, textarea")) if (hit(el.value)) mark(el);
-  for (const el of document.querySelectorAll("[contenteditable]")) if (hit(el.innerText)) mark(el);
+  // Covered only by what was marked before the picture: a field that got `data-tl-typed` after
+  // Playwright resolved the masks may show in it, so it does not count (the picture is taken again).
+  const covered = (el) => {
+    for (let x = el; x; ) {
+      if (x.closest && x.closest("[data-tl-mask]")) return true;
+      const root = x.getRootNode ? x.getRootNode() : null;
+      x = root && root.host ? root.host : null;
+    }
+    return false;
+  };
+  const mark = (el) => {
+    el = reach(el);
+    if (!check) { el.setAttribute("data-tl-mask", ""); n++; }
+    else if (!covered(el) && el.getClientRects().length) n++;
+  };
+  // Every text field and editable region that shows text, whether or not its value is known to
+  // the recorder (a field still being typed into, a value a script set): in the document, in
+  // open shadow roots and in closed ones (the shadow hook's list).
+  const NOT_TEXT = /^(checkbox|radio|button|submit|reset|image|hidden|file|range|color)$/;
+  const roots = [document];
+  for (let i = 0; i < roots.length && i < 500; i++) {
+    for (const x of roots[i].querySelectorAll("*")) if (x.shadowRoot && !roots.includes(x.shadowRoot)) roots.push(x.shadowRoot);
+  }
+  for (const r of (window.__tlShadowList || [])) if (!roots.includes(r)) roots.push(r);
+  for (const root of roots) {
+    if (!check) for (const el of root.querySelectorAll("[data-tl-typed]")) mark(el);  // typed into, even if empty now
+    for (const el of root.querySelectorAll("input, textarea")) {
+      if (el.localName === "input" && NOT_TEXT.test((el.type || "").toLowerCase())) continue;
+      if (String(el.value || "") !== "") mark(el);
+    }
+    for (const el of root.querySelectorAll("[contenteditable]")) {
+      if (el.isContentEditable && (el.innerText || el.textContent || "").trim() !== "") mark(el);
+    }
+  }
   if (document.body) {
     const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     while (walk.nextNode()) {
@@ -1723,9 +1776,6 @@ class _Steps:
         """The window, with what shows a typed value masked. The page may change between masking
         and the picture: then it is taken again, and kept only once nothing typed shows."""
         self.last_boxes = []
-        if not self.secrets:
-            page.screenshot(path=str(path), timeout=5000)
-            return True
         for _ in range(3):
             masks = self._masks(page)
             page.screenshot(path=str(path), timeout=5000, mask=masks)
@@ -1736,28 +1786,37 @@ class _Steps:
         return False
 
     def _unmasked(self, page) -> int:
+        """What shows text and was not painted over (the page changed after masking): a field
+        or editable region with text, or text showing a typed value. A frame that cannot be
+        checked counts as unmasked."""
         n = 0
         for frame in page.frames:
             try:
                 values = self.secrets.for_origin(_origin(frame.url))
-                n += frame.evaluate(MARK_TYPED_JS, [values, True]) if values else 0
+                n += frame.evaluate(MARK_TYPED_JS, [values, True])
             except Exception:  # noqa: BLE001 - a frame that went away
-                continue
+                if not frame.is_detached():
+                    n += 1
         return n
 
+    # Painted over in every picture: what the mask script marked, and every field the person has
+    # typed into, as the page is at the moment of the picture (Playwright resolves mask locators
+    # while it takes it), so typing that begins after masking is painted over too.
+    MASK_SELECTOR = "[data-tl-mask], [data-tl-typed]"
+
     def _masks(self, page) -> list:
-        """Locators that cover what shows a typed value (a field, or text such as a new list
-        item), so the picture never shows it. Each frame is given only the values typed in it."""
-        if not self.secrets:
-            return []
+        """Locators that cover every field or editable region showing text and what shows a
+        typed value (text such as a new list item), so the picture never shows typed text.
+        Each frame is given only the values typed in it."""
         out = []
         for frame in page.frames:
             try:
                 values = self.secrets.for_origin(_origin(frame.url))
-                if values and frame.evaluate(MARK_TYPED_JS, [values, False]):
-                    out.append(frame.locator("[data-tl-mask]"))
-            except Exception:  # noqa: BLE001 - a frame that went away
-                continue
+                frame.evaluate(MARK_TYPED_JS, [values, False])
+            except Exception:  # noqa: BLE001 - a frame that went away; its fields are still masked
+                pass
+            if not frame.is_detached():
+                out.append(frame.locator(self.MASK_SELECTOR))
         return out
 
     def _documents(self, page, html: str, base: str) -> None:
