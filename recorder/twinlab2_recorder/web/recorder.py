@@ -1060,9 +1060,11 @@ MARK_TYPED_JS = r"""([values, check]) => {
     const root = el.getRootNode ? el.getRootNode() : null;
     return root && root.host && root.mode === "closed" ? reach(root.host) : el;
   };
+  // Covered only by what was marked before the picture: a field that got `data-tl-typed` after
+  // Playwright resolved the masks may show in it, so it does not count (the picture is taken again).
   const covered = (el) => {
     for (let x = el; x; ) {
-      if (x.closest && x.closest("[data-tl-mask], [data-tl-typed]")) return true;
+      if (x.closest && x.closest("[data-tl-mask]")) return true;
       const root = x.getRootNode ? x.getRootNode() : null;
       x = root && root.host ? root.host : null;
     }
@@ -1083,6 +1085,7 @@ MARK_TYPED_JS = r"""([values, check]) => {
   }
   for (const r of (window.__tlShadowList || [])) if (!roots.includes(r)) roots.push(r);
   for (const root of roots) {
+    if (!check) for (const el of root.querySelectorAll("[data-tl-typed]")) mark(el);  // typed into, even if empty now
     for (const el of root.querySelectorAll("input, textarea")) {
       if (el.localName === "input" && NOT_TEXT.test((el.type || "").toLowerCase())) continue;
       if (String(el.value || "") !== "") mark(el);
