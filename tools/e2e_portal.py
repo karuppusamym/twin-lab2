@@ -54,6 +54,8 @@ def main():
         "TWINLAB2_GITHUB_TOKEN": builds_github.token, "TWINLAB2_GITHUB_API": builds_github.url,
         "TWINLAB2_WORKSPACES": str(state / "workspaces"), "TWINLAB2_STATE": str(state),
         "TWINLAB2_DEV_WORKER": "0", "TWINLAB2_SECRET_KEY": "e2e-only", "TWINLAB2_HOSTS": "localhost,127.0.0.1",
+        # the stand-in provider `fake` is offered on the Build page only in a demo portal
+        "TWINLAB2_DEMO": "1",
         # individual mode: even this machine signs in (the sign-in page is part of the check)
         "TWINLAB2_AUTH_MODE": "individual"})
     for name in ("TWINLAB2_TRUST_PROXY_USER", "TWINLAB2_PASSWORD", "DATABASE_URL"):

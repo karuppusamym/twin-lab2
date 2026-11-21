@@ -1,0 +1,4 @@
+# The supply-chain workflow's own tools (.github/workflows/supply-chain.yml), pinned; Dependabot
+# proposes updates. Kept out of the portal's and the recorder's environments.
+cyclonedx-bom==8.0.1
+pip-audit==2.10.1

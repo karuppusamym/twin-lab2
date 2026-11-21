@@ -1,0 +1,10 @@
+# Accepted vulnerability findings: the supply-chain workflow (tools/vuln_gate.py) fails on any high
+# or critical finding of Trivy or npm audit that is not listed here. Keep entries rare and short-lived:
+# each one needs a reason a reviewer can check and an expiry date (the gate fails once it passes).
+# See docs/security-supply-chain.md for when an entry is acceptable and who approves it.
+#
+# [[allow]]
+# id = "CVE-2026-12345"            # as the scanner names it; a GHSA or CVE alias matches too
+# package = "example"              # optional: only this package
+# reason = "Only in the build stage of the image, never shipped; upstream fix pending (link)."
+# expires = 2027-01-31
