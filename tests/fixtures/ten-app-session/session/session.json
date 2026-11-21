@@ -1,0 +1,91 @@
+{
+ "format": "twinlab-workstation-session/1",
+ "id": "20261120T140000Z-10a9b8c7",
+ "name": "Month-end close",
+ "state": "stopped",
+ "started": "2026-11-20T14:00:00.000Z",
+ "ended": "2026-11-20T14:02:10.000Z",
+ "recorder": "TwinLabRecorder 0.2.0",
+ "twinlab_commit": "430dfe538965b46ccbe824f8f2b4f415c5576483",
+ "portal_session_id": 1,
+ "targets": [
+  {
+   "level": "full",
+   "app_id": 1,
+   "name": "Billing",
+   "origin": "https://erp.example.test",
+   "path": "/billing"
+  },
+  {
+   "level": "full",
+   "app_id": 2,
+   "name": "Billing Admin",
+   "origin": "https://erp.example.test",
+   "path": "/billing-admin"
+  },
+  {
+   "level": "full",
+   "app_id": 3,
+   "name": "Zählerstand Portal – Nord",
+   "origin": "https://meter.example.test"
+  },
+  {
+   "level": "full",
+   "app_id": 4,
+   "name": "請求 システム",
+   "origin": "https://seikyu.example.test:8443"
+  },
+  {
+   "level": "full",
+   "origin": "https://orders.example.test"
+  },
+  {
+   "level": "full",
+   "origin": "http://127.0.0.1:8081"
+  },
+  {
+   "level": "full",
+   "exe": "contosobilling.exe"
+  },
+  {
+   "level": "full",
+   "exe": "billing.exe"
+  },
+  {
+   "level": "full",
+   "exe": "kasse.exe"
+  },
+  {
+   "level": "steps",
+   "key": "mainframe:cics.example.test:3270"
+  }
+ ],
+ "apps": {
+  "mainframe:cics.example.test:3270": {
+   "key": "mainframe:cics.example.test:3270",
+   "surface": "mainframe",
+   "level": "steps",
+   "display": "Kontoführung CICS"
+  }
+ },
+ "preflight": {
+  "checks": [
+   {
+    "name": "UI Automation",
+    "ok": true,
+    "detail": "available"
+   },
+   {
+    "name": "Browser profile",
+    "ok": true,
+    "detail": ""
+   },
+   {
+    "name": "TN3270 host",
+    "ok": true,
+    "detail": "cics.example.test:3270"
+   }
+  ]
+ },
+ "notes": []
+}

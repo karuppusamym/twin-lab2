@@ -55,6 +55,12 @@ _KEYS = re.compile(r"\b(AKIA[0-9A-Z]{16}|(?:sk|pk|rk)_(?:live|test)_[\w]{10,}|sk
 _ASSIGN = re.compile(r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret)"
                      r"(\s*[\"']?\s*[:=]\s*[\"']?)([^\s\"',;&<>]+)")
 _URL = re.compile(r"\bhttps?://[^\s\"'<>]+", re.I)
+# An id (an event id, any UUID) is never a card, phone or social security number, though its
+# digits can look like one (`…-8000-000000000011` passes the Luhn check): the number patterns
+# run with each id stood in for by one private-use character. Tokens are matched before that.
+_UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+_SHIELD = 0xF0000  # plane 15: private use; a text that has such characters is not shielded
+_PRIVATE = re.compile("[\U000F0000-\U000FFFFD]")
 
 
 def _luhn(digits: str) -> bool:
@@ -126,11 +132,17 @@ def redact_text(text: str, found: Counter | None = None) -> str:
     sub(_BEARER, "token")
     sub(_KEYS, "api key")
     sub(_ASSIGN, "secret", group=3)
+    ids = []
+    shielded = not _PRIVATE.search(text) and 0 < len(_UUID.findall(text)) < 0xFFFE
+    if shielded:
+        text = _UUID.sub(lambda m: ids.append(m.group(0)) or chr(_SHIELD + len(ids) - 1), text)
     sub(_EMAIL, "email", check=lambda m: not EXAMPLE_DOMAINS.search(m.group(1)))
     sub(_SSN, "ssn")
     sub(_IBAN, "iban", check=lambda m: _iban_ok(m.group(0)))
     sub(_CARD, "card number", check=lambda m: _luhn(re.sub(r"\D", "", m.group(0))))
     sub(_PHONE, "phone")
+    if shielded:
+        text = _PRIVATE.sub(lambda m: ids[ord(m.group(0)) - _SHIELD], text)
     return text
 
 
