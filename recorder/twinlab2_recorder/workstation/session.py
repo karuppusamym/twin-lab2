@@ -53,6 +53,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from twinlab2_recorder.workstation import hosts
 from twinlab2_recorder.workstation import journal as capture
 from twinlab2_recorder.workstation import levels as lv
 from twinlab2_recorder.workstation import timeline
@@ -63,6 +64,45 @@ EDGE = [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
         r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"]  # fmt: skip
 CHROME = [r"C:\Program Files\Google\Chrome\Application\chrome.exe",
           r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"]  # fmt: skip
+
+
+def app_facts(ident: dict, level: str, target: lv.Target | None) -> dict:
+    """The journal's `app` row of a process (without kind and pid). A target's catalog id and
+    name are the application's only when the target names it: a target naming a host
+    (`exe: javaw.exe`) records every application that host runs, each as its own."""
+    facts = {k: ident.get(k) for k in ("key", "surface", "exe", "company", "product",
+                                       "version", "display", "description")}  # fmt: skip
+    # the application a host runs (hosts.resolve): its runtime and file name, on this PC
+    facts.update({k: ident[k] for k in ("runtime", "app_file", "package") if ident.get(k)})
+    facts["level"] = level
+    if target is not None and (not ident.get("app_file") or target.key == ident.get("key")):
+        if target.app_id is not None:
+            facts["app_id"] = target.app_id
+        if target.name:
+            facts["display"] = target.name
+    return facts
+
+
+def _hosted(pid: int, ident: dict, path: str | None, win, depth: int = 0) -> tuple[dict, str | None]:
+    """The identity of the application a host process runs (workstation.hosts.resolve), and the
+    path its level is decided by; a WebView2 is its hosting process's application. A program of
+    its own is read only for its package (a packaged one without company and product)."""
+    if not ident.get("host") and ident.get("company") and ident.get("product"):
+        return ident, path
+    try:
+        facts = win.host_facts(pid) if ident.get("host") else {"package": win.package_family(pid)}
+    except Exception:  # noqa: BLE001 - an unreadable process stays what its image says
+        facts = {}
+    out = hosts.resolve(ident, facts, win.exe_info, path)
+    if not out.pop("via_parent", False):
+        return out, path
+    parent = win.parent_pid(pid) if depth == 0 else None
+    ppath = win.process_path(parent) if parent else None
+    if ppath:
+        pident, ppath = _hosted(parent, lv.desktop_identity(ppath, win.exe_info(ppath)), ppath, win, 1)
+        if not pident.get("host"):
+            return pident, ppath
+    return out, path
 
 
 def _now() -> str:
@@ -258,6 +298,7 @@ class Session:
 
         path = win.process_path(pid)
         ident = lv.desktop_identity(path, win.exe_info(path) if path else {})
+        ident, path = _hosted(pid, ident, path, win)
         ours = self._session_browser(pid)
         level = lv.PRESENCE if ours else self.targets.level(ident, path)
         if ours:
@@ -267,7 +308,9 @@ class Session:
             if level == lv.PRESENCE:
                 why = ("it is marked not replicated" if ident.get("key") in self.targets.deny_keys
                        else "a browser is recorded through the session's own browser"
-                       if ident.get("browser") else "it hosts other programs (java, python...)"
+                       if ident.get("browser") else f"it hosts other programs ({ident['reason']})"
+                       if ident.get("host") and ident.get("reason")
+                       else "it hosts other programs (java, python...)"
                        if ident.get("host") else "it is part of Windows or on the deny list")  # fmt: skip
                 self.note_once(f"{exe} matches a target but is recorded only as used: {why}")
             elif _elevated(pid) and not _elevated(os.getpid()):
@@ -295,14 +338,7 @@ class Session:
     def _record_process(
         self, pid: int, ident: dict, level: str, tell_recorder: bool = True
     ) -> None:
-        target = self.targets.target_of(ident)
-        facts = {k: ident.get(k) for k in ("key", "surface", "exe", "company", "product",
-                                           "version", "display", "description")}  # fmt: skip
-        facts["level"] = level
-        if target is not None and target.app_id is not None:
-            facts["app_id"] = target.app_id
-        if target is not None and target.name:
-            facts["display"] = target.name
+        facts = app_facts(ident, level, self.targets.target_of(ident))
         self.apps.setdefault(ident["key"], facts)
         self.journal({"kind": "app", "pid": pid, **facts})
         if not tell_recorder:
@@ -345,7 +381,10 @@ class Session:
                             self._record_process(pid, ident, level)
                     elif not self._session_browser(pid):
                         # Only that some other application was used; never its title.
-                        self.journal({"kind": "presence", "exe": ident.get("exe")})
+                        row = {"kind": "presence", "exe": ident.get("exe")}
+                        if ident.get("host") and ident.get("reason"):
+                            row["reason"] = ident["reason"]  # why a host is not an application
+                        self.journal(row)
                     last_pid = pid
             except Exception as exc:  # noqa: BLE001 - the watcher must outlive one bad read
                 self.note_once(f"watcher: {type(exc).__name__}")
