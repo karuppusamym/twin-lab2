@@ -34,7 +34,8 @@ class RecordingExportTest(ten.TenAppRecordingTest):
         self.frozen = {}
         for tag, app_id in self.by_tag.items():
             self.prepare(app_id, tag)
-        for tag in ("billing", "admin", "meter", "invoice", "orders", "hr", "contoso", "plain", "kasse"):
+        for tag in ("billing", "admin", "meter", "invoice", "orders", "hr", "contoso", "plain", "kasse",
+                    "ledger", "receivable", "payroll"):
             self.frozen[tag] = self.freeze(self.by_tag[tag])
         # the mainframe application has a scenario and a draft, but nothing frozen
 
@@ -45,14 +46,14 @@ class RecordingExportTest(ten.TenAppRecordingTest):
         self.assertEqual(manifest, result.manifest)
         self.assertEqual(manifest["format"], recording_export.FORMAT)
         self.assertEqual(manifest["recording"], {"id": RECORDING, "name": "Month-end close"})
-        self.assertEqual(manifest["counts"], {"included": 9, "not_available": 0, "no_package": 1})
+        self.assertEqual(manifest["counts"], {"included": 12, "not_available": 0, "no_package": 1})
         entries = {e["app_id"]: e for e in manifest["applications"]}
-        self.assertEqual(len(entries), 10)
+        self.assertEqual(len(entries), 13)
         self.assertEqual([e["slug"] for e in manifest["applications"]],
                          sorted(e["slug"] for e in manifest["applications"]))
-        self.assertEqual(sorted(e["kind"] for e in entries.values()), ["desktop"] * 3 + ["mainframe"] + ["web"] * 6)
+        self.assertEqual(sorted(e["kind"] for e in entries.values()), ["desktop"] * 3 + ["mainframe"] + ["web"] * 9)
         folders = {path.split("/", 1)[0] for path in files}
-        self.assertEqual(len(folders), 9)
+        self.assertEqual(len(folders), 12)
         for tag, row in self.frozen.items():
             app_id = self.by_tag[tag]
             app = self.db.execute("SELECT * FROM apps WHERE id = ?", (app_id,)).fetchone()
@@ -87,7 +88,7 @@ class RecordingExportTest(ten.TenAppRecordingTest):
         result = recording_export.export(self.db, RECORDING, "bo")
         files, _ = unzip(result.data)
         manifest = json.loads(files.pop("manifest.json"))
-        self.assertEqual(manifest["counts"], {"included": 2, "not_available": 7, "no_package": 1})
+        self.assertEqual(manifest["counts"], {"included": 2, "not_available": 10, "no_package": 1})
         status = {e["app_id"]: e["status"] for e in manifest["applications"]}
         self.assertEqual({k for k, v in status.items() if v == "included"}, {meter, kasse})
         self.assertEqual(status[mainframe], "no_package")
@@ -108,7 +109,7 @@ class RecordingExportTest(ten.TenAppRecordingTest):
         # someone with no role gets the list and no package
         nobody = recording_export.export(self.db, RECORDING, "eve")
         self.assertEqual(set(unzip(nobody.data)[0]), {"manifest.json"})
-        self.assertEqual(nobody.manifest["counts"], {"included": 0, "not_available": 10, "no_package": 0})
+        self.assertEqual(nobody.manifest["counts"], {"included": 0, "not_available": 13, "no_package": 0})
         self.assertEqual(recording_export.export(self.db, RECORDING, "").manifest["counts"]["included"], 0)
 
     def test_only_frozen_revisions_go_in_never_the_current_draft(self):

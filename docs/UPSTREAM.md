@@ -74,6 +74,10 @@ also passed the reset check ("reset restored the baseline (1 table(s))"), as Ver
   does not load Twin Lab's YAML contracts).
 - `twinlab2.replay.__main__` is new: the entry Verify runs, writing a `not-run` report when the
   replay raises `NotAbsorbed`.
+- Contract 1.2 (path prefixes): `levels.Target` keeps a web target's `path` (`Targets.prefixes`),
+  `flow.route_template` keeps the longest target prefix a URL is under (`prefix_segments`), and
+  `timeline.outbox` passes each origin's prefixes to `label_step`, lists `path` in
+  `session.targets` and declares `1.2.0`. Twin Lab's outbox still declares 1.1.0.
 
 ## Taking a later Twin Lab change
 

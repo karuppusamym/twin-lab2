@@ -14,10 +14,13 @@ A flow step is `{"n", "action", "control", "label", "screen"}`:
   application's own name; else none (a title names the record or document open).
 - web: the element's id or name from the selector when it is an identifier; the control is the
   tag. Never link text, row text, an aria-label or a quoted text selector. The screen is the
-  origin and a route template: the first path segment when it is an identifier, then only the
+  origin and a route template: the application's path prefix when the URL is under one the
+  session's targets name (the portal's catalog: `/finance/billing`, the longest one winning,
+  whole segments only), else the first path segment when it is an identifier; after it only the
   common words of routes (`ROUTE_WORDS`: edit, view, new, search...); every other segment
   becomes `{id}` (a segment can be a record: `/customers/jane-doe`); no query, fragment or user
-  information.
+  information. A prefix is kept as the target names it, never read from the URL, so a record's
+  segment is never kept because it is in the place where a prefix could be.
 - mainframe: a field by its label, a key by its name, a screen by its title (see tn3270.py).
 
 `plain(text)`: at most 40 characters, no digit, no `@`, not a shape the recorder wrote
@@ -27,6 +30,7 @@ A flow step is `{"n", "action", "control", "label", "screen"}`:
 from __future__ import annotations
 
 import re
+from typing import Iterable
 from urllib.parse import urlsplit
 
 from twinlab2_recorder.workstation.levels import origin_of
@@ -72,18 +76,37 @@ def _uia(selector: object) -> dict:
     return {k: v for k, v in UIA_PART.findall(s)}
 
 
-def route_template(url: str) -> str:
+def prefix_segments(path: object) -> tuple[str, ...]:
+    """A target's path prefix as its segments (`/finance/billing` -> ("finance", "billing")):
+    empty when it is not a plain path (a query, fragment, `.`/`..` or an empty segment)."""
+    text = str(path or "").strip()
+    if not text.startswith("/") or len(text) > 120 or re.search(r"[?#\\\s]", text):
+        return ()
+    segs = tuple(text.strip("/").split("/")) if text.strip("/") else ()
+    if any(not seg or seg in (".", "..") for seg in segs):
+        return ()
+    return segs
+
+
+def route_template(url: str, prefixes: Iterable[str] = ()) -> str:
+    """The URL's path as a route template (see the module). `prefixes`: the path prefixes the
+    session's targets name on this URL's origin; the longest one the path starts with (whole
+    segments) is kept as it is."""
     try:
         parts = urlsplit(url or "")
     except ValueError:
         return ""
-    segs = []
-    for seg in (parts.path or "/").split("/"):
-        if not seg:
-            continue
-        keep = seg.lower() in ROUTE_WORDS or (not segs and ident(seg) and len(seg) <= 24)
-        segs.append(seg if keep else "{id}")
-    return "/" + "/".join(segs)
+    path = [seg for seg in (parts.path or "/").split("/") if seg]
+    best: tuple[str, ...] = ()
+    for prefix in prefixes or ():
+        segs = prefix_segments(prefix)
+        if len(segs) > len(best) and tuple(path[: len(segs)]) == segs:
+            best = segs
+    out = list(best)
+    for seg in path[len(best):]:
+        keep = seg.lower() in ROUTE_WORDS or (not out and ident(seg) and len(seg) <= 24)
+        out.append(seg if keep else "{id}")
+    return "/" + "/".join(out)
 
 
 def desktop_step(step: dict, app: dict | None = None) -> dict:
@@ -115,7 +138,7 @@ def desktop_step(step: dict, app: dict | None = None) -> dict:
             "screen": screen}  # fmt: skip
 
 
-def web_step(step: dict) -> dict:
+def web_step(step: dict, prefixes: Iterable[str] = ()) -> dict:
     sel = str(step.get("selector") or "")
     if ">>>" in sel:  # inside a frame: the element's own part
         sel = sel.rsplit(">>>", 1)[-1]
@@ -131,7 +154,7 @@ def web_step(step: dict) -> dict:
     url = str(step.get("url") or "")
     origin = origin_of(url)
     return {"control": control, "label": label,
-            "screen": f"{origin}{route_template(url)}" if origin else None}  # fmt: skip
+            "screen": f"{origin}{route_template(url, prefixes)}" if origin else None}  # fmt: skip
 
 
 def mainframe_step(step: dict) -> dict:
@@ -151,8 +174,9 @@ def mainframe_step(step: dict) -> dict:
     return out
 
 
-def label_step(step: dict, n: int, app: dict | None = None) -> dict:
-    """One flow step of the portal's references."""
+def label_step(step: dict, n: int, app: dict | None = None, prefixes: Iterable[str] = ()) -> dict:
+    """One flow step of the portal's references. `prefixes`: a web step's target path prefixes
+    on its origin (route_template)."""
     action = str(step.get("action") or "")
     out = {"n": n, "action": action if action in ACTIONS else "other"}
     surface = step.get("surface")
@@ -161,7 +185,7 @@ def label_step(step: dict, n: int, app: dict | None = None) -> dict:
     elif surface == "mainframe":
         facts = mainframe_step(step)
     else:
-        facts = web_step(step)
+        facts = web_step(step, prefixes)
     out.update({k: v for k, v in facts.items() if v})
     if step.get("key") and str(step["key"]) in {
         "Enter", "Tab", "Esc", "Escape", "Delete", "Backspace", "F1", "F2", "F3", "F4", "F5",

@@ -28,7 +28,7 @@ import unittest
 from zipfile import ZipFile
 
 from twinlab2.portal import VERSION_PATH, create_app
-from twinlab2 import artifacts, auth, buildpack, packages, redact, registry, scenarios
+from twinlab2 import artifacts, auth, buildpack, packages, recording_export, redact, registry, scenarios
 from twinlab2_recorder import main as agent_main
 from twinlab2_contract import recorder_contract as contract
 from support import Client, connect, new_database
@@ -55,7 +55,11 @@ EXPECTED = {
     "plain": ("desktop", "Billing (billing.exe)"),
     "kasse": ("desktop", "Kasse – Filiale Nord"),
     "mainframe": ("mainframe", "Kontoführung CICS"),
+    "ledger": ("web", "Finance Hub"),
+    "receivable": ("web", "Accounts Receivable"),
+    "payroll": ("web", "Payroll"),
 }
+CATALOG_TAGS = ("billing", "admin", "meter", "invoice", "ledger", "receivable", "payroll")  # ids 1-7
 
 
 def references():
@@ -140,7 +144,7 @@ class TenAppRecordingTest(unittest.TestCase):
         paths = {(t.get("origin"), t.get("path")) for t in offered[0]["targets"]}
         self.assertTrue({("https://erp.example.test", "/billing"), ("https://erp.example.test", "/billing-admin")} <= paths)
         doc = references()
-        self.assertEqual(doc["contract_version"], "1.1.0")
+        self.assertEqual(doc["contract_version"], "1.2.0")
         middle = fixture.ts(len(fixture.STEPS) * 5 // 2)
         first, second = part(doc, lambda s: s["captured_at"] < middle), part(doc, lambda s: s["captured_at"] >= middle)
         self.assertTrue(first["flows"] and second["flows"])
@@ -199,14 +203,14 @@ class TenAppRecordingTest(unittest.TestCase):
     def test_ten_applications_get_ten_separate_packages(self):
         by_tag = self.record()
         apps = {r["id"]: r for r in self.db.execute("SELECT * FROM apps ORDER BY id").fetchall()}
-        self.assertEqual(len(apps), 10, [a["name"] for a in apps.values()])
+        self.assertEqual(len(apps), len(EXPECTED), [a["name"] for a in apps.values()])
         self.assertEqual(set(by_tag), set(EXPECTED))
         for tag, (surface, name) in EXPECTED.items():
             app = apps[by_tag[tag]]
             self.assertEqual((app["surface"], app["name"]), (surface, name), tag)
-        self.assertEqual(len({a["name"].casefold() for a in apps.values()}), 10, "application names are unique")
+        self.assertEqual(len({a["name"].casefold() for a in apps.values()}), len(EXPECTED), "application names are unique")
         # the catalog applications kept their ids; each discovered one is owned by who paired
-        self.assertEqual([by_tag[t] for t in ("billing", "admin", "meter", "invoice")], [1, 2, 3, 4])
+        self.assertEqual([by_tag[t] for t in CATALOG_TAGS], list(range(1, len(CATALOG_TAGS) + 1)))
         for app_id in apps:
             self.assertEqual(auth.owners(self.db, app_id), [OWNER])
         # every application's evidence is exactly its own steps
@@ -221,7 +225,7 @@ class TenAppRecordingTest(unittest.TestCase):
             self.prepare(app_id, tag)
         for tag, app_id in by_tag.items():
             frozen[tag] = self.freeze(app_id)
-        self.assertEqual(len({row["sha256"] for row in frozen.values()}), 10)
+        self.assertEqual(len({row["sha256"] for row in frozen.values()}), len(EXPECTED))
 
         own_data = {}  # what only that application's package may hold
         for tag, app_id in by_tag.items():
@@ -265,13 +269,13 @@ class TenAppRecordingTest(unittest.TestCase):
             self.assertTrue(filename.endswith(f"-rev1-{row['revision'][:12]}.zip"))
             self.assertNotRegex(filename, r"[\s/\\:*?\"<>|]")
             names.add(filename)
-        self.assertEqual(len(names), 10, sorted(names))
+        self.assertEqual(len(names), len(EXPECTED), sorted(names))
         slugs = {packages.slug(apps[by_tag[t]]) for t in by_tag}
         for expected in ("billing", "billing-admin", "zahlerstand-portal-nord", "請求-システム", "orders-example-test",
                          "127-0-0-1-8081", "billing-contoso-ltd", "billing-billing-exe", "kasse-filiale-nord",
-                         "kontofuhrung-cics"):
+                         "kontofuhrung-cics", "finance-hub", "accounts-receivable", "payroll"):
             self.assertTrue(any(s.startswith(expected) for s in slugs), (expected, sorted(slugs)))
-        self.assertEqual(len(slugs), 10)
+        self.assertEqual(len(slugs), len(EXPECTED))
 
     def test_the_download_route_names_the_package_by_its_application(self):
         by_tag = self.record()
@@ -313,7 +317,7 @@ class TenAppRecordingTest(unittest.TestCase):
             included = [a for a in manifest["applications"] if a["status"] == "included"]
             self.assertEqual([a["app_id"] for a in included], [by_tag["meter"]])
             self.assertIn(included[0]["path"], archive.namelist())
-            self.assertEqual(len(manifest["applications"]), 10)
+            self.assertEqual(len(manifest["applications"]), len(EXPECTED))
             self.assertEqual({a["status"] for a in manifest["applications"] if a["app_id"] != by_tag["meter"]},
                              {"not_available"})
         audited = self.db.execute("SELECT app_id, details FROM audit_log WHERE action = 'package.download' "
@@ -442,6 +446,218 @@ class SeparationFixesTest(TenAppRecordingTest):
         row = {"rev": 3, "revision": "0123456789abcdef" * 4}
         self.assertEqual(packages.download_name({"id": 2, "name": "Billing Admin"}, row),
                          "billing-admin-2-rev3-0123456789ab.zip")
+
+
+def as_1_1(doc):
+    """The references as a 1.1 recorder would have built them from the same session: every web
+    screen by the first-segment rule, no target paths, contract 1.1.0."""
+    from twinlab2_recorder.workstation import flow
+    from twinlab2_recorder.workstation.levels import origin_of
+
+    out = json.loads(json.dumps(doc))
+    urls = fixture.urls()
+    for steps in out["flows"].values():
+        for s in steps:
+            if s["event_id"] in urls:
+                url = urls[s["event_id"]]
+                s["screen"] = origin_of(url) + flow.route_template(url)
+    for t in out["session"].get("targets") or []:
+        t.pop("path", None)
+    out["contract_version"] = "1.1.0"
+    return out
+
+
+class OlderRecordingsAndPrefixesTest(TenAppRecordingTest):
+    """Contract 1.2 path prefixes, against recordings of 1.1 recorders on the same catalog."""
+
+    test_ten_applications_get_ten_separate_packages = None
+    test_the_download_route_names_the_package_by_its_application = None
+    test_the_recording_export_holds_the_packages_the_caller_builds = None
+
+    def flows(self):
+        """{app name: [event ids]} of the ten-app recording."""
+        out = {}
+        for row in self.db.execute("""SELECT apps.name, recording_apps.flow FROM recording_apps
+                                      JOIN apps ON apps.id = recording_apps.app_id WHERE recording_id = ?""",
+                                   (RECORDING,)):
+            out.setdefault(row["name"], []).extend(s["event_id"] for s in json.loads(row["flow"]))
+        return out
+
+    def take_offer(self):
+        self.catalog()
+        headers = self.pair()
+        self.offer(1)
+        self.client.get("/api/agent/sessions", headers=headers)
+        return headers
+
+    def test_every_finance_step_lands_on_its_own_prefix(self):
+        by_tag = self.record()
+        tags = fixture.tags()
+        for tag in fixture.FINANCE:
+            screens = [s["screen"] for row in self.db.execute(
+                "SELECT flow FROM recording_apps WHERE app_id = ? AND recording_id = ?", (by_tag[tag], RECORDING))
+                for s in json.loads(row["flow"])]
+            self.assertEqual(len(screens), sum(1 for t in tags.values() if t == tag), tag)
+        self.assertEqual([by_tag[t] for t in fixture.FINANCE], [5, 6, 7])
+        flows = self.flows()
+        self.assertEqual(sorted(tags[e] for e in flows["Finance Hub"]), ["ledger"] * 3)
+        self.assertEqual(sorted(tags[e] for e in flows["Accounts Receivable"]), ["receivable"] * 2)
+        self.assertEqual(sorted(tags[e] for e in flows["Payroll"]), ["payroll"] * 2)
+
+    def test_a_1_1_recording_of_the_ten_applications_is_assigned_as_before(self):
+        """The fixture as the PR 23 recorder sent it, on a catalog that now also has the three
+        finance applications: the same ten applications get the same steps."""
+        headers = self.take_offer()
+        doc = agent_main.contract_references(json.loads(fixture.LEGACY.read_text(encoding="utf-8")))
+        self.assertEqual(doc["contract_version"], "1.1.0")
+        self.send(headers, doc)
+        stored = self.db.execute("SELECT contract_version FROM recording_contracts WHERE recording_id = ?",
+                                 (RECORDING,)).fetchone()
+        self.assertEqual(stored[0], "1.1.0")
+        legacy = fixture.legacy_tags()
+        flows = self.flows()
+        self.assertEqual({name: sorted({legacy[e] for e in events}) for name, events in flows.items()},
+                         {name: [tag] for tag, (_surface, name) in EXPECTED.items() if tag not in fixture.FINANCE})
+        self.assertEqual(sum(len(v) for v in flows.values()), len(legacy))
+        for app_id in (5, 6, 7):  # the finance catalog applications are not in that recording
+            self.assertIsNone(self.db.execute("SELECT 1 FROM recording_apps WHERE app_id = ?", (app_id,)).fetchone())
+
+    def test_a_1_1_recording_under_nested_prefixes_goes_to_the_shortest_one(self):
+        """A 1.1 recorder kept only the first segment, so its finance steps are all under
+        `/finance`: they go to Finance Hub, as they would have before 1.2; the others are unchanged."""
+        headers = self.take_offer()
+        doc = as_1_1(references())
+        self.assertEqual(contract.errors(doc, "references"), [])
+        self.send(headers, doc)
+        tags = fixture.tags()
+        flows = self.flows()
+        self.assertEqual(sorted(tags[e] for e in flows["Finance Hub"]),
+                         sorted(t for t in tags.values() if t in fixture.FINANCE))
+        self.assertNotIn("Accounts Receivable", flows)
+        self.assertNotIn("Payroll", flows)
+        for tag, (_surface, name) in EXPECTED.items():
+            if tag not in fixture.FINANCE:
+                self.assertEqual({tags[e] for e in flows[name]}, {tag}, name)
+
+    def test_the_longest_prefix_wins_whatever_order_the_identities_were_made_in(self):
+        headers = self.pair()
+        fin = "https://fin.example.test"
+        with self.db:  # the deeper prefixes first, the shortest last
+            for name, path in (("Payroll", "/finance/payroll"), ("Accounts Receivable", "/finance/billing"),
+                               ("Finance Hub", "/finance")):
+                app_id = self.db.execute("INSERT INTO apps(name, git_url, requirements, status, surface) "
+                                         "VALUES (?, '', '', 'known', 'web') RETURNING id", (name,)).fetchone()[0]
+                self.db.execute("INSERT INTO app_identities(key, app_id, surface, facts) VALUES (?, ?, 'web', '{}')",
+                                (registry.normalise_key(fin + path), app_id))
+        key = "web:" + fin
+        self.send(headers, refs([{"key": key, "level": "full", "display": "fin"}], {key: [
+            step(1, "a", fin + "/finance/billing/{id}"), step(2, "b", fin + "/finance/payroll"),
+            step(3, "c", fin + "/finance/{id}/edit"), step(4, "d", fin + "/finance/billing-archive/{id}"),
+            step(5, "e", fin + "/finance"), step(6, "f", fin + "/finance/payroll/{id}/new"),
+            step(7, "g", fin + "/finance/billing"), step(8, "h", fin + "/other")]}))
+        stored = {}
+        for row in self.db.execute("""SELECT apps.name, recording_apps.flow FROM recording_apps
+                                      JOIN apps ON apps.id = recording_apps.app_id"""):
+            stored.setdefault(row["name"], []).extend(s["label"] for s in json.loads(row["flow"]))
+        self.assertEqual({k: sorted(v) for k, v in stored.items()},
+                         {"Accounts Receivable": ["a", "g"], "Payroll": ["b", "f"], "Finance Hub": ["c", "d", "e"],
+                          "fin": ["h"]})  # the rest of the host: the recorded display name
+
+
+class RecordingNameTest(TenAppRecordingTest):
+    """A recording named after several applications: no application's package carries that name,
+    or any other application's name, in any file."""
+
+    test_ten_applications_get_ten_separate_packages = None
+    test_the_download_route_names_the_package_by_its_application = None
+    test_the_recording_export_holds_the_packages_the_caller_builds = None
+    NAME = "Billing + Payroll + CaseDesk walkthrough"
+    RECORDING = "ws-20261121T091500Z-0c1d2e3f"
+
+    def test_no_package_names_the_recording_or_another_application(self):
+        headers = self.pair()
+        erp, desk = "web:https://erp.example.test", "desktop:Acme Corp/CaseDesk"
+        with self.db:
+            for name, key in (("Billing", f"{erp}/ar"), ("Payroll", f"{erp}/hr/pay")):
+                app_id = self.db.execute("INSERT INTO apps(name, git_url, requirements, status, surface) "
+                                         "VALUES (?, '', '', 'known', 'web') RETURNING id", (name,)).fetchone()[0]
+                self.db.execute("INSERT INTO app_identities(key, app_id, surface, facts) VALUES (?, ?, 'web', '{}')",
+                                (registry.normalise_key(key), app_id))
+                auth.assign(self.db, app_id, OWNER, "owner", "test", NOW)
+        doc = refs([{"key": erp, "level": "full", "display": "erp"},
+                    {"key": desk, "level": "full", "display": "CaseDesk", "exe": "CaseDesk.exe",
+                     "company": "Acme Corp", "product": "CaseDesk"}],
+                   {erp: [step(1, "arInvoiceOpen", "https://erp.example.test/ar/{id}"),
+                          step(2, "hrPayRun", "https://erp.example.test/hr/pay/{id}")],
+                    desk: [step(3, "caseOpen", "MainWindow", "desktop")]},
+                   session_id=self.RECORDING[3:])
+        doc["session"].update(name=self.NAME, started="2026-11-21T09:15:00.000Z")
+        self.send(headers, doc)
+        apps = {r["name"]: r["id"] for r in self.db.execute("SELECT id, name FROM apps")}
+        self.assertEqual(set(apps), {"Billing", "Payroll", "CaseDesk"})
+        self.assertEqual(self.db.execute("SELECT name FROM recordings WHERE id = ?", (self.RECORDING,)).fetchone()[0],
+                         self.NAME)
+        with self.db:
+            auth.assign(self.db, apps["CaseDesk"], OWNER, "owner", "test", NOW)
+        packs = {}
+        for name, app_id in apps.items():
+            selection = json.loads(self.db.execute("SELECT selection FROM evidence WHERE app_id = ?",
+                                                   (app_id,)).fetchone()[0])
+            scenarios.save(self.db, app_id, {"name": "Month end", "expected": "Done", "events": json.dumps(
+                [scenarios.event_ref(self.RECORDING, e) for e in selection])})
+            content = b"# Acceptance\n\nSynthetic notes.\n"
+            with self.db:
+                ref = artifacts.save(self.db, artifacts.put(content, kind="restricted_evidence", app_id=app_id,
+                                                            content_type="text/markdown"))
+                self.db.execute("INSERT INTO attachments(app_id, title, kind, extension, content, artifact_id, share, "
+                                "added_by) VALUES (?, 'Acceptance notes', 'Acceptance', '.md', ?, ?, 'synthetic', ?)",
+                                (app_id, b"", ref.id, OWNER))
+            draft = buildpack.draft(self.db, app_id, VERSION_PATH)
+            with self.db:
+                rev = packages.freeze(self.db, app_id, OWNER, draft.sha256, "", VERSION_PATH)
+            packs[name] = packages.get(self.db, app_id, rev)
+
+        def scan(data, own, where):
+            """Every file name and file of a package ZIP, case-insensitively."""
+            files = buildpack.read(data)
+            self.assertTrue(files)
+            for path, content in files.items():
+                for text in (path, content.decode("utf-8")):
+                    low = text.casefold()
+                    self.assertNotIn(self.NAME.casefold(), low, f"{where}: {path}")
+                    self.assertNotIn("walkthrough", low, f"{where}: {path}")
+                    for other in apps:
+                        if other != own:
+                            self.assertNotIn(other.casefold(), low, f"{where}: {path} names {other}")
+            return files
+
+        for name, row in packs.items():
+            filename = packages.download_name({"id": apps[name], "name": name}, row)
+            for other in apps:
+                if other != name:
+                    self.assertNotIn(other.casefold(), filename.casefold())
+            files = scan(packages.open_package(self.db, row["storage_ref"]), name, name)
+            evidence = json.loads(files["evidence.json"])
+            self.assertEqual(evidence["evidence"][0]["recording_id"], self.RECORDING)
+            self.assertEqual(evidence["evidence"][0]["recorded_on"], "2026-11-21")
+            self.assertNotIn("recording", evidence["evidence"][0])
+            self.assertIn(self.RECORDING, files["BUILD_TASK.md"].decode("utf-8"))
+
+        # the per-recording export may name every application in its manifest, and the
+        # recording; each application's folder holds only that application's package
+        export = recording_export.export(self.db, self.RECORDING, OWNER)
+        self.assertEqual(export.manifest["recording"], {"id": self.RECORDING, "name": self.NAME})
+        self.assertEqual({e["name"] for e in export.manifest["applications"]}, set(apps))
+        with ZipFile(io.BytesIO(export.data)) as archive:
+            paths = [p for p in archive.namelist() if p != "manifest.json"]
+            self.assertEqual(len(paths), 3)
+            for entry in export.manifest["applications"]:
+                folder = [p for p in paths if p.startswith(entry["slug"] + "/")]
+                self.assertEqual(folder, [entry["path"]])
+                for other in apps:
+                    if other != entry["name"]:
+                        self.assertNotIn(other.casefold(), entry["path"].casefold())
+                scan(archive.read(entry["path"]), entry["name"], f"export {entry['path']}")
 
 
 if __name__ == "__main__":

@@ -185,7 +185,8 @@ def contract_references(box: dict) -> dict:
     """The outbox as recorder contract references: the contract version and this recorder
     stamped on it, then checked against the schema here, before anything leaves the PC.
 
-    The outbox (twinlab2_recorder.workstation.timeline) declares contract 1.1.0 since 4385949. An
+    The outbox (twinlab2_recorder.workstation.timeline) declares its contract version (1.2.0 now;
+    Twin Lab's declares 1.1.0 since 4385949). An
     outbox without a version (an older Twin Lab) is stamped with the version its shape is: 1.1.0
     when it reports the recording's `completeness`, else 1.0.0. A 1.1 outbox in which no step has
     an event id is a session recorded before event ids and is sent as 1.0.0 (see below). An

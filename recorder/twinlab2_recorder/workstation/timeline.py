@@ -16,7 +16,8 @@ the three by time, each recording keeping its own order, and writes:
   presence rows are one row;
 - `portal-outbox.json`: the references (`outbox()`), recorder contract `CONTRACT_VERSION`: the
   session, the applications recorded at full or steps level, each one's flow of filtered labels
-  (twinlab2_recorder.workstation.flow), the timeline as runs of applications, the completeness manifest
+  (twinlab2_recorder.workstation.flow; a web step under a target's path prefix keeps that prefix
+  in its screen, contract 1.2), the timeline as runs of applications, the completeness manifest
   (twinlab2_recorder.workstation.completeness) and the preflight checks when there were some. No value,
   title, tree, picture, time of a presence row or name of a presence application.
 
@@ -34,11 +35,11 @@ from datetime import datetime
 from pathlib import Path
 
 from twinlab2_recorder.workstation import flow
-from twinlab2_recorder.workstation.levels import FULL, PRESENCE, STEPS, origin_of
+from twinlab2_recorder.workstation.levels import FULL, PRESENCE, STEPS, origin_of, web_path
 
 FORMAT = "twinlab-workstation-session/1"
 # The recorder contract the references follow (twin-lab2 RECORDER-CONTRACT.md).
-CONTRACT_VERSION = "1.1.0"
+CONTRACT_VERSION = "1.2.0"
 EVENT_FIELDS = ("event_id", "channel", "captured_at")
 
 
@@ -200,13 +201,28 @@ APP_FACTS = ("key", "surface", "level", "display", "exe", "company", "product", 
              "origin", "toolkit", "app_id")  # fmt: skip
 
 
+def target_prefixes(meta: dict) -> dict[str, list[str]]:
+    """{origin: the path prefixes the session's web targets name on it} (flow.route_template)."""
+    out: dict[str, set[str]] = {}
+    for t in meta.get("targets") or []:
+        if not isinstance(t, dict):
+            continue
+        origin = origin_of(str(t.get("origin") or "")) or origin_of(str(t.get("key") or "")[4:])
+        path = web_path(t.get("path")) if t.get("path") else None
+        if origin and path:
+            out.setdefault(origin, set()).add(path)
+    return {o: sorted(p) for o, p in out.items()}
+
+
 def outbox(meta: dict, rows: list[dict]) -> dict:
     flows: dict[str, list[dict]] = {}
+    prefixes = target_prefixes(meta)
     for row in rows:
         step = row.get("_step")
         if step is None or row.get("level") not in (FULL, STEPS):
             continue
-        label = flow.label_step(step, row["global_seq"], (meta.get("apps") or {}).get(row["app"]))
+        on = (prefixes.get(origin_of(str(step.get("url") or ""))) or ()) if row.get("surface") == "web" else ()
+        label = flow.label_step(step, row["global_seq"], (meta.get("apps") or {}).get(row["app"]), on)
         flows.setdefault(row["app"], []).append(label | _event(row))
     apps = []
     for key, facts in (meta.get("apps") or {}).items():
@@ -227,7 +243,7 @@ def outbox(meta: dict, rows: list[dict]) -> dict:
                                         "twinlab_commit", "automation_id", "portal_session_id")
                if meta.get(k) is not None}  # fmt: skip
     session["location"] = {"kind": "local", "path": f"recordings/{meta.get('id')}"}
-    session["targets"] = [{k: t[k] for k in ("key", "exe", "origin", "level", "app_id") if k in t}
+    session["targets"] = [{k: t[k] for k in ("key", "exe", "origin", "path", "level", "app_id") if k in t}
                           for t in meta.get("targets") or []]  # fmt: skip
     return {"contract_version": CONTRACT_VERSION, "format": "twinlab-references/1",
             "session": session, "apps": apps, "flows": flows, "timeline": timeline}  # fmt: skip

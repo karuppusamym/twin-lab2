@@ -11,6 +11,10 @@ Raw capture never enters a pack: the references payload a recorder sent (kept in
 schema stay in the catalog database or on the recording machine. `build` reads only the
 projected events, the flow labels and the owner-written scenarios.
 
+A recording is named in a pack only by its id and the day it was recorded (`recorded_on`), never
+by its free-text name: one recording can cover many applications, and its name ("Billing +
+Payroll walkthrough") would tell each application's builder about the others.
+
 Uploaded evidence is *restricted*: an attachment enters the pack only once the owner has marked
 it reviewed or synthetic, and then only after `redact` has removed what it recognises (HAR
 credentials and bodies, sensitive JSON fields, image metadata, e-mail addresses, card numbers,
@@ -72,10 +76,30 @@ def event_entry(event, step):
     return entry
 
 
+def recorded_on(db, recording_id, events):
+    """The day (YYYY-MM-DD) a recording was made: the start the recorder sent, else the earliest
+    capture time of its events, else the day in a workstation recording's id; None if unknown."""
+    row = db.execute("SELECT payload FROM session_refs WHERE recording_id = ?", (recording_id,)).fetchone()
+    if row is not None:
+        try:
+            started = (json.loads(row[0]).get("session") or {}).get("started")
+        except (TypeError, ValueError):
+            started = None
+        if isinstance(started, str) and re.match(r"^\d{4}-\d{2}-\d{2}", started):
+            return started[:10]
+    times = sorted(e["time"] for e in events
+                   if isinstance(e.get("time"), str) and re.match(r"^\d{4}-\d{2}-\d{2}", e["time"]))
+    if times:
+        return times[0][:10]
+    m = re.match(r"^ws-(\d{4})(\d{2})(\d{2})T", recording_id)
+    return f"{m[1]}-{m[2]}-{m[3]}" if m else None
+
+
 def evidence(db, app_id):
-    """Per linked recording, its notes and the selected events with their references."""
+    """Per linked recording, its notes and the selected events with their references. The
+    recording is named by its id and `recorded_on`, not by its name (see the module)."""
     rows = db.execute("""
-        SELECT recordings.id, recordings.name, recordings.events, evidence.selection, evidence.notes
+        SELECT recordings.id, recordings.events, evidence.selection, evidence.notes
         FROM evidence JOIN recordings ON recordings.id = evidence.recording_id
         WHERE evidence.app_id = ? ORDER BY recordings.id
     """, (app_id,)).fetchall()
@@ -87,10 +111,11 @@ def evidence(db, app_id):
             for step in json.loads(flow["flow"]):
                 steps.setdefault(step.get("event_id"), step)
         selection = set(json.loads(row["selection"]))
+        events = json.loads(row["events"])
         out.append({
-            "recording_id": row["id"], "recording": row["name"], "notes": row["notes"],
+            "recording_id": row["id"], "recorded_on": recorded_on(db, row["id"], events), "notes": row["notes"],
             "events": [event_entry(event, steps.get(event["event_id"]))
-                       for event in json.loads(row["events"]) if event["event_id"] in selection],
+                       for event in events if event["event_id"] in selection],
         })
     return out
 

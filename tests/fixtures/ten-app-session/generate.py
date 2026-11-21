@@ -17,6 +17,13 @@ origin told apart by path (`/billing`, `/billing-admin`), names that contain eac
 "Billing Admin"), three applications whose recorded name is "Billing" (one web, two desktop
 programs with the same window title and different executables), names with spaces and non-ASCII
 letters, and one TN3270 host. Their steps are interleaved in time.
+
+Three more web applications share `fin.example.test` at nested path prefixes: Finance Hub at
+`/finance`, Accounts Receivable at `/finance/billing` and Payroll at `/finance/payroll` (contract
+1.2: the recorder keeps a target's whole path prefix, the portal's longest prefix wins). A Finance Hub
+step at `/finance/billing-archive` checks that a prefix matches whole segments only.
+`LEGACY_STEPS` are the steps without those three: what the 1.1 recorder recorded for
+`../references-ten-apps-1.1.json` (built by the recorder of PR 23, kept as it was sent).
 """
 
 from __future__ import annotations
@@ -40,6 +47,8 @@ BUILT = HERE.parent / "references-ten-apps.json"
 ERP = "https://erp.example.test"
 METER = "https://meter.example.test"
 INVOICE = "https://seikyu.example.test:8443"
+FIN = "https://fin.example.test"
+FINANCE = ("ledger", "receivable", "payroll")  # the tags of the three applications on FIN
 
 # The portal session the recorder was offered: four catalog applications (ids 1-4 in a new
 # catalog, made in this order by the test) that the owner set up with their web addresses.
@@ -48,12 +57,18 @@ CATALOG = [
     {"name": "Billing Admin", "key": f"web:{ERP}/billing-admin"},
     {"name": "Zählerstand Portal – Nord", "key": f"web:{METER}"},
     {"name": "請求 システム", "key": f"web:{INVOICE}"},
+    {"name": "Finance Hub", "key": f"web:{FIN}/finance"},
+    {"name": "Accounts Receivable", "key": f"web:{FIN}/finance/billing"},
+    {"name": "Payroll", "key": f"web:{FIN}/finance/payroll"},
 ]
 TARGETS = [
     {"level": "full", "app_id": 1, "name": "Billing", "origin": ERP, "path": "/billing"},
     {"level": "full", "app_id": 2, "name": "Billing Admin", "origin": ERP, "path": "/billing-admin"},
     {"level": "full", "app_id": 3, "name": "Zählerstand Portal – Nord", "origin": METER},
     {"level": "full", "app_id": 4, "name": "請求 システム", "origin": INVOICE},
+    {"level": "full", "app_id": 5, "name": "Finance Hub", "origin": FIN, "path": "/finance"},
+    {"level": "full", "app_id": 6, "name": "Accounts Receivable", "origin": FIN, "path": "/finance/billing"},
+    {"level": "full", "app_id": 7, "name": "Payroll", "origin": FIN, "path": "/finance/payroll"},
     # the person added these on the recorder: not in the catalog yet
     {"level": "full", "origin": "https://orders.example.test"},
     {"level": "full", "origin": "http://127.0.0.1:8081"},
@@ -98,26 +113,33 @@ def mf(action, title, **extra):
 STEPS = [
     ("billing", W, web(f"{ERP}/billing/invoices", "goto", "body")),
     ("billing", W, web(f"{ERP}/billing/invoices/INV-1001", "type", "input#billingInvoiceSearch")),
+    ("ledger", W, web(f"{FIN}/finance", "goto", "body")),
+    ("receivable", W, web(f"{FIN}/finance/billing/invoices/42", "click", "button#receivableInvoiceOpen")),
     ("contoso", D, desk(21, "ContosoMain", "Billing", "click", "Button", "contosoPostLedger")),
     ("admin", W, web(f"{ERP}/billing-admin/rates", "click", "button#adminRateTable")),
     ("billing", W, web(f"{ERP}/billing/invoices/INV-1001", "click", "button#billingApprove")),
+    ("payroll", W, web(f"{FIN}/finance/payroll/runs/7?period=2026-11", "type", "input#payrollRunHours")),
     ("mainframe", M, mf("screen", "ACCOUNT INQUIRY")),
     ("plain", D, desk(22, "BillingMainForm", "Billing", "type", "Edit", "plainCustomerRef")),
     ("admin", W, web(f"{ERP}/billing-admin/rates/edit", "type", "input#adminRateValue")),
     ("meter", W, web(f"{METER}/readings", "type", "input#meterReading")),
     ("mainframe", M, mf("type", "ACCOUNT INQUIRY", field={"label": "MAINFRAMEACCT"})),
+    ("ledger", W, web(f"{FIN}/finance/billing-archive/2025", "click", "button#ledgerArchiveOpen")),
     ("orders", W, web("https://orders.example.test/orders/new", "click", "button#ordersCreate")),
     ("contoso", D, desk(21, "ContosoMain", "Billing", "type", "Edit", "contosoAmount")),
     ("invoice", W, web(f"{INVOICE}/seikyu/list", "click", "a#invoiceListOpen")),
     ("hr", W, web("http://127.0.0.1:8081/leave", "click", "button#hrLeaveSubmit")),
+    ("receivable", W, web(f"{FIN}/finance/billing", "click", "button#receivableExport")),
     ("kasse", D, desk(23, "KasseMain", "Kasse – Filiale Nord", "click", "Button", "kasseCloseDay")),
     ("plain", D, desk(22, "BillingMainForm", "Billing", "click", "Button", "plainPrintStatement")),
     ("meter", W, web(f"{METER}/readings/confirm", "click", "button#meterConfirm")),
     ("mainframe", M, mf("aid", "ACCOUNT INQUIRY", key="Enter")),
+    ("payroll", W, web(f"{FIN}/finance/payroll/runs/new", "click", "button#payrollRunCreate")),
     ("orders", W, web("https://orders.example.test/orders/search", "type", "input#ordersSearch")),
     ("invoice", W, web(f"{INVOICE}/seikyu/new", "type", "input#invoiceAmount")),
     ("kasse", D, desk(23, "KasseMain", "Kasse – Filiale Nord", "type", "Edit", "kasseCount")),
     ("hr", W, web("http://127.0.0.1:8081/leave/new", "type", "input#hrLeaveDays")),
+    ("ledger", W, web(f"{FIN}/finance/journal/edit", "type", "input#ledgerJournalAmount")),
     ("admin", W, web(f"{ERP}/billing-admin/rates", "click", "button#adminRatePublish")),
     ("billing", W, web(f"{ERP}/billing/invoices", "click", "button#billingExport")),
 ]
@@ -189,6 +211,21 @@ def write(folder: Path) -> None:
 def tags():
     """{event_id: app tag} of every step: what the tests compare the portal's assignment with."""
     return {event_id(i): tag for i, (tag, _channel, _step) in enumerate(STEPS, 1)}
+
+
+LEGACY_STEPS = [s for s in STEPS if s[0] not in FINANCE]
+LEGACY = HERE.parent / "references-ten-apps-1.1.json"
+
+
+def legacy_tags():
+    """{event_id: app tag} of `../references-ten-apps-1.1.json`: the steps without the three
+    applications on FIN, numbered as the 1.1 fixture numbered them."""
+    return {event_id(i): tag for i, (tag, _channel, _step) in enumerate(LEGACY_STEPS, 1)}
+
+
+def urls():
+    """{event_id: the URL a web step was on}."""
+    return {event_id(i): step["url"] for i, (_tag, channel, step) in enumerate(STEPS, 1) if channel == W}
 
 
 def build(folder: Path) -> dict:

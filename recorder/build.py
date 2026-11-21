@@ -31,6 +31,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent  # recorder/
 PROJECT = HERE.parent  # the checkout
 PACKAGE = HERE / "twinlab2_recorder"
+CONTRACT_SCHEMA = PROJECT / "contract" / "twinlab2_contract" / "recorder-contract.schema.json"
 
 
 def main() -> int:
@@ -61,6 +62,8 @@ def main() -> int:
         # the collectors are imported lazily (and by name in the collector processes): all of them
         "--collect-submodules", "twinlab2_recorder", "--collect-submodules", "twinlab2_contract",
         "--collect-data", "twinlab2_contract",  # recorder-contract.schema.json beside its module
+        # ... also when the contract package is not pip-installed (collect-data then finds nothing)
+        "--add-data", f"{CONTRACT_SCHEMA}{os.pathsep}twinlab2_contract",
         "--hidden-import", "comtypes.gen.UIAutomationClient", "--collect-submodules", "comtypes.gen",
         "--collect-data", "playwright", "--collect-binaries", "playwright",
         "--add-data", f"{PACKAGE / '_build.json'}{os.pathsep}.",

@@ -3,7 +3,7 @@
   "$id": "https://github.com/karuppusamym/twin-lab2/blob/main/contract/recorder-contract.schema.json",
   "title": "TwinLab recorder contract",
   "description": "What a workstation recorder sends to the TwinLab2 portal: the pairing request (#/$defs/pair) and the references of a recorded session (#/$defs/references for contract 1.0.x, #/$defs/references_1_1 for 1.1.0 and later minors). See RECORDER-CONTRACT.md. Unknown fields are allowed, so that a minor version can add optional ones, and are ignored: the portal stores only the fields named here.",
-  "x-contract-version": "1.1.0",
+  "x-contract-version": "1.2.0",
   "oneOf": [
     {
       "$ref": "#/$defs/pair"
@@ -116,7 +116,7 @@
       }
     },
     "step": {
-      "description": "One labelled step. Never a typed value, a screen's content or a picture: what the step did, the control's type, its label (a control name, a field label or a key), and the screen (a window title, a route with ids replaced by {id}, or a mainframe screen title). Text over 160 characters is dropped by the portal.",
+      "description": "One labelled step. Never a typed value, a screen's content or a picture: what the step did, the control's type, its label (a control name, a field label or a key), and the screen (a window title, a route with ids replaced by {id}, or a mainframe screen title). From 1.2 a web route keeps a session target's path prefix whole (https://host/finance/billing/{id}) when the step is under it. Text over 160 characters is dropped by the portal.",
       "type": "object",
       "required": [
         "n"
@@ -430,7 +430,15 @@
             "targets": {
               "type": "array",
               "items": {
-                "type": "object"
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "description": "1.2: a web target's path prefix from the portal's catalog (/finance/billing); its steps' screens keep it.",
+                    "type": "string",
+                    "pattern": "^(/[^/?#\\s]+)+$",
+                    "maxLength": 120
+                  }
+                }
               }
             }
           }

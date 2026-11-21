@@ -388,9 +388,15 @@ def setup():
 
 
 def selected_events(app_id):
-    """The events selected for the app, as `recording#event_id` with their pack references."""
-    return {scenarios.event_ref(rec["recording_id"], event["event_id"]): dict(event, recording=rec["recording"])
-            for rec in buildpack.evidence(db(), app_id) for event in rec["events"]}
+    """The events selected for the app, as `recording#event_id` with their pack references and
+    the recording's name (shown to the owner here; a pack names a recording only by id)."""
+    linked = buildpack.evidence(db(), app_id)
+    names = {r["id"]: r["name"] for r in db().execute(
+        "SELECT recordings.id, recordings.name FROM recordings JOIN evidence ON evidence.recording_id = recordings.id "
+        "WHERE evidence.app_id = ?", (app_id,))}
+    return {scenarios.event_ref(rec["recording_id"], event["event_id"]):
+            dict(event, recording=names.get(rec["recording_id"], rec["recording_id"]))
+            for rec in linked for event in rec["events"]}
 
 
 def attachment_view(row):

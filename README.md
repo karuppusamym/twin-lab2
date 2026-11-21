@@ -99,7 +99,7 @@ python -m pip install -r requirements-recorder.txt
 python recorder\build.py
 ```
 
-The recorder and the portal speak the versioned [recorder contract](docs/RECORDER-CONTRACT.md), now 1.1.0: events carry ids assigned at capture time, and each recording reports how complete it is (1.0.x recorders are still accepted). The portal refuses a recorder whose contract it does not support, and it says which side to update. Recorders built before 0.2.0 declare no version: rebuild and redeploy them. Each recording keeps the recorder version and the contract version it was sent with. [Where the collectors came from](docs/UPSTREAM.md)
+The recorder and the portal speak the versioned [recorder contract](docs/RECORDER-CONTRACT.md), now 1.2.0: events carry ids assigned at capture time, each recording reports how complete it is, and a web step keeps the path prefix of the catalog application it is under, so applications at `/finance/billing` and `/finance/payroll` on one host are told apart (1.0.x and 1.1.x recorders are still accepted). The portal refuses a recorder whose contract it does not support, and it says which side to update. Recorders built before 0.2.0 declare no version: rebuild and redeploy them. Each recording keeps the recorder version and the contract version it was sent with. [Where the collectors came from](docs/UPSTREAM.md)
 
 The build is not signed. Sign it before it runs on any machine other than a developer's: an unsigned program with keyboard hooks is likely to be stopped by endpoint protection.
 

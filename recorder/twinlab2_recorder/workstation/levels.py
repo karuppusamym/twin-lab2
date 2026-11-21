@@ -119,6 +119,15 @@ def web_identity(url: str) -> dict:
             "display": urlsplit(origin).hostname if origin else ""}  # fmt: skip
 
 
+def web_path(path: object) -> str | None:
+    """A web target's path prefix without a trailing slash (`/finance/billing`), or None for the
+    whole origin or a path that is not a plain one (flow.prefix_segments)."""
+    from twinlab2_recorder.workstation.flow import prefix_segments
+
+    segs = prefix_segments(path)
+    return "/" + "/".join(segs) if segs else None
+
+
 def denied_exe(path: str | None, name: str | None = None) -> bool:
     name = (name or ntpath.basename(path or "")).lower()
     if any(fnmatch.fnmatch(name, pat) for pat in DENY_EXE):
@@ -147,6 +156,9 @@ class Target:
     tn3270: str | None = None  # a mainframe host, host:port: the session's proxy forwards to it
     listen: int | None = None  # the proxy's port on 127.0.0.1 (the terminal connects to it)
     tls: bool = False  # TLS from the proxy to the host
+    # a web target's path prefix (`/finance/billing`), when applications share its origin: the
+    # steps under it keep it in their route template (flow.route_template)
+    path: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict) -> Target:
@@ -159,6 +171,9 @@ class Target:
         key = str(d["key"]) if d.get("key") else None
         if key and key.startswith("web:") and not origin:
             origin = origin_of(key[4:])
+        path = web_path(d.get("path")) if d.get("path") else None
+        if path is None and origin:  # an address given with its path: `https://host/finance/billing`
+            path = web_path(urlsplit(str(d.get("origin") or (key or "")[4:])).path)
         tn3270 = None
         mainframe = d.get("tn3270") or (key[10:] if key and key.startswith("mainframe:") else None)
         if mainframe:
@@ -178,7 +193,8 @@ class Target:
                    allow_denied=bool(d.get("allow_denied")),
                    app_id=int(app_id) if isinstance(app_id, int) else None, tn3270=tn3270,
                    listen=int(listen) if isinstance(listen, int) and 0 <= listen < 65536 else None,
-                   tls=bool(d.get("tls")) or str(mainframe or "").startswith("tn3270s://"))  # fmt: skip
+                   tls=bool(d.get("tls")) or str(mainframe or "").startswith("tn3270s://"),
+                   path=path if origin else None)  # fmt: skip
 
     def matches(self, ident: dict) -> bool:
         if self.key and ident.get("key") == self.key:
@@ -219,6 +235,10 @@ class Targets:
         ):
             return PRESENCE
         return target.level if target else PRESENCE
+
+    def prefixes(self, origin: str) -> list[str]:
+        """The path prefixes the targets name on an origin (flow.route_template)."""
+        return sorted({t.path for t in self.targets if t.origin == origin and t.path})
 
     def origins(self) -> set[str]:
         return {t.origin for t in self.targets if t.origin}
