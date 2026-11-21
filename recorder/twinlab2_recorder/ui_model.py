@@ -314,10 +314,17 @@ class RecordingStatus:
         self.channels: dict[str, dict] = {}
         self.browser_ready = False
         self.stopping = False
+        self.paused = False  # the journal's last pause row has no resume yet
+        self.pauses = 0
 
     def feed(self, row: dict) -> None:
         if row.get("kind") == "browser":
             self.browser_ready = True
+            return
+        if row.get("kind") in ("pause", "resume"):
+            if row["kind"] == "pause" and not self.paused:
+                self.pauses += 1
+            self.paused = row["kind"] == "pause"
             return
         if row.get("kind") != "channel" or not isinstance(row.get("channel"), str):
             return
@@ -346,7 +353,7 @@ class RecordingStatus:
         return "ok"
 
     def lines(self, now: float) -> list[str]:
-        head = "■ STOPPING" if self.stopping else "● RECORDING"
+        head = "■ STOPPING" if self.stopping else "‖ PAUSED" if self.paused else "● RECORDING"
         out = [f"{head}  {elapsed(now - self.started)}  {self.name}",
                "Targets: " + (", ".join(self.targets) or "none")]  # fmt: skip
         if not self.channels:

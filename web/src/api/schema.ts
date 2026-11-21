@@ -3243,6 +3243,22 @@ export interface components {
                 [key: string]: components["schemas"]["Channel"];
             };
             local_exclusions?: components["schemas"]["LocalExclusions"];
+            paused?: components["schemas"]["PausedPeriods"];
+        };
+        /** @description Recorder contract 1.7: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap. */
+        PausedPeriods: {
+            /** @description How many times the recording was paused. */
+            count: number;
+            /** @description How long it was paused in all. */
+            seconds: number;
+            /** @description Each pause (at most 50). */
+            periods: {
+                /** Format: date-time */
+                from: string;
+                /** Format: date-time */
+                to: string;
+                seconds: number;
+            }[];
         };
         /** @description Recorder contract 1.5: applications the recording PC's own exclude list kept out. Not a gap: they were never meant to be recorded. Names of the exclude entries only. */
         LocalExclusions: {

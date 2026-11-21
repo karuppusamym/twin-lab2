@@ -145,10 +145,10 @@ class FixtureRecordingTest(unittest.TestCase):
 
     def test_the_fixture_built_by_the_collectors_conforms(self):
         built = json.loads(BUILT.read_text(encoding="utf-8"))
-        # The timeline stamps its contract version (1.6.0; Twin Lab's 1.1.0 since 4385949) on
+        # The timeline stamps its contract version (1.7.0; Twin Lab's 1.1.0 since 4385949) on
         # every outbox, also on this session, which was recorded before event ids: no step has
         # one, so the recorder sends it as contract 1.0
-        self.assertEqual(built["contract_version"], "1.6.0")
+        self.assertEqual(built["contract_version"], "1.7.0")
         self.assertFalse(any(s.get("event_id") for steps in built["flows"].values() for s in steps))
         doc = agent_main.contract_references(built)
         self.assertEqual(doc["contract_version"], "1.0.0")
@@ -256,7 +256,7 @@ class RecorderStampTest(unittest.TestCase):
         unstamped = {k: v for k, v in box.items() if k not in ("contract_version", "completeness")}
         self.assertEqual(agent_main.contract_references(unstamped)["contract_version"], "1.0.0")
         self.assertEqual(doc["recorder"]["name"], "TwinLabRecorder")
-        self.assertEqual(box["contract_version"], "1.6.0")  # the outbox on disk is left as it is
+        self.assertEqual(box["contract_version"], "1.7.0")  # the outbox on disk is left as it is
         self.assertIn("completeness", box)
         with self.assertRaises(PortalError):
             agent_main.contract_references(dict(box, contract_version="2.0.0"))

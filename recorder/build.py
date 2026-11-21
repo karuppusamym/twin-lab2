@@ -8,7 +8,8 @@
 The folder is the program: copy it to a Windows PC and run TwinLabRecorder.exe (no install, no
 administrator rights), or install the MSI per machine (docs/recorder-deployment.md). It carries
 Python, the recorder and its collectors (`twinlab2_recorder`: workstation session, desktop, web,
-mainframe), the recording format and recorder contract it shares with the portal
+mainframe), the window's page (`twinlab2_recorder/ui`, shown in Edge WebView2 through pywebview, or
+in an Edge app window without it), the recording format and recorder contract it shares with the portal
 (`twinlab2_contract`, with the contract's schema), UI Automation's wrapper generated beforehand
 (comtypes.gen: the program's folder may be read-only), Playwright's driver (the web channel), and
 `_build.json` (the recorder and contract versions, the Twin Lab commit the collectors were copied
@@ -52,7 +53,11 @@ CONTRACT_SCHEMA = PROJECT / "contract" / "twinlab2_contract" / "recorder-contrac
 # Never imported by the recorder; reached only through optional imports of its dependencies.
 EXCLUDES = [
     "numpy",  # comtypes needs its _npsupport module, which guards the numpy import
-    "cryptography", "Crypto", "cffi", "pypdf._crypt_providers._cryptography",  # pypdf: encrypted PDFs
+    # pypdf: encrypted PDFs. cffi stays (pythonnet's loader, clr_loader, opens .NET with it for the
+    # WebView2 window, ABI mode only); its compilers, which pull in distutils, do not.
+    "cryptography", "Crypto", "pypdf._crypt_providers._cryptography",
+    "cffi.recompiler", "cffi.ffiplatform", "cffi.verifier", "cffi.setuptools_ext", "cffi.pkgconfig",
+    "cffi._shimmed_dist_utils", "cffi.vengine_cpy", "cffi.vengine_gen",
     "pypdf._crypt_providers._pycryptodome",
     "setuptools", "pkg_resources", "distutils", "_distutils_hack",
     "httpx", "httpcore", "anyio", "h11", "sniffio", "dns", "email_validator", "certifi",  # pydantic EmailStr
@@ -60,7 +65,7 @@ EXCLUDES = [
     "rich", "pygments", "markdown_it", "mdurl", "chardet", "charset_normalizer", "zstandard",
     "PIL", "pytesseract",  # only for Tesseract OCR; the built recorder uses Windows' own OCR (ocr.py)
     "psutil", "IPython", "matplotlib", "pytest", "_pytest", "doctest", "pdb", "unittest",
-    "xmlrpc", "lib2to3", "pyreadline3", "tkinter.test", "test", "pydoc_data",
+    "xmlrpc", "lib2to3", "pyreadline3", "tkinter", "_tkinter", "test", "pydoc_data",  # the window is WebView2
 ]  # fmt: skip
 # Files of Playwright's driver its runtime never reads (`print-api-json`, TypeScript types).
 DRIVER_CUT = ["package/api.json", "package/types", "package/index.d.ts", "package/README.md"]
@@ -124,6 +129,10 @@ def main(argv: list[str] | None = None) -> int:
         "--hidden-import", "comtypes.gen.UIAutomationClient", "--collect-submodules", "comtypes.gen",
         "--collect-data", "playwright", "--collect-binaries", "playwright",
         "--add-data", f"{PACKAGE / '_build.json'}{os.pathsep}.",
+        # the window: its page, and Edge WebView2 through pywebview (pythonnet; hooks-contrib
+        # brings WebView2's loader DLLs). Tk is not used any more (EXCLUDES).
+        "--add-data", f"{PACKAGE / 'ui'}{os.pathsep}twinlab2_recorder/ui",
+        "--hidden-import", "webview.platforms.edgechromium", "--hidden-import", "webview.platforms.winforms",
     ]  # fmt: skip
     for name in EXCLUDES:
         args_pi += ["--exclude-module", name]
