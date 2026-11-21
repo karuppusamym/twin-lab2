@@ -135,7 +135,9 @@ def changes(old_files: dict, new_files: dict, old_manifest: dict | None, new_man
                 lines.append(f"Scenario changed: {name}")
 
         def events(manifest):
-            return {f"{r['recording_id']}#{e['seq']}" for r in manifest.get("evidence", []) for e in r["events"]}
+            return {(r["recording_id"], "id", e["event_id"]) if e.get("event_id") else
+                    (r["recording_id"], "legacy-seq", e["seq"])
+                    for r in manifest.get("evidence", []) for e in r["events"]}
 
         added, removed = events(new_manifest) - events(old_manifest), events(old_manifest) - events(new_manifest)
         if added:

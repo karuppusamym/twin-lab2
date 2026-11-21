@@ -25,6 +25,14 @@ _held = False
 
 async def claude(prompt, ctx):
     global _held
+    # Exercise the real package handoff, not just an agent that invents a file.
+    inputs = ctx.session.input_dir
+    assert (inputs / "BUILD_TASK.md").is_file()
+    assert isinstance(json.loads((inputs / "evidence.json").read_text(encoding="utf-8")), dict)
+    assert ctx.allows("Read", {"file_path": str(inputs / "BUILD_TASK.md")})
+    assert not ctx.allows("Write", {"file_path": str(inputs / "BUILD_TASK.md")})
+    if not ctx.resume or ctx.restarted:
+        assert str(inputs) in prompt
     plan = json.loads(os.environ.get("TWINLAB2_FAKE_AGENT") or "{}")
     folder = Path(ctx.cwd).parent
     with (folder / "agent-prompts.txt").open("a", encoding="utf-8") as out:
