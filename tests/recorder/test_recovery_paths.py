@@ -117,7 +117,11 @@ def test_a_linked_recording_folder_is_not_followed(session):
         assert list(outside.iterdir()) == []
         assert done["web"]["rejected"] == 1 and done["network"]["rejected"] == 1
     finally:
-        os.rmdir(folder / "web")  # removes the link only
+        link = folder / "web"  # remove the link only, never what it points to
+        if link.is_symlink():
+            link.unlink()
+        else:
+            os.rmdir(link)  # a Windows junction
 
 
 def _junk(rng: random.Random, depth: int = 0):
