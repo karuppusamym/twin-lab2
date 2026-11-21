@@ -19,6 +19,15 @@ export function plural(count: number, word: string, many = `${word}s`) {
   return `${count} ${count === 1 ? word : many}`;
 }
 
+/** 45 → "45 s", 201 → "3 min 21 s", 3720 → "1 h 2 min". */
+export function duration(seconds: number) {
+  const s = Math.round(seconds);
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min` + (s % 60 ? ` ${s % 60} s` : "");
+  const m = Math.floor((s % 3600) / 60);
+  return `${Math.floor(s / 3600)} h` + (m ? ` ${m} min` : "");
+}
+
 export function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }

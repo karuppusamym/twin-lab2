@@ -24,9 +24,13 @@ from pathlib import Path
 from twinlab2_recorder import settings as st
 
 # imported by name at run time (collector processes, lazily): a build that lost one cannot record
-RUNTIME_MODULES = ["playwright.sync_api", "pydantic", "pypdf", "yaml", "tkinter", "ssl",
+RUNTIME_MODULES = ["playwright.sync_api", "pydantic", "pypdf", "yaml", "ssl",
                    "multiprocessing", "twinlab2_contract.recorder_contract", "twinlab2_contract.evidence"]  # fmt: skip
-WINDOWS_MODULES = ["comtypes.client", "comtypes.gen.UIAutomationClient"]
+# the window (twinlab2_recorder.webwindow): pywebview, and Edge WebView2 through pythonnet (which
+# needs cffi to start .NET); its page is checked apart (window_parts)
+WINDOWS_MODULES = ["comtypes.client", "comtypes.gen.UIAutomationClient", "webview", "clr_loader",
+                   "webview.platforms.edgechromium"]  # fmt: skip
+PAGE_FILES = ["index.html", "app.js", "app.css", "tokens.css"]
 
 
 def selfcheck() -> dict:
@@ -41,8 +45,12 @@ def selfcheck() -> dict:
             importlib.import_module(name)
         except Exception as exc:  # noqa: BLE001 - reported
             failed[name] = f"{type(exc).__name__}: {exc}"
+    from twinlab2_recorder import webwindow
     from twinlab2_recorder.workstation.preflight import web_channel_missing
 
+    for name in PAGE_FILES:  # the window's page, bundled beside the package
+        if not (webwindow.UI / name).is_file():
+            failed[f"ui/{name}"] = "missing from the build"
     return {"modules": len(names), "failed": failed, "web_channel": web_channel_missing() or "installed",
             "frozen": bool(getattr(sys, "frozen", False)), "version": st.VERSION}  # fmt: skip
 

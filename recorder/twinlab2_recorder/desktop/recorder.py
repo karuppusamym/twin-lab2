@@ -375,7 +375,8 @@ class Recorder:
                  unfocused_values: bool = False, journal=None,
                  resume: bool = False,
                  exclude_window: Callable[[int], str | None] | None = None,
-                 exclusion_masks: Callable[[int], list | None] | None = None) -> None:  # fmt: skip
+                 exclusion_masks: Callable[[int], list | None] | None = None,
+                 paused: Callable[[], bool] | None = None) -> None:  # fmt: skip
         require()
         from twinlab2_recorder.desktop import win
 
@@ -401,6 +402,9 @@ class Recorder:
         self.exclude_window = exclude_window
         self.exclusion_masks = exclusion_masks
         self.excluded_events = 0  # counted, never described
+        # A paused session (twinlab2_recorder.workstation.pause): no event is taken, no element or
+        # window read, until it resumes.
+        self.paused_fn = paused
         # A robot (UiPath's Simulate input) sets values without the keyboard focus: in a session
         # recording one, such a change is a step too.
         self.unfocused_values = unfocused_values
@@ -489,10 +493,20 @@ class Recorder:
         self.refused.add(pid)
         return False
 
+    def _is_paused(self) -> bool:
+        fn = getattr(self, "paused_fn", None)
+        return bool(fn is not None and fn())
+
+    def _wanted_now(self, pid: int) -> bool:
+        """The hooks' question: nothing is wanted while the session is paused."""
+        return not self._is_paused() and self._wanted(pid)
+
     def _level(self, pid: int | None) -> str:
         return self.levels.get(pid, "full") if pid is not None else "full"
 
     def _ours(self, el) -> bool:
+        if self._is_paused():
+            return False
         try:
             return self._wanted(el.CurrentProcessId)
         except Exception:  # noqa: BLE001
@@ -606,7 +620,7 @@ class Recorder:
                     el = win.click_target(win.element_from_point(x, y))
                     return el, win.describe_now(el, hwnd or 0)
 
-                hooks = _Hooks(self.q, self._wanted, resolve)
+                hooks = _Hooks(self.q, self._wanted_now, resolve)
                 hooks.start()
                 hooks.ready.wait(5)
                 if hooks.failed:
@@ -614,6 +628,7 @@ class Recorder:
                                       "and key chords are not recorded, only pattern events")  # fmt: skip
             started = time.monotonic()
             next_poll = 0.0
+            was_paused = False
             try:
                 while True:
                     now = time.monotonic()
@@ -622,6 +637,15 @@ class Recorder:
                     if now - started > self.max_seconds:
                         self.notes.append(f"stopped after max_seconds={self.max_seconds:.0f}")
                         break
+                    if self._is_paused():
+                        if not was_paused:  # what was under way began before the pause
+                            was_paused = True
+                            self._guarded("handling an event", self._drain)
+                            self._guarded("writing a step", lambda: self._finish(force=True))
+                        self._discard()
+                        time.sleep(0.05)
+                        continue
+                    was_paused = False
                     if now >= next_poll:
                         next_poll = now + POLL_S
                         self._take_added()
@@ -820,6 +844,14 @@ class Recorder:
         self._marks().add(action["event_id"])
         self.pending.append(action)
         self.last_activity = time.monotonic()
+
+    def _discard(self) -> None:
+        """Drop what came in while paused (an event already on its way): nothing is read."""
+        while True:
+            try:
+                self.q.get_nowait()
+            except queue.Empty:
+                return
 
     def _drain(self) -> None:
         win = self.win
