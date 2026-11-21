@@ -121,7 +121,9 @@ def judge_web(case: str, control: bool = False) -> Path:
 
     order = driver["order_number"]
     cases = [
-        body("signin-without-password-refused", goto_after("/login", 2), "Give your user name and your password.",
+        # the refused sign-in reloads /login: the 2nd load, the 3rd when the session's own browser
+        # opened on /login first (case w, launched)
+        body("signin-without-password-refused", goto_after("/login", 3 if case == "w" else 2), "Give your user name and your password.",
              "Orders scenario 1, failure case."),
         body("search-pages", _after_search(steps), "Page 1 of 3",
              "Orders scenario 1: 5 rows per page, 'Page 1 of 3'."),
