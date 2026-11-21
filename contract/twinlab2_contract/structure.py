@@ -74,6 +74,15 @@ def plain(text: object) -> bool:
     return not SHAPE.match(s)
 
 
+KEY = re.compile(r"^(?:Enter|Tab|Esc|Escape|Delete|Backspace|Clear|PA[1-3]|P?F(?:[1-9]|1[0-9]|2[0-4]))$")
+
+
+def key_name(text: object) -> bool:
+    """A key's own name (`Enter`, `F3`, a 3270 AID: `PF3`, `PA1`, `Clear`): no data, though it
+    holds a digit, so a transition keeps it as its `key` (and as a 3270 key step's `label`)."""
+    return isinstance(text, str) and bool(KEY.match(text))
+
+
 def ident(text: object) -> bool:
     """An identifier a control or screen may be named by: at most 40 characters of letters,
     digits, `_`, `.` and `-`, no `@`, not a shape the recorder wrote. Since contract 1.4 it may
@@ -298,7 +307,7 @@ def clean_transition(t) -> dict | None:
         out["action"] = action
     for k in ("control", "label", "key"):
         v = t.get(k)
-        if v is not None and plain(v) and len(str(v).split()) <= 3:
+        if v is not None and (plain(v) and len(str(v).split()) <= 3 or k != "control" and key_name(v)):
             out[k] = v
     out["count"] = t["count"] if isinstance(t.get("count"), int) and not isinstance(t["count"], bool) and t["count"] > 0 else 1
     return out
