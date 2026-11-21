@@ -81,11 +81,11 @@ def require_modules() -> None:
 def require_live() -> None:
     """Refuse a live replay where it must not open windows."""
     require_modules()
-    if sys.platform != "win32":
-        raise DesktopUnavailable("a desktop replay runs on Windows (a Windows verifier)")
     if os.environ.get("TWINLAB2_DESKTOP_VERIFY") != "1":
         raise DesktopUnavailable("desktop replays open the application's windows: allowed only on a Windows "
                                  "verifier with TWINLAB2_DESKTOP_VERIFY=1")
+    if sys.platform != "win32":
+        raise DesktopUnavailable("a desktop replay runs on Windows (a Windows verifier)")
 
 
 class Recording:
