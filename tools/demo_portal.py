@@ -1,7 +1,7 @@
 """A demo portal: the real app, seeded with one recording across ten applications, and test fakes
 for everything outside it.
 
-    python tools/demo_portal.py [--port 8782] [--state DIR]
+    python tools/demo_portal.py [--port 8782] [--state DIR] [--scale]
 
 Build the web app first (`cd web; npm ci; npm run build`). Then open http://127.0.0.1:8782 and
 sign in as one of:
@@ -24,6 +24,10 @@ What is seeded, all through the portal's own APIs (the agent API for the recorde
   package, a build session with the stand-in provider, a verified release (Tested) and its
   publication.
 - Accounts Receivable up to a frozen package, ready to build.
+
+With `--scale` the catalog is filled up to 50 applications (owners, statuses and stages vary) and
+a 2,000-event recording ("Bulk review") is imported, to try the catalog's search, filters and
+pages and the recording review's event rows at size (`scale_seed`).
 
 Nothing here calls a real service or costs money: the build provider is `fake`
 (tests/server/fake_provider.py), GitHub is a local fake, the deployment is a local stub that
@@ -168,7 +172,37 @@ def seed(app, world, ctx, database):
     return billing, build_id
 
 
-def build(state):
+SCALE_OWNERS = ("alice", "ana", "ben", "chen", "dora")
+SCALE_HOSTS = ("billing.example.test", "crm.example.test", "hr.example.test", "stock.example.test",
+               "orders.example.test", "tickets.example.test", "payments.example.test", "reports.example.test")
+SCALE_ACTIONS = ("click", "type", "select", "navigate", "submit", "toggle", "scroll", "check")
+
+
+def scale_seed(client, apps=50, events=2000):
+    """Fill the catalog up to `apps` applications and import one recording of `events` events
+    (synthetic, made-up hosts), through the APIs. Returns the recording's id."""
+    import json
+
+    have = check(client.get("/api/v1/apps?limit=1"))["page"]["total"]
+    for n in range(have, apps):
+        owner = SCALE_OWNERS[n % len(SCALE_OWNERS)]
+        app_id = check(client.post("/api/v1/apps", json={
+            "name": f"Scale app {n + 1:02d}", "owner": owner,
+            "purpose": f"Synthetic catalog entry {n + 1} for {SCALE_HOSTS[n % len(SCALE_HOSTS)]}"}))["id"]
+        if n % 5 == 0:
+            check(client.patch(f"/api/v1/apps/{app_id}", json={"status": "discovered"}))
+        elif n % 7 == 0:
+            check(client.patch(f"/api/v1/apps/{app_id}", json={"status": "not_replicated"}))
+    lines = [json.dumps({"seq": i + 1, "action": SCALE_ACTIONS[i % len(SCALE_ACTIONS)],
+                         "url": f"http://{SCALE_HOSTS[(i // 25) % len(SCALE_HOSTS)]}/step/{i + 1}",
+                         "ts": f"2026-11-20T{9 + i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}+00:00"})
+             for i in range(events)]
+    imported = check(client.post("/api/v1/recordings", data={"name": f"Bulk review ({events} events)"},
+                                 files={"log": ("steps.jsonl", "\n".join(lines).encode(), "application/x-ndjson")}))
+    return imported["id"]
+
+
+def build(state, scale=False):
     """The seeded demo portal in `state`: (app, world, ctx, database), with its fakes running."""
     state = Path(state)
     state.mkdir(parents=True, exist_ok=True)
@@ -211,6 +245,13 @@ def build(state):
     for n in range(1, 20):
         checks.branch_heads[f"twinlab2%2Fapp-{billing}%2Fsession-{n}-fake"] = SHA
     release(app, billing, build_id, deployment)
+    if scale:
+        from support import Client
+
+        alice = Client(app, remote="10.0.0.9")
+        check(alice.post("/api/v1/session", json={"user": "alice", "password": USERS["alice"]}))
+        recording = scale_seed(alice)
+        print(f"scale: 50 applications, recording {recording} with 2000 events", flush=True)
     return app, world, ctx, database
 
 
@@ -218,9 +259,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8782)
     parser.add_argument("--state", default=None)
+    parser.add_argument("--scale", action="store_true", help="50 applications and a 2,000-event recording")
     args = parser.parse_args()
     state = Path(args.state or tempfile.mkdtemp(prefix="tl2-demo-"))
-    app, world, ctx, database = build(state)
+    app, world, ctx, database = build(state, scale=args.scale)
     from twinlab2 import worker
 
     def work():
