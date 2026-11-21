@@ -228,3 +228,23 @@ class RecorderWindowDpi(unittest.TestCase):
                 mock.patch.object(ctypes, "windll", fake, create=True):
             self.assertEqual(agent_main.dpi_aware(), 1.5)
         self.assertEqual(calls, [2])
+
+
+class BuiltProgramSchema(unittest.TestCase):
+    """build.py: the schema the program carries must be the one its code speaks (the rerun's first
+    build carried a 1.4.0 schema from an editable install of another checkout and refused to send)."""
+
+    def test_the_bundled_schema_version_is_read(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "recorder_build", Path(__file__).resolve().parents[2] / "recorder" / "build.py")
+        build = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "_internal" / "twinlab2_contract"
+            folder.mkdir(parents=True)
+            self.assertIsNone(build.bundled_schema_version(Path(tmp)))
+            (folder / "recorder-contract.schema.json").write_text(json.dumps({"x-contract-version": "1.4.0"}),
+                                                                   encoding="utf-8")
+            self.assertEqual(build.bundled_schema_version(Path(tmp)), "1.4.0")
