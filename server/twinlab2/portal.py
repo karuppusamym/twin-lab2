@@ -1015,8 +1015,7 @@ def create_app(target):
         with db():
             record("package.download", "builder_package", f"{app_id}/rev{row['rev']}", app_id=app_id,
                    rev=row["rev"], sha256=row["sha256"])
-        slug = re.sub(r"[^a-z0-9]+", "-", item["name"].lower()).strip("-") or "demo"
-        return send_stored(stored, "archive", f"{slug}-rev{row['rev']}-{row['revision'][:12]}.zip")
+        return send_stored(stored, "archive", packages.download_name(item, row))
 
     @app.get("/apps/<int:app_id>/build-pack")
     @require_role("builder")

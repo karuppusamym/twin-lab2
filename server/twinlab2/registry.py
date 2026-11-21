@@ -223,6 +223,59 @@ def clean_references(doc):
     return out
 
 
+def merge_references(old, new):
+    """The references of a recording after another send of it: what the earlier sends had and
+    this one adds. A recorder may send a recording in parts (a recovered session, then the rest)
+    or send a batch again, so a send never removes what an earlier one delivered: applications
+    are kept by identity key and steps by `event_id`, the latest send's copy of a step winning
+    (also when it moved to another application). The session, completeness and preflight are
+    the latest send's; the timeline too when it covers every application, else the earlier
+    timeline followed by the new one. Both are `clean_references` output with event ids."""
+    sent = {step["event_id"] for steps in new["flows"].values() for step in steps}
+    apps = {a["key"]: a for a in old["apps"]}
+    apps.update({a["key"]: a for a in new["apps"]})
+    flows = {}
+    for key in apps:
+        steps = {s["event_id"]: s for s in old["flows"].get(key, []) if s["event_id"] not in sent}
+        steps.update({s["event_id"]: s for s in new["flows"].get(key, [])})
+        if key in old["flows"] or key in new["flows"]:
+            flows[key] = sorted(steps.values(), key=lambda s: (s.get("captured_at") or "", s["n"], s["event_id"]))
+    out = dict(new, apps=list(apps.values()), flows=flows)
+    if not {a["key"] for a in old["apps"]} <= {a["key"] for a in new["apps"]}:
+        timeline = []
+        for run in old["timeline"] + new["timeline"]:
+            if timeline and timeline[-1]["app"] == run["app"]:
+                timeline[-1] = {"app": run["app"], "steps": timeline[-1]["steps"] + run["steps"]}
+            else:
+                timeline.append(dict(run))
+        out["timeline"] = timeline
+    return out
+
+
+def unique_name(db, base, item):
+    """A name for a newly discovered application that no other application has (ignoring case),
+    so that each one's package, folder and BUILD_TASK say which application it is: `base`, else
+    `base (qualifier)` with the company or executable of a program or the host of a web or
+    mainframe application, else `base 2`, `base 3`, …"""
+    taken = {row[0].casefold() for row in db.execute("SELECT name FROM apps")}
+    base = base[:120]
+    if base.casefold() not in taken:
+        return base
+    key = item["key"]
+    if key.startswith("web:"):
+        qualifier = web_parts(key)[0].split("://", 1)[-1]
+    elif key.startswith("mainframe:"):
+        qualifier = key[10:]
+    else:
+        qualifier = item.get("company") or item.get("exe") or key.split(":", 1)[-1]
+    candidate = f"{base} ({qualifier})"[:120]
+    number = 2
+    while candidate.casefold() in taken:
+        candidate = f"{base[:110]} {number}"
+        number += 1
+    return candidate
+
+
 def recording_status(db, recording_id):
     """What the pages say about a recording's completeness: the recorder's report (None from an
     older recorder or an imported event log), its preflight, the owner's acceptance, and the
@@ -534,6 +587,7 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         if row is not None:
             return row["app_id"], False
         app_id = None
+        display = item.get("display")
         if item.get("app_id") and db().execute("SELECT 1 FROM apps WHERE id = ?", (item["app_id"],)).fetchone():
             app_id = item["app_id"]
             if item["key"].startswith("web:"):
@@ -541,16 +595,19 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
                 origin = web_parts(item["key"])[0]
                 if any(other == app_id for _, other, prefix in web_identities(origin) if prefix):
                     app_id = None
+                    # the recorder named the origin after that target: the rest of the host is
+                    # not that application, so it is named after its host
+                    display = origin.split("://", 1)[-1]
         if app_id is None and item.get("exe"):
             row = db().execute("SELECT app_id FROM app_identities WHERE key = ?",
                                ("exe:" + item["exe"].lower(),)).fetchone()  # fmt: skip
             app_id = row["app_id"] if row else None
         created = False
         if app_id is None:
-            name = item.get("display") or item.get("product") or item["key"].split(":", 1)[-1]
+            name = unique_name(db(), display or item.get("product") or item["key"].split(":", 1)[-1], item)
             app_id = db().execute(
                 "INSERT INTO apps(name, git_url, requirements, status, surface) VALUES (?, '', '', 'discovered', ?) RETURNING id",
-                (name[:120], item["surface"]),
+                (name, item["surface"]),
             ).fetchone()[0]
             created = True
         facts = {k: item[k] for k in ("exe", "company", "product", "version", "toolkit") if k in item}
@@ -643,7 +700,13 @@ def register(app, db):  # noqa: C901 - one place for the routes of this module
         known = event_ids.stored_ids(db(), recording_id)
         for steps in refs["flows"].values():
             event_ids.assign(steps, recording_id, known)
-        names = {a["key"]: a.get("display") or a["key"] for a in refs["apps"]}
+        if owner is not None:  # an earlier send of this recording: this one adds to it
+            earlier = db().execute("SELECT payload FROM session_refs WHERE recording_id = ?", (recording_id,)).fetchone()
+            before = json.loads(earlier["payload"])
+            for steps in before["flows"].values():  # a payload stored before event ids had none
+                event_ids.assign(steps, recording_id, known)
+            refs = merge_references(before, refs)
+        names ={a["key"]: a.get("display") or a["key"] for a in refs["apps"]}
         events = []
         for key, steps in refs["flows"].items():
             for step in steps:

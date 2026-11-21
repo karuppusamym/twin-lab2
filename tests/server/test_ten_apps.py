@@ -1,0 +1,402 @@
+"""One recorder session across ten applications, through the agent API, to ten separate builder
+packages.
+
+The session is `tests/fixtures/ten-app-session` (see its README): six web applications (two on
+one origin, told apart by path), three desktop programs (two with the same window title "Billing"
+and different executables) and a TN3270 host, with their steps interleaved in time. The
+references are what the recorder's own timeline builds from that folder and stamps for sending
+(`contract_references`). They arrive in several sends: the first half of the session, the second
+half, that second half again (a resent batch), then the whole session.
+
+The test drives only the agent API over HTTP (pairing, the offered session, the references); the
+owner's part (the catalog applications with their web addresses, scenarios, attachments, the
+approval of each package) goes through the modules the portal's routes call, so it does not
+depend on the pages.
+"""
+
+import io
+import json
+from pathlib import Path
+import re
+import sys
+import tempfile
+import unittest
+from zipfile import ZipFile
+
+from twinlab2.portal import VERSION_PATH, create_app
+from twinlab2 import artifacts, auth, buildpack, packages, redact, registry, scenarios
+from twinlab2_recorder import main as agent_main
+from twinlab2_contract import recorder_contract as contract
+from support import connect, new_database
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+sys.path.insert(0, str(FIXTURES / "ten-app-session"))
+import generate as fixture  # noqa: E402
+
+BUILT = FIXTURES / "references-ten-apps.json"
+RECORDING = "ws-" + fixture.SESSION_ID
+OWNER = "ana"
+NOW = "2026-11-20T15:00:00+00:00"
+
+# What each application is in the portal once the references are in: its tag (the word in its
+# labels, generate.STEPS), its surface and the name it is registered under.
+EXPECTED = {
+    "billing": ("web", "Billing"),
+    "admin": ("web", "Billing Admin"),
+    "meter": ("web", "Zählerstand Portal – Nord"),
+    "invoice": ("web", "請求 システム"),
+    "orders": ("web", "orders.example.test"),
+    "hr": ("web", "127.0.0.1:8081"),
+    "contoso": ("desktop", "Billing (Contoso Ltd)"),
+    "plain": ("desktop", "Billing (billing.exe)"),
+    "kasse": ("desktop", "Kasse – Filiale Nord"),
+    "mainframe": ("mainframe", "Kontoführung CICS"),
+}
+
+
+def references():
+    """The fixture's references as the recorder sends them (stamped and checked by its own code)."""
+    return agent_main.contract_references(json.loads(BUILT.read_text(encoding="utf-8")))
+
+
+def part(doc, keep):
+    """The references with only the steps `keep(step)` accepts: the applications without a step
+    left out, the timeline cut to the applications sent."""
+    out = json.loads(json.dumps(doc))
+    out["flows"] = {k: [s for s in v if keep(s)] for k, v in out["flows"].items()}
+    out["flows"] = {k: v for k, v in out["flows"].items() if v}
+    out["apps"] = [a for a in out["apps"] if a["key"] in out["flows"]]
+    out["timeline"] = [r for r in out["timeline"] if r["app"] == "presence" or r["app"] in out["flows"]]
+    return out
+
+
+class TenAppRecordingTest(unittest.TestCase):
+    def setUp(self):
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        self.database = new_database(self.work.name)
+        self.app = create_app(self.database)
+        self.app.testing = True
+        self.client = self.app.test_client()
+        self.context = self.app.app_context()
+        self.context.push()
+        self.addCleanup(self.context.pop)
+        self.db = connect(self.database)
+        self.addCleanup(self.db.close)
+
+    # -- the owner's catalog and the machine -----------------------------------------------------
+
+    def catalog(self):
+        """The four catalog applications of the offered session, with their web addresses."""
+        with self.db:
+            for number, item in enumerate(fixture.CATALOG, 1):
+                app_id = self.db.execute(
+                    "INSERT INTO apps(name, git_url, requirements, status, surface) VALUES (?, '', '', 'known', 'web') "
+                    "RETURNING id", (item["name"],)).fetchone()[0]
+                self.assertEqual(app_id, number)
+                self.db.execute("INSERT INTO app_identities(key, app_id, surface, facts) VALUES (?, ?, 'web', '{}')",
+                                (registry.normalise_key(item["key"]), app_id))
+                auth.assign(self.db, app_id, OWNER, "owner", "test", NOW)
+
+    def pair(self):
+        """A pairing code the owner made, exchanged by the recorder for its token (agent API)."""
+        code = "ABCDEFGHJK"
+        with self.db:
+            self.db.execute("INSERT INTO pairing_codes(code_sha, created_by, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                            (registry.sha(code), OWNER, NOW, "2999-01-01T00:00:00+00:00"))
+        response = self.client.post("/api/agent/pair", json={"contract_version": contract.CONTRACT_VERSION,
+                                                             "code": code, "name": "Workstation 10"})
+        self.assertEqual(response.status_code, 200, response.data)
+        return {"Authorization": f"Bearer {response.json['token']}"}
+
+    def offer(self, machine_id):
+        """The portal session the recorder is offered: the catalog applications as targets."""
+        targets = []
+        for app_id in range(1, len(fixture.CATALOG) + 1):
+            name = self.db.execute("SELECT name FROM apps WHERE id = ?", (app_id,)).fetchone()[0]
+            for row in self.db.execute("SELECT key FROM app_identities WHERE app_id = ?", (app_id,)).fetchall():
+                targets.append(registry.target_of(row[0], "full", app_id, name))
+        with self.db:
+            self.db.execute("""INSERT INTO capture_sessions(name, machine_id, targets, created_by, created_at, status)
+                               VALUES ('Month-end close', ?, ?, ?, ?, 'offered')""",
+                            (machine_id, json.dumps(targets), OWNER, NOW))
+
+    def send(self, headers, doc):
+        self.assertEqual(contract.errors(doc, "references"), [])
+        response = self.client.post("/api/agent/references", json=doc, headers=headers)
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.json
+
+    def record(self):
+        """Pair, take the offered session, send the references in parts; returns {tag: app_id}."""
+        self.catalog()
+        headers = self.pair()
+        self.offer(1)
+        offered = self.client.get("/api/agent/sessions", headers=headers).json["sessions"]
+        self.assertEqual([s["id"] for s in offered], [1])
+        paths = {(t.get("origin"), t.get("path")) for t in offered[0]["targets"]}
+        self.assertTrue({("https://erp.example.test", "/billing"), ("https://erp.example.test", "/billing-admin")} <= paths)
+        doc = references()
+        self.assertEqual(doc["contract_version"], "1.1.0")
+        middle = fixture.ts(len(fixture.STEPS) * 5 // 2)
+        first, second = part(doc, lambda s: s["captured_at"] < middle), part(doc, lambda s: s["captured_at"] >= middle)
+        self.assertTrue(first["flows"] and second["flows"])
+        self.assertNotEqual(set(first["flows"]), set(doc["flows"]))  # each part misses applications
+        self.send(headers, first)
+        self.send(headers, second)
+        again = self.send(headers, second)  # the same batch again
+        self.assertEqual(again["discovered"], [])
+        self.assignment()  # the two halves hold the whole session: nothing the first sent was lost
+        final = self.send(headers, doc)
+        self.assertEqual(final["discovered"], [])
+        return self.assignment()
+
+    def assignment(self):
+        """{tag: app_id} from the stored flows; fails when an application holds steps of two
+        applications or a step is on two applications."""
+        tags = fixture.tags()
+        found, seen = {}, {}
+        for row in self.db.execute("SELECT app_id, flow FROM recording_apps WHERE recording_id = ?", (RECORDING,)):
+            for step in json.loads(row["flow"]):
+                self.assertNotIn(step["event_id"], seen, "a step is on two applications")
+                seen[step["event_id"]] = row["app_id"]
+                found.setdefault(row["app_id"], set()).add(tags[step["event_id"]])
+        self.assertEqual(set(seen), set(tags), "every recorded step lands on an application")
+        for app_id, owned in found.items():
+            self.assertEqual(len(owned), 1, f"application {app_id} holds the steps of {sorted(owned)}")
+        return {next(iter(owned)): app_id for app_id, owned in found.items()}
+
+    # -- the owner's part, per application -------------------------------------------------------
+
+    def prepare(self, app_id, tag):
+        """A scenario linking the application's selected events and one synthetic attachment."""
+        selection = json.loads(self.db.execute("SELECT selection FROM evidence WHERE app_id = ? AND recording_id = ?",
+                                               (app_id, RECORDING)).fetchone()[0])
+        name = self.db.execute("SELECT name FROM apps WHERE id = ?", (app_id,)).fetchone()[0]
+        scenarios.save(self.db, app_id, {
+            "name": f"{name}: month-end", "starting": f"Signed in to {name}.", "actions": f"Open {tag}-start",
+            "expected": f"{tag}-done", "failures": "", "examples": f"{tag}-example-1", "questions": "", "notes": "",
+            "events": json.dumps([scenarios.event_ref(RECORDING, e) for e in selection])})
+        content = f"# {name}\n\nAcceptance notes {tag}-attachment.\n".encode("utf-8")
+        with self.db:
+            ref = artifacts.save(self.db, artifacts.put(content, kind="restricted_evidence", app_id=app_id,
+                                                        content_type="text/markdown"))
+            self.db.execute("INSERT INTO attachments(app_id, title, kind, extension, content, artifact_id, share, added_by) "
+                            "VALUES (?, ?, 'Acceptance', '.md', ?, ?, 'synthetic', ?)",
+                            (app_id, f"{name} acceptance", b"", ref.id, OWNER))
+
+    def freeze(self, app_id):
+        draft = buildpack.draft(self.db, app_id, VERSION_PATH)
+        with self.db:
+            rev = packages.freeze(self.db, app_id, OWNER, draft.sha256, "", VERSION_PATH)
+        return packages.get(self.db, app_id, rev)
+
+    # -- the test -------------------------------------------------------------------------------------
+
+    def test_ten_applications_get_ten_separate_packages(self):
+        by_tag = self.record()
+        apps = {r["id"]: r for r in self.db.execute("SELECT * FROM apps ORDER BY id").fetchall()}
+        self.assertEqual(len(apps), 10, [a["name"] for a in apps.values()])
+        self.assertEqual(set(by_tag), set(EXPECTED))
+        for tag, (surface, name) in EXPECTED.items():
+            app = apps[by_tag[tag]]
+            self.assertEqual((app["surface"], app["name"]), (surface, name), tag)
+        self.assertEqual(len({a["name"].casefold() for a in apps.values()}), 10, "application names are unique")
+        # the catalog applications kept their ids; each discovered one is owned by who paired
+        self.assertEqual([by_tag[t] for t in ("billing", "admin", "meter", "invoice")], [1, 2, 3, 4])
+        for app_id in apps:
+            self.assertEqual(auth.owners(self.db, app_id), [OWNER])
+        # every application's evidence is exactly its own steps
+        tags = fixture.tags()
+        for tag, app_id in by_tag.items():
+            selection = json.loads(self.db.execute("SELECT selection FROM evidence WHERE app_id = ? AND recording_id = ?",
+                                                   (app_id, RECORDING)).fetchone()[0])
+            self.assertEqual(selection, sorted(e for e, t in tags.items() if t == tag), tag)
+
+        frozen = {}
+        for tag, app_id in by_tag.items():
+            self.prepare(app_id, tag)
+        for tag, app_id in by_tag.items():
+            frozen[tag] = self.freeze(app_id)
+        self.assertEqual(len({row["sha256"] for row in frozen.values()}), 10)
+
+        own_data = {}  # what only that application's package may hold
+        for tag, app_id in by_tag.items():
+            labels = {s.get("label") for row in self.db.execute(
+                "SELECT flow FROM recording_apps WHERE app_id = ? AND recording_id = ?", (app_id, RECORDING))
+                for s in json.loads(row["flow"]) if s.get("label")} - {"Enter"}
+            hosts = {re.sub(r"^\w+:(//)?", "", k).split("/")[0] for k in [
+                r[0] for r in self.db.execute("SELECT key FROM app_identities WHERE app_id = ?", (app_id,))]}
+            events = {e for e, t in tags.items() if t == tag}
+            own_data[tag] = {"name": apps[app_id]["name"], "markers": labels | events | {
+                f"{tag}-start", f"{tag}-done", f"{tag}-example-1", f"{tag}-attachment"}, "hosts": hosts}
+        names = set()
+        for tag, row in frozen.items():
+            app_id = by_tag[tag]
+            data = packages.open_package(self.db, row["storage_ref"])
+            files = buildpack.read(data)
+            evidence = json.loads(files["evidence.json"])
+            self.assertEqual(evidence["app"]["id"], app_id)
+            self.assertEqual(evidence["app"]["name"], apps[app_id]["name"])
+            self.assertEqual([r["recording_id"] for r in evidence["evidence"]], [RECORDING])
+            self.assertEqual({e["event_id"] for r in evidence["evidence"] for e in r["events"]},
+                             {e for e, t in tags.items() if t == tag})
+            self.assertEqual(len(evidence["attachments"]), 1)
+            self.assertEqual(set(files), {"BUILD_TASK.md", "evidence.json", evidence["attachments"][0]["path"]})
+            self.assertTrue(files["BUILD_TASK.md"].decode("utf-8").startswith(f"# Build {apps[app_id]['name']}\n"))
+            text = "\n".join(f"{path}\n{content.decode('utf-8')}" for path, content in files.items())
+            mine = text.replace(own_data[tag]["name"], "")
+            for other, facts in own_data.items():
+                if other == tag:
+                    continue
+                if facts["name"] not in own_data[tag]["name"]:
+                    self.assertNotIn(facts["name"], mine, f"{tag}'s package names {other}")
+                for marker in facts["markers"]:
+                    self.assertNotIn(marker, text, f"{tag}'s package holds {other}'s {marker}")
+                for host in facts["hosts"] - own_data[tag]["hosts"]:
+                    self.assertNotIn(host, text, f"{tag}'s package holds {other}'s address {host}")
+            for marker in own_data[tag]["markers"]:
+                self.assertIn(marker, text, f"{tag}'s package misses its own {marker}")
+            filename = packages.download_name(apps[app_id], row)
+            self.assertRegex(filename, r"^[\w-]+-rev1-[0-9a-f]{12}\.zip$")
+            self.assertTrue(filename.endswith(f"-rev1-{row['revision'][:12]}.zip"))
+            self.assertNotRegex(filename, r"[\s/\\:*?\"<>|]")
+            names.add(filename)
+        self.assertEqual(len(names), 10, sorted(names))
+        slugs = {packages.slug(apps[by_tag[t]]) for t in by_tag}
+        for expected in ("billing", "billing-admin", "zahlerstand-portal-nord", "請求-システム", "orders-example-test",
+                         "127-0-0-1-8081", "billing-contoso-ltd", "billing-billing-exe", "kasse-filiale-nord",
+                         "kontofuhrung-cics"):
+            self.assertTrue(any(s.startswith(expected) for s in slugs), (expected, sorted(slugs)))
+        self.assertEqual(len(slugs), 10)
+
+    def test_the_download_route_names_the_package_by_its_application(self):
+        by_tag = self.record()
+        app_id = by_tag["meter"]
+        self.prepare(app_id, "meter")
+        row = self.freeze(app_id)
+        with self.client.session_transaction() as session:
+            session["user"] = OWNER
+        response = self.client.get(f"/apps/{app_id}/build-pack")
+        self.assertEqual(response.status_code, 200, response.data[:300])
+        name = packages.download_name(self.db.execute("SELECT * FROM apps WHERE id = ?", (app_id,)).fetchone(), row)
+        self.assertIn(f"filename={name}", response.headers["Content-Disposition"])
+        with ZipFile(io.BytesIO(response.data)) as archive:
+            self.assertIn("evidence.json", archive.namelist())
+
+
+def step(n, label, screen, channel="web"):
+    return {"n": n, "seq": n, "action": "click", "control": "button", "label": label, "screen": screen,
+            "event_id": f"019aa1c0-0000-7000-8000-{n:012x}", "channel": channel,
+            "captured_at": f"2026-11-20T16:00:{n:02d}.000Z"}
+
+
+def refs(apps, flows, session_id="20261120T160000Z-0b1c2d3e"):
+    timeline = [{"app": key, "steps": len(steps)} for key, steps in flows.items()]
+    return {"contract_version": "1.1.0", "format": "twinlab-references/1",
+            "session": {"id": session_id, "name": "Focused", "state": "stopped"},
+            "apps": apps, "flows": flows, "timeline": timeline,
+            "completeness": {"overall": "complete", "channels": {"web": {"status": "complete"}},
+                             "network_evidence": "none", "recovered": False}}
+
+
+class SeparationFixesTest(TenAppRecordingTest):
+    """One test per separation bug the ten-application recording found."""
+
+    test_ten_applications_get_ten_separate_packages = None
+    test_the_download_route_names_the_package_by_its_application = None
+    FOCUSED = "ws-20261120T160000Z-0b1c2d3e"
+
+    def stored(self):
+        """({application name: its labels}, number of events) of the focused recording."""
+        out = {}
+        for row in self.db.execute("""SELECT apps.name, recording_apps.flow FROM recording_apps
+                                      JOIN apps ON apps.id = recording_apps.app_id WHERE recording_id = ?""",
+                                   (self.FOCUSED,)):
+            out.setdefault(row["name"], []).extend(s["label"] for s in json.loads(row["flow"]))
+        events = json.loads(self.db.execute("SELECT events FROM recordings WHERE id = ?", (self.FOCUSED,)).fetchone()[0])
+        return {k: sorted(v) for k, v in out.items()}, len(events)
+
+    def test_a_send_with_some_applications_keeps_what_an_earlier_send_delivered(self):
+        headers = self.pair()
+        orders, hr = "web:https://orders.example.test", "web:http://127.0.0.1:8081"
+        first = refs([{"key": orders, "level": "full", "display": "Orders"}],
+                     {orders: [step(1, "ordersCreate", "https://orders.example.test/orders/new")]})
+        second = refs([{"key": hr, "level": "full", "display": "HR"}],
+                      {hr: [step(2, "hrLeave", "http://127.0.0.1:8081/leave")]})
+        self.send(headers, first)
+        self.send(headers, second)
+        self.send(headers, second)  # resent: nothing doubles
+        self.assertEqual(self.stored(), ({"Orders": ["ordersCreate"], "HR": ["hrLeave"]}, 2))
+        # a later send of a step it sent before, now with another label: that copy wins, once
+        later = refs([{"key": orders, "level": "full", "display": "Orders"}],
+                     {orders: [step(1, "ordersSubmit", "https://orders.example.test/orders/new"),
+                               step(3, "ordersSearch", "https://orders.example.test/orders/search")]})
+        self.send(headers, later)
+        self.assertEqual(self.stored(), ({"Orders": ["ordersSearch", "ordersSubmit"], "HR": ["hrLeave"]}, 3))
+        evidence = dict(self.db.execute("SELECT apps.name, evidence.selection FROM evidence "
+                                        "JOIN apps ON apps.id = evidence.app_id").fetchall())
+        self.assertEqual({k: len(json.loads(v)) for k, v in evidence.items()}, {"Orders": 2, "HR": 1})
+
+    def test_a_discovered_application_never_takes_another_applications_name(self):
+        headers = self.pair()
+        web, contoso, plain = "web:https://billing.example.test", "desktop:Contoso Ltd/Billing", "desktop:exe/billing.exe"
+        self.send(headers, refs(
+            [{"key": web, "level": "full", "display": "Billing"},
+             {"key": contoso, "level": "full", "display": "Billing", "exe": "ContosoBilling.exe",
+              "company": "Contoso Ltd", "product": "Billing"},
+             {"key": plain, "level": "full", "display": "billing", "exe": "billing.exe"}],
+            {web: [step(1, "webPay", "https://billing.example.test/pay")],
+             contoso: [step(2, "contosoPost", "ContosoMain", "desktop")],
+             plain: [step(3, "plainPrint", "BillingMainForm", "desktop")]}))
+        names = [r[0] for r in self.db.execute("SELECT name FROM apps ORDER BY id")]
+        self.assertEqual(names, ["Billing", "Billing (Contoso Ltd)", "billing (billing.exe)"])
+        # another with the same name and the same qualifier is numbered
+        self.assertEqual(registry.unique_name(self.db, "Billing", {"key": "desktop:Contoso Ltd/Billing 2",
+                                                                    "company": "Contoso Ltd"}), "Billing 2")
+
+    def test_the_rest_of_a_shared_host_is_named_after_the_host_not_a_path_application(self):
+        self.catalog()  # Billing (/billing) and Billing Admin (/billing-admin) on erp.example.test
+        headers = self.pair()
+        erp = "web:https://erp.example.test"
+        self.send(headers, refs(
+            [{"key": erp, "level": "full", "display": "Billing Admin", "app_id": 2}],  # as the recorder names it
+            {erp: [step(1, "adminRate", "https://erp.example.test/billing-admin/{id}"),
+                   step(2, "billingPay", "https://erp.example.test/billing/{id}"),
+                   step(3, "signIn", "https://erp.example.test/login")]}))
+        self.assertEqual(self.stored()[0], {"Billing Admin": ["adminRate"], "Billing": ["billingPay"],
+                                            "erp.example.test": ["signIn"]})
+
+    def test_an_event_id_that_looks_like_a_card_number_reaches_the_package_intact(self):
+        event = "019aa1b0-0011-7000-8000-000000000011"  # its last 16 digits pass the Luhn check
+        self.assertEqual(redact.redact_text(f"Event {event} of ws-1"), f"Event {event} of ws-1")
+        self.assertEqual(redact.redact_text("card 4111 1111 1111 1111"), "card [REDACTED:card number]")
+        self.assertEqual(redact.redact_text(f"Bearer {event}"), "[REDACTED:token]")
+        headers = self.pair()
+        web = "web:https://orders.example.test"
+        self.send(headers, refs([{"key": web, "level": "full", "display": "Orders"}],
+                                {web: [dict(step(1, "ordersCreate", "https://orders.example.test/orders/new"),
+                                            event_id=event)]}))
+        scenarios.save(self.db, 1, {"name": "Create", "expected": "Created",
+                                    "events": json.dumps([scenarios.event_ref(self.FOCUSED, event)])})
+        draft = buildpack.draft(self.db, 1, VERSION_PATH)
+        data = json.loads(draft.manifest)
+        self.assertEqual(data["evidence"][0]["events"][0]["event_id"], event)
+        self.assertEqual(data["scenarios"][0]["events"][0]["event_id"], event)
+        self.assertNotIn("REDACTED", draft.files["BUILD_TASK.md"].decode("utf-8"))
+        self.assertEqual(draft.redacted, [])
+
+    def test_package_names_are_safe_unique_slugs_of_the_application_name(self):
+        cases = {"Billing": "billing-1", "Billing Admin": "billing-admin-2",
+                 "Zählerstand Portal – Nord": "zahlerstand-portal-nord-3", "請求 システム": "請求-システム-4",
+                 "データベース": "データベース-5", "  ": "app-6", "../../etc/passwd": "etc-passwd-7",
+                 "a_b__c": "a-b-c-8", "x" * 200: "x" * 60 + "-9"}
+        for number, (name, expected) in enumerate(cases.items(), 1):
+            self.assertEqual(packages.slug({"id": number, "name": name}), expected)
+        row = {"rev": 3, "revision": "0123456789abcdef" * 4}
+        self.assertEqual(packages.download_name({"id": 2, "name": "Billing Admin"}, row),
+                         "billing-admin-2-rev3-0123456789ab.zip")
+
+
+if __name__ == "__main__":
+    unittest.main()

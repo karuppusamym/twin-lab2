@@ -1,0 +1,4 @@
+{"ts": "2026-11-20T14:00:01.000Z", "kind": "app", "pid": 21, "level": "full", "toolkit": "winforms", "key": "desktop:Contoso Ltd/Billing", "surface": "desktop", "exe": "ContosoBilling.exe", "company": "Contoso Ltd", "product": "Billing", "version": "4.2.0.0", "display": "Billing"}
+{"ts": "2026-11-20T14:00:01.000Z", "kind": "app", "pid": 22, "level": "full", "toolkit": "winforms", "key": "desktop:exe/billing.exe", "surface": "desktop", "exe": "billing.exe", "display": "Billing"}
+{"ts": "2026-11-20T14:00:01.000Z", "kind": "app", "pid": 23, "level": "full", "toolkit": "winforms", "key": "desktop:Müller & Söhne GmbH/Kasse – Filiale Nord", "surface": "desktop", "exe": "Kasse.exe", "company": "Müller & Söhne GmbH", "product": "Kasse – Filiale Nord", "version": "2.0.1.0", "display": "Kasse – Filiale Nord"}
+{"ts": "2026-11-20T14:00:02.000Z", "kind": "presence", "exe": "notepad.exe"}

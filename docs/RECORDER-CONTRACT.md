@@ -163,6 +163,12 @@ of the same recording, even one whose `seq` values were recomputed by recovery, 
 `event_id`: the owner's reviewed selection still means the same events, and only events with a
 new `event_id` are suggested.
 
+A send adds to the recording and never removes from it. Applications are kept by identity key
+and steps by `event_id`. A recorder may send a session in parts (a recovered first half, then the
+rest) or send a batch again. The latest send's copy of a step wins. The session, completeness and
+preflight are the latest send's. So is the timeline, unless that send leaves out applications an
+earlier send had: then the earlier timeline is kept and the new one appended to it.
+
 A 1.0.x recording has no event ids. The portal derives one per step **once**, when it first
 receives it (a UUIDv5 of the recording and the step's `n`), stores it with the step, and reuses
 the stored id on a resend. Its recording page shows "Completeness unknown (older recorder)". An

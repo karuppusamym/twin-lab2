@@ -1,0 +1,17 @@
+{"type": "open", "channel": "network", "at": "2026-11-20T14:00:00.000Z", "pid": 4242}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-0001-7000-8000-000000000001", "entry": {"request": {"method": "GET", "url": "https://erp.example.test/billing/invoices"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-0002-7000-8000-000000000002", "entry": {"request": {"method": "GET", "url": "https://erp.example.test/billing/invoices/INV-1001"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-0004-7000-8000-000000000004", "entry": {"request": {"method": "GET", "url": "https://erp.example.test/billing-admin/rates"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-0005-7000-8000-000000000005", "entry": {"request": {"method": "GET", "url": "https://erp.example.test/billing/invoices/INV-1001"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-0008-7000-8000-000000000008", "entry": {"request": {"method": "GET", "url": "https://erp.example.test/billing-admin/rates/edit"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-0009-7000-8000-000000000009", "entry": {"request": {"method": "GET", "url": "https://meter.example.test/readings"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-000b-7000-8000-00000000000b", "entry": {"request": {"method": "GET", "url": "https://orders.example.test/orders/new"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-000d-7000-8000-00000000000d", "entry": {"request": {"method": "GET", "url": "https://seikyu.example.test:8443/seikyu/list"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-000e-7000-8000-00000000000e", "entry": {"request": {"method": "GET", "url": "http://127.0.0.1:8081/leave"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-0011-7000-8000-000000000011", "entry": {"request": {"method": "GET", "url": "https://meter.example.test/readings/confirm"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-0013-7000-8000-000000000013", "entry": {"request": {"method": "GET", "url": "https://orders.example.test/orders/search"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-0014-7000-8000-000000000014", "entry": {"request": {"method": "GET", "url": "https://seikyu.example.test:8443/seikyu/new"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-0016-7000-8000-000000000016", "entry": {"request": {"method": "GET", "url": "http://127.0.0.1:8081/leave/new"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-0017-7000-8000-000000000017", "entry": {"request": {"method": "GET", "url": "https://erp.example.test/billing-admin/rates"}}}
+{"type": "har", "recording": "web", "event_id": "019aa1b0-0018-7000-8000-000000000018", "entry": {"request": {"method": "GET", "url": "https://erp.example.test/billing/invoices"}}}
+{"type": "close", "at": "2026-11-20T14:02:10.000Z", "clean": true}

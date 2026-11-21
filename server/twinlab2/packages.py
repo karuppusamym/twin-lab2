@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
+import unicodedata
 
 from twinlab2 import artifacts
 from twinlab2 import audit
@@ -66,6 +68,30 @@ def stored_row(db, storage_ref: str):
 
 def open_package(db, storage_ref: str) -> bytes:
     return artifacts.content(db, stored_row(db, storage_ref), "archive")
+
+
+# -- names ----------------------------------------------------------------------------------------
+
+
+def slug(app) -> str:
+    """The application's name as a file and folder name, unique per application: lower case,
+    accents folded (`Zählerstand` -> `zahlerstand`), letters of other scripts kept, every other
+    run of characters one `-`, at most 60 characters, then `-<id>`: `billing-admin-2`,
+    `請求-システム-4`. Safe on Windows, macOS and Linux and in a ZIP."""
+    kept = []
+    for c in unicodedata.normalize("NFKD", str(app["name"] or "")):
+        if unicodedata.combining(c) and kept and kept[-1].isascii():
+            continue  # an accent on a Latin letter; other scripts keep theirs (ガ stays ガ)
+        kept.append(c)
+    text = unicodedata.normalize("NFKC", "".join(kept)).casefold()
+    text = re.sub(r"[^\w]+|_+", "-", text).strip("-")[:60].strip("-") or "app"
+    return f"{text}-{app['id']}"
+
+
+def download_name(app, row) -> str:
+    """The file name of a frozen revision `row` of the application:
+    `<slug>-rev<N>-<first 12 of the content revision>.zip`."""
+    return f"{slug(app)}-rev{row['rev']}-{row['revision'][:12]}.zip"
 
 
 # -- revisions ----------------------------------------------------------------------------------
