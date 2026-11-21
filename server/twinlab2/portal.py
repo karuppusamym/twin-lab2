@@ -21,11 +21,13 @@ from twinlab2 import artifacts
 from twinlab2 import db as database
 from twinlab2 import event_ids
 from twinlab2 import independent
+from twinlab2 import interfaces
 from twinlab2 import jobqueue
 from twinlab2 import packages
 from twinlab2 import registry
 from twinlab2 import scenarios
 from twinlab2 import verification as commit_checks
+from twinlab2_contract import package
 
 LOCAL = auth.LOCAL
 
@@ -359,14 +361,30 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
                 exe, _observed, why = desktop_target(targets)
                 if exe:
                     plan["desktop"] = exe
+    label_required = twin_label_required(manifest)
+    label = {"required": label_required, "text": package.TWIN_LABEL, "status": "not-required"}
+    if label_required:
+        plan["twin_label"] = True
+        label.update(status="not-checked", checked=[])
+        if deployment["url"] is not None and deployment["reported_commit"] == sha and deployment["url"].startswith("http"):
+            shown = page_has_label(base_url)
+            label["checked"].append("the deployment's start page (meta tag and banner)")
+            label["status"] = "pass" if shown else "fail"
     if deployment["url"] is not None and deployment["reported_commit"] == sha:
         twin = independent.run(runner or independent.TwinLabChecks(), scenario_rows, manifest,
                                base_url, app["lab_url"] or "", progress=progress, plan=plan)
         if plan.get("notes"):
             twin["origin_notes"] = plan["notes"]
         reasons += twin.get("problems") or []
+        if label_required:
+            missing = sorted({f"recording {r.get('recording')} step {seq}" for s in twin["scenarios"]
+                              for r in s.get("replays") or [] for seq in r.get("twin_label_missing") or []})
+            label["checked"].append("every replayed screen")
+            if missing:
+                label.update(status="fail", missing=missing[:20])
     if progress is not None:
         progress.stage("recording the results")
+    contract_checks = interfaces.verify(connection, manifest, app["id"], deployed_commit)
     tested, scope = False, None
     platform = commit_checks.PLATFORMS.get(app["target_platform"], app["target_platform"]) if app["target_platform"] else ""
     if twin is not None:  # what the replay covered, Tested or not
@@ -382,6 +400,11 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
                 for s in twin["scenarios"] if s["result"] != "pass"]
         if reset.get("result") == "fail":
             held.append("The reset check failed: " + (reset.get("notes") or "no notes") + ".")
+        if label["status"] == "fail":
+            held.append(f"The \u201c{package.TWIN_LABEL}\u201d label is missing"
+                        + (f" ({', '.join(label.get('missing') or [])})" if label.get("missing") else
+                           " on the deployment's start page") + ".")
+        held += [f"Interface: {c['what']}: {c['notes']}." for c in contract_checks if c["status"] == "fail"]
         try:
             scope = record_test(connection, release_id, sha, platform, app["launch"], reset.get("result"),
                                 reset.get("notes"), {s["id"]: s["result"] for s in twin["scenarios"]}, user,
@@ -416,6 +439,8 @@ def verify_release(connection, release_id, github=None, runner=None, base_url=No
         "scope": scope,
         # the results per dimension, each with what it covered
         "dimensions": dims,
+        # the twin's "AI generated Twin App" label and the interface contract's checks
+        "twin_label": label, "interfaces": contract_checks,
     }
     digest = commit_checks.put_report(connection, release_id, report)
     row = connection.execute("SELECT id FROM release_artifacts WHERE release_id = ? AND kind = 'verification_report' "
@@ -487,6 +512,23 @@ def deployed_commit(url, timeout=5):
     except (OSError, ValueError, AttributeError, http.client.HTTPException):
         return None
     return commit.lower() if isinstance(commit, str) and re.fullmatch(r"[0-9a-fA-F]{40}", commit) else None
+
+
+def twin_label_required(manifest) -> bool:
+    """A package of format 3 or later requires the twin's label (twinlab2_contract.package)."""
+    return (manifest.get("format") or 2) >= 3 or bool((manifest.get("target") or {}).get("twin_label"))
+
+
+def page_has_label(url, timeout=5) -> bool:
+    """The deployment's start page carries the twin meta tag and the banner."""
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(urllib.request.Request(url, headers={"Accept": "text/html"}), timeout=timeout) as response:
+            if response.status != 200:
+                return False
+            return package.html_has_label(response.read(512 * 1024).decode("utf-8", "replace"))
+    except (OSError, ValueError, http.client.HTTPException):
+        return False
 
 
 def verification(url, commit):

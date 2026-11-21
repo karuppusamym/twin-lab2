@@ -365,3 +365,49 @@ def markdown(data) -> list[str]:
             out.append(line)
         out.append("")
     return out
+
+
+def verify(db, manifest, app_id, deployed_commit) -> list[dict]:
+    """What Verify can check of a package's interface contracts against the deployments:
+    [{what, status (pass | fail | blocked | not-checked), notes}]. A shared identifier this
+    application uses must be one its producer makes (fail otherwise: it holds Tested); each
+    producer this application consumes from must have a verified deployment that answers (blocked
+    otherwise: the cross-application replay cannot run, a peer being down is not this release's
+    fault). What a consumer does when its producer is down needs the producer stopped, and the API
+    and file schemas a live exchange: those are reported as not checked."""
+    out = []
+    for c in manifest.get("interfaces") or []:
+        names = {a.get("id"): a.get("name") for a in c.get("apps") or []}
+        for i in c.get("identifiers") or []:
+            if app_id not in (i.get("consumers") or []):
+                continue
+            ok = i.get("producer") is not None and i.get("produced")
+            out.append({"what": f"shared identifier {i.get('name')}", "status": "pass" if ok else "fail",
+                        "notes": (f"produced by {names.get(i.get('producer'))} with the value {i.get('value')}" if ok else
+                                  f"{names.get(i.get('producer'), 'no application')} never produces it")})
+        producers = []
+        for r in c.get("relationships") or []:
+            if r.get("consumer") == app_id and r.get("producer") not in producers:
+                producers.append(r.get("producer"))
+        for producer in producers:
+            row = db.execute(
+                "SELECT deployments.url FROM deployments JOIN releases ON releases.id = deployments.release_id "
+                "WHERE releases.app_id = ? AND deployments.verification = 'verified' ORDER BY releases.id DESC LIMIT 1",
+                (producer,)).fetchone()
+            name = names.get(producer, f"application {producer}")
+            if row is None:
+                out.append({"what": f"peer {name}", "status": "blocked",
+                            "notes": "no verified deployment: start it first (launch order " +
+                                     " → ".join(str(names.get(a, a)) for a in c.get("launch_order") or []) + ")"})
+            elif deployed_commit(row["url"]) is None:
+                out.append({"what": f"peer {name}", "status": "blocked", "notes": f"{row['url']} does not answer"})
+            else:
+                out.append({"what": f"peer {name}", "status": "pass", "notes": f"{row['url']} answers"})
+        for r in c.get("relationships") or []:
+            if r.get("consumer") == app_id:
+                out.append({"what": f"when {names.get(r.get('producer'))} is down", "status": "not-checked",
+                            "notes": (r.get("when_down") or "not written") + " (needs the producer stopped)"})
+                if r.get("kind") in ("api", "file"):
+                    out.append({"what": f"{r['kind']} schema from {names.get(r.get('producer'))}", "status": "not-checked",
+                                "notes": "needs a live exchange between the two deployments"})
+    return out

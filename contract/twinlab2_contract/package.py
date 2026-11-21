@@ -189,3 +189,83 @@ def upgrade(doc) -> dict:
     out.setdefault("visual_baselines", [])
     out.setdefault("interfaces", [])
     return out
+
+
+# -- the "AI generated Twin App" label -------------------------------------------------------------
+# Every rebuilt application shows that it is an AI generated twin, on every screen. The package
+# requires it (`target.twin_label`), the validator refuses a package without the requirement, and
+# Verify checks it on every replayed screen and leaves it out of the structural and visual
+# comparisons (it is not part of the original), so it never makes a step differ.
+
+TWIN_LABEL = "AI generated Twin App"
+TWIN_META = "twin-app"  # web: <meta name="twin-app" content="AI generated Twin App">
+TWIN_ATTR = "data-twin-app"  # web: the banner element carries it
+TWIN_AID = "TwinAppLabel"  # desktop: the AutomationId of the status-bar or footer label
+TWIN_TITLE_SUFFIX = " – " + TWIN_LABEL  # desktop: appended to every top-level window title
+_META = re.compile(r"<meta\b[^>]*\bname\s*=\s*[\"']?" + TWIN_META + r"[\"'\s>][^>]*>", re.I)
+_BANNER = re.compile(r"<(?P<tag>[a-z][a-z0-9]*)\b[^>]*\b" + TWIN_ATTR + r"\b[^>]*>.*?</(?P=tag)\s*>", re.I | re.S)
+
+
+def twin_label(surface, host_rows=None) -> dict:
+    """The label requirement a package carries for one surface. `host_rows`: the rows a 3270
+    application's recorded screens use (the label goes on the last row none of them uses, else
+    the last row of a 24-row screen)."""
+    req = {"text": TWIN_LABEL, "surfaces": {}}
+    if surface == "web":
+        req["surfaces"]["web"] = {
+            "meta": f'<meta name="{TWIN_META}" content="{TWIN_LABEL}">',
+            "banner": f'a fixed banner on every page, an element with the attribute {TWIN_ATTR} whose text is '
+                      f'"{TWIN_LABEL}", outside every recorded element (for example the first child of <body>, '
+                      "position: fixed), not interactive"}
+    elif surface == "desktop":
+        req["surfaces"]["desktop"] = {
+            "title_suffix": TWIN_TITLE_SUFFIX,
+            "status": f'a status-bar or footer label (AutomationId "{TWIN_AID}", ControlType Text) whose text is '
+                      f'"{TWIN_LABEL}", in every top-level window'}
+    elif surface == "mainframe":
+        used = {r for r in host_rows or [] if isinstance(r, int)}
+        row = next((r for r in range(24, 1, -1) if r not in used), 24)
+        req["surfaces"]["mainframe"] = {
+            "row": row, "col": 2,
+            "field": f'a protected field at row {row}, column 2, with the text "{TWIN_LABEL}", on every screen; '
+                     "it moves no recorded field (the row is one the recorded screens leave empty)"}
+    return req
+
+
+def html_has_label(html) -> bool:
+    """The page carries the twin meta tag and the banner with its text."""
+    html = str(html or "")
+    banner = _BANNER.search(html)
+    return bool(_META.search(html)) and banner is not None and TWIN_LABEL in banner.group(0)
+
+
+def strip_label_html(html) -> str:
+    """The page without the twin meta tag and banner: what the structural comparison reads."""
+    return _BANNER.sub("", _META.sub("", str(html or "")))
+
+
+def tree_has_label(tree) -> bool:
+    """A desktop window tree shows the title suffix and the label control."""
+    if not isinstance(tree, dict) or not str(tree.get("name") or "").endswith(TWIN_TITLE_SUFFIX):
+        return False
+    stack = list(tree.get("children") or [])
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if node.get("aid") == TWIN_AID and TWIN_LABEL in str(node.get("name") or ""):
+                return True
+            stack += node.get("children") or []
+    return False
+
+
+def strip_label_tree(tree):
+    """The window tree without the label control and the title suffix."""
+    if not isinstance(tree, dict):
+        return tree
+    out = dict(tree)
+    if str(out.get("name") or "").endswith(TWIN_TITLE_SUFFIX):
+        out["name"] = out["name"][: -len(TWIN_TITLE_SUFFIX)]
+    if out.get("children"):
+        out["children"] = [strip_label_tree(c) for c in out["children"]
+                           if not (isinstance(c, dict) and c.get("aid") == TWIN_AID)]
+    return out

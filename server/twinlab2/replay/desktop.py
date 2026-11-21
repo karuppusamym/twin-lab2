@@ -654,6 +654,14 @@ def verify(exe: str, recording: Path, *, values: dict[str, str | list[str]] | No
                     if after is not None:
                         tree = next((t for h, t in live.windows() if h == after), None)
                     if tree is not None:
+                        from twinlab2.replay.fidelity import twin_label_required
+                        from twinlab2_contract import package
+
+                        if twin_label_required():  # the twin's own label: required, never compared
+                            if not package.tree_has_label(tree):
+                                diffs.append(Difference(step=seq, element="(AI generated Twin App label)",
+                                                        check="twin_label", expected=package.TWIN_LABEL, actual=None))
+                            tree = package.strip_label_tree(tree)
                         diffs += compare_trees(recorded, tree, seq, supplied)
                         late = bool(step.get("tree_late"))
                         if late:

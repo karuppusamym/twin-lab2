@@ -262,6 +262,8 @@ def manifest(db, app_id, version_path=".twinlab/version"):
     data["visual_baselines"], baseline_files = baselines.for_pack(db, app_id)
     files.update(baseline_files)
     data["interfaces"] = interfaces.for_pack(db, app_id)
+    rows = [c.get("row") for sc in screens for st in sc.get("states") or [] for c in host_fields(st)]
+    data["target"]["twin_label"] = package.twin_label(surface_of(data), rows)
     data["confirmations"] = [{"item": r["item"], "note": redact.redact_text(r["note"])} for r in db.execute(
         "SELECT item, note FROM item_confirmations WHERE app_id = ? ORDER BY item", (app_id,))]
     for section, label in (("scenarios", "Scenario text"), ("evidence", "Recorded steps and notes"),
@@ -339,6 +341,7 @@ def task_markdown(data, revision, version_path, completeness=None):
         out += screens_markdown(data)
     elif surface_of(data) == "mainframe":
         out += host_screens_markdown(data)
+    out += twin_label_markdown(data)
     out += baselines_markdown(data)
     out += interfaces.markdown(data)
     out += unrecorded_markdown(data)
@@ -549,6 +552,22 @@ def screens_markdown(data):
                 out.append(f"- from {_state_name(data['screens'], sc['screen'], t['from_state'])}: {via} → {to}{times}")
             out.append("")
     return out
+
+
+def twin_label_markdown(data):
+    """The required "AI generated Twin App" label (twinlab2_contract.package)."""
+    label = (data.get("target") or {}).get("twin_label")
+    if not label:
+        return []
+    out = [f"## Required: the \"{label['text']}\" label", "",
+           "Every screen of the copy shows that it is an AI generated twin, so nobody takes it for the original. "
+           "This is not optional and not part of the recorded screens: Verify checks it on every replayed screen, "
+           "leaves it out of the structural and visual comparisons, and a release without it cannot become Tested. "
+           "Do not remove it, hide it or make it conditional.", ""]
+    for surface, spec in label["surfaces"].items():
+        for key, text in spec.items():
+            out.append(f"- {surface} {key.replace('_', ' ')}: " + (f"`{text}`" if key in ("meta", "title_suffix") else str(text)))
+    return out + [""]
 
 
 def baselines_markdown(data):

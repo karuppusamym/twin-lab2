@@ -138,7 +138,7 @@ class TwinLabChecks:
         except Exception as error:  # noqa: BLE001 - visual is reported, never blocks the replay
             return None, f"none (the template could not be generated: {type(error).__name__}: {error})"[:300]
 
-    def replay(self, recording_id, base_url, surface="web", target=None, origins=None):
+    def replay(self, recording_id, base_url, surface="web", target=None, origins=None, twin_label=False):
         """The report of one recording replayed on one surface (web: against base_url, or each
         source in `origins` against its replica; mainframe: the TN3270 host `target`; desktop:
         the executable `target`), as a dict with at least `status`; None when the recording has
@@ -149,6 +149,8 @@ class TwinLabChecks:
         with tempfile.TemporaryDirectory() as work:
             out = Path(work) / "report.json"
             cmd = [sys.executable, "-m", "twinlab2.replay", str(folder), "--surface", surface, "--json", str(out)]
+            if twin_label:  # a format-3 package: the twin's label on every screen, out of the comparisons
+                cmd.append("--twin-label")
             visual_from = None
             if surface == "web":
                 if importlib.util.find_spec("playwright") is None:
@@ -227,10 +229,11 @@ def _surfaces_of(runner, recording_id):
 
 def _replay(runner, recording_id, surface, base_url, plan):
     origins = ((plan.get("web") or {}).get("origins") or None) if surface == "web" else None
+    label = {"twin_label": True} if plan.get("twin_label") else {}
     if surface == "web" and not origins:
-        return runner.replay(recording_id, base_url)
+        return runner.replay(recording_id, base_url, **label)
     target = plan.get(surface) if surface != "web" else None
-    return runner.replay(recording_id, base_url, surface=surface, target=target, origins=origins)
+    return runner.replay(recording_id, base_url, surface=surface, target=target, origins=origins, **label)
 
 
 def run(runner, scenarios, manifest, base_url, lab_url, progress=None, plan=None):
@@ -285,6 +288,8 @@ def run(runner, scenarios, manifest, base_url, lab_url, progress=None, plan=None
                     "recording": recording_id, "surface": result.get("surface") or surface,
                     "status": result.get("status"), "verdict": result.get("verdict"),
                     "problems": list(result.get("problems") or [])[:20],
+                    "twin_label_missing": [st.get("seq", st.get("step")) for st in result.get("steps") or []
+                                           if any(d.get("check") == "twin_label" for d in st.get("differences") or [])],
                     "cases": [{key: case.get(key) for key in ("id", "check", "required", "status", "note")}
                               for case in result.get("cases") or []]})
         entry["outcome"] = outcome(reports)
