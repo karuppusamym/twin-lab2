@@ -1,0 +1,4070 @@
+openapi: 3.1.0
+info:
+  title: TwinLab2 portal API
+  version: 1.0.0
+  summary: The JSON API behind the TwinLab2 web app (web/), and the recorder agent API.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  description: |
+    The portal's JSON API under `/api/v1/`. Every page of the web app (`web/`) is built from it,
+    with the same information and actions the server-rendered pages offered.
+
+    ## Sign-in
+    * The web app is served from the same origin as the API and uses relative `/api/v1` URLs. The
+      session is the portal's cookie (`cookieSession`), so the app works unchanged when Flask serves
+      it and when it sits behind the OpenShift OAuth proxy.
+    * `GET /api/v1/session` says who is signed in, how (`auth_mode`), whether a local sign-in form
+      exists, and the caller's role on each application.
+    * Local users sign in with `POST /api/v1/session` and out with `DELETE /api/v1/session`.
+      Behind the OAuth proxy (`auth_mode: proxy`) the user comes from `X-Forwarded-User` and there
+      is no local sign-in or sign-out.
+
+    ## CSRF
+    Every request other than GET, HEAD and OPTIONS carries the header `X-CSRF-Token` with the
+    `csrf_token` from `GET /api/v1/session` (the session's form token). A missing or wrong token is
+    refused with 403 problem `code: csrf`. `POST /api/v1/session` (sign in) needs it too: the token
+    exists before anyone signs in.
+
+    ## Roles
+    Roles are per application and ranked: `viewer` < `builder` < `owner`. A portal admin reads every
+    application (as a viewer), manages users, roles and the build setup, but does not get builder or
+    owner rights on an application without being assigned them. Each operation states its rule in
+    its description and in `x-twinlab-role` (`signed-in`, `public`, `viewer`, `builder`, `owner`,
+    `owner-or-admin`, `admin`, `agent-token`, or a rule described in words). The web app shows and
+    hides controls from these roles; the server enforces every rule.
+
+    * Recordings and uploaded evidence are **restricted evidence**: a recording is readable only by
+      who added it (imported it, or paired the machine that sent it) and by the owners of the
+      applications it is linked to; an application's evidence and scenarios only by its owners.
+    * Freezing a builder package needs the owner's explicit approval **and** the SHA-256 of the
+      previewed draft: if the draft changed since the preview, the freeze is refused with 409.
+    * Builders (and owners) get frozen packages, start build sessions and chat with them.
+
+    ## Errors
+    Every error is `application/problem+json` (RFC 9457) with the `Problem` shape: `status`,
+    `title`, `detail` (the sentence to show), optionally `code` and per-field `errors`.
+
+    ## Downloads
+    Download operations answer with the file (`application/zip`, `application/json`) or with a 302
+    redirect to a short-lived presigned URL when artifact storage is S3. The web app links to them
+    directly (same-origin cookie), so they are plain `<a href>` links.
+
+    ## Recorder agent API
+    The endpoints tagged `agent` (`/api/agent/...`, `/api/uploads...`) are used by the Windows
+    recorder with its machine token (`agentToken`). They are unchanged and documented here only for
+    completeness; RECORDER-CONTRACT.md is their contract.
+servers:
+  - url: /
+    description: Same origin as the web app.
+security:
+  - cookieSession: []
+tags:
+  - name: session
+    description: Sign-in, sign-out, who am I.
+  - name: apps
+    description: The catalog of applications, their details, roles, setup and merging.
+  - name: evidence
+    description: Restricted evidence of an application (owners only) and its scenarios.
+  - name: recordings
+    description: Recordings, the applications and steps each holds, and their assignment to applications.
+  - name: capture
+    description: Requesting a recording on a paired machine.
+  - name: machines
+    description: Recorder machines and pairing codes.
+  - name: automations
+    description: Automations (bots and processes) recordings are made for.
+  - name: packages
+    description: Builder packages per application, the draft preview and freezing.
+  - name: builds
+    description: Build sessions (Devin, Claude, Copilot), their chat, and comparing results.
+  - name: releases
+    description: Releases Packaged → Tested → Published, deployments and verification.
+  - name: setup
+    description: Setup / Advanced, build setup (admins).
+  - name: users
+    description: Local users and portal admins (admins).
+  - name: audit
+    description: Append-only audit history.
+  - name: agent
+    description: The recorder agent API (machine token). Unchanged; see RECORDER-CONTRACT.md.
+
+paths:
+  # ---------------------------------------------------------------------------------------------
+  # session
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/session:
+    get:
+      tags: [session]
+      operationId: getSession
+      summary: Who is signed in, and their roles
+      description: Always 200. `signed_in` is false when nobody is signed in (then `user` is null).
+      x-twinlab-role: public
+      security: []
+      responses:
+        "200":
+          description: The current session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+              examples:
+                owner: { $ref: "#/components/examples/SessionOwner" }
+                builder: { $ref: "#/components/examples/SessionBuilder" }
+                viewer: { $ref: "#/components/examples/SessionViewer" }
+                admin: { $ref: "#/components/examples/SessionAdmin" }
+                signedOut: { $ref: "#/components/examples/SessionSignedOut" }
+    post:
+      tags: [session]
+      operationId: signIn
+      summary: Sign in a local user
+      description: Only when `login_available` (not behind the OAuth proxy). Wrong name or password is 401.
+      x-twinlab-role: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SignIn" }
+            examples:
+              ana: { value: { user: ana, password: correct horse } }
+      responses:
+        "200":
+          description: Signed in; the new session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+              examples:
+                owner: { $ref: "#/components/examples/SessionOwner" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401":
+          description: Wrong name or password.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+              examples:
+                wrong:
+                  value: { type: about:blank, title: Unauthorized, status: 401, detail: Wrong name or password., code: wrong_credentials }
+        "404":
+          description: No local sign-in here (behind the OAuth proxy, or no local users).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+    delete:
+      tags: [session]
+      operationId: signOut
+      summary: Sign out
+      x-twinlab-role: public
+      security: []
+      responses:
+        "204": { description: "Signed out." }
+
+  # ---------------------------------------------------------------------------------------------
+  # apps
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/apps:
+    get:
+      tags: [apps]
+      operationId: listApps
+      summary: The catalog (Applications page)
+      description: |
+        The applications the caller has any role on (an admin: all), each with its journey and its
+        latest Tested or Published release; and the recordings the caller may open (restricted evidence).
+      x-twinlab-role: signed-in
+      responses:
+        "200":
+          description: The catalog.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Catalog" }
+              examples:
+                catalog: { $ref: "#/components/examples/Catalog" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [apps]
+      operationId: createApp
+      summary: Add an application
+      description: Whoever creates an application owns it; a named `owner` is assigned the owner role too.
+      x-twinlab-role: signed-in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewApp" }
+            examples:
+              new: { value: { name: Order Portal, owner: ana, purpose: Order entry demo } }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppRef" }
+              examples:
+                created: { value: { id: 4, name: Order Portal } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/apps/{app_id}:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    get:
+      tags: [apps]
+      operationId: getApp
+      summary: One application (its page)
+      description: |
+        Viewer and up. `packages` (builder-approved revisions) is empty unless the caller is a
+        builder or owner. Owner-only parts of the page (evidence, scenarios, merge) come from their
+        own endpoints.
+      x-twinlab-role: viewer
+      responses:
+        "200":
+          description: The application.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppDetail" }
+              examples:
+                owner: { $ref: "#/components/examples/AppDetailOwner" }
+                viewer: { $ref: "#/components/examples/AppDetailViewer" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [apps]
+      operationId: updateApp
+      summary: Change name, purpose, repository or scope decision
+      description: |
+        Owner. Only the fields sent change. `status` is the scope decision (audited as `app.status`);
+        `owner` assigns that user the owner role.
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AppUpdate" }
+            examples:
+              purpose: { value: { purpose: Invoice from saved orders } }
+      responses:
+        "200":
+          description: The changed application.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppDetail" }
+              examples:
+                owner: { $ref: "#/components/examples/AppDetailOwner" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/apps/{app_id}/roles:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    get:
+      tags: [apps]
+      operationId: listRoles
+      summary: Who has access to the application
+      x-twinlab-role: viewer
+      responses:
+        "200":
+          description: The role assignments.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoleList" }
+              examples:
+                roles: { $ref: "#/components/examples/Roles" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/apps/{app_id}/roles/{user_name}:
+    parameters:
+      - { $ref: "#/components/parameters/AppId" }
+      - name: user_name
+        in: path
+        required: true
+        schema: { type: string, maxLength: 120 }
+    put:
+      tags: [apps]
+      operationId: assignRole
+      summary: Assign a role
+      description: The application's owners and portal admins. Audited as `role.assign`.
+      x-twinlab-role: owner-or-admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleUpdate" }
+            examples:
+              builder: { value: { role: builder } }
+      responses:
+        "200":
+          description: The assignments after the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoleList" }
+              examples:
+                roles: { $ref: "#/components/examples/Roles" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      tags: [apps]
+      operationId: removeRole
+      summary: Remove a role
+      description: The application's owners and portal admins. The last owner cannot be removed (400). Audited as `role.remove`.
+      x-twinlab-role: owner-or-admin
+      responses:
+        "200":
+          description: The assignments after the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoleList" }
+              examples:
+                roles: { $ref: "#/components/examples/Roles" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/apps/{app_id}/history:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    get:
+      tags: [audit]
+      operationId: getAppHistory
+      summary: The application's audit history
+      description: Its owners and portal admins. Append-only, newest first.
+      x-twinlab-role: owner-or-admin
+      responses:
+        "200":
+          description: The history.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/History" }
+              examples:
+                history: { $ref: "#/components/examples/History" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/apps/{app_id}/setup:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    get:
+      tags: [apps]
+      operationId: getAppSetup
+      summary: Setup / Advanced of an application
+      description: Owner. Identities, Git repository, release verification settings, deployments.
+      x-twinlab-role: owner
+      responses:
+        "200":
+          description: The setup.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppSetup" }
+              examples:
+                setup: { $ref: "#/components/examples/AppSetup" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/apps/{app_id}/identities:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    post:
+      tags: [apps]
+      operationId: addIdentity
+      summary: Add an identity (executable, web address, mainframe host, desktop product)
+      description: Owner. 409 when another application already has it or matches the same host and path.
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdentityInput" }
+            examples:
+              web: { value: { key: https://billing.example.test/desk } }
+      responses:
+        "201":
+          description: Added; the setup after the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppSetup" }
+              examples:
+                setup: { $ref: "#/components/examples/AppSetup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/apps/{app_id}/url-match:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    put:
+      tags: [apps]
+      operationId: setUrlMatch
+      summary: How the application's web addresses match (path or the whole host)
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UrlMatchInput" }
+            examples:
+              host: { value: { url_match: host } }
+      responses:
+        "200":
+          description: The setup after the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppSetup" }
+              examples:
+                setup: { $ref: "#/components/examples/AppSetup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/apps/{app_id}/verification-settings:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    put:
+      tags: [releases]
+      operationId: saveVerificationSettings
+      summary: What a release needs before it is Tested
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerificationSettings" }
+            examples:
+              web: { value: { required_checks: "build\ntest (*)", target_platform: web, windows_check_pattern: "", lab_url: "", launch: Open the demo URL. } }
+      responses:
+        "200":
+          description: The setup after the change.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppSetup" }
+              examples:
+                setup: { $ref: "#/components/examples/AppSetup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/apps/{app_id}/verify-commit:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    post:
+      tags: [releases]
+      operationId: verifyCommit
+      summary: Verify this build (a repository's commit, optionally a build session's)
+      description: Owner. Registers or finds the release of the commit and runs the release checks. Audited as `release.verify`.
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifyCommitInput" }
+            examples:
+              commit: { value: { repo: example/billing-desk-demo, sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, pr_number: 12 } }
+      responses:
+        "200":
+          description: The outcome; the release to open.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VerifyOutcome" }
+              examples:
+                outcome: { $ref: "#/components/examples/VerifyOutcome" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/apps/{app_id}/merge-plan:
+    parameters:
+      - { $ref: "#/components/parameters/AppId" }
+      - name: into
+        in: query
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [apps]
+      operationId: getMergePlan
+      summary: Preview merging this application into another
+      description: Owner of both applications. Nothing changes; `fingerprint` confirms exactly this plan.
+      x-twinlab-role: owner of both applications
+      responses:
+        "200":
+          description: The plan.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MergePlan" }
+              examples:
+                plan: { $ref: "#/components/examples/MergePlan" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/apps/{app_id}/merge:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    post:
+      tags: [apps]
+      operationId: mergeApp
+      summary: Merge this application into another
+      description: |
+        Owner of both. `confirm` is the plan's fingerprint: if the applications changed since the
+        preview, 409 `code: plan_changed` (preview again). Blockers are 400. Audited as `app.merge`.
+      x-twinlab-role: owner of both applications
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MergeInput" }
+            examples:
+              merge: { value: { into: 1, confirm: 0a1b2c3d4e5f6a7b } }
+      responses:
+        "200":
+          description: Merged; the surviving application.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppRef" }
+              examples:
+                merged: { value: { id: 1, name: Billing Desk } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  # ---------------------------------------------------------------------------------------------
+  # evidence and scenarios (restricted: owners)
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/apps/{app_id}/evidence:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    get:
+      tags: [evidence]
+      operationId: getAppEvidence
+      summary: Restricted evidence of the application
+      description: |
+        Owner only (restricted evidence). Recorded flows with their steps, linked recordings,
+        uploaded evidence, automations, and the applications it could be merged into.
+      x-twinlab-role: owner
+      responses:
+        "200":
+          description: The evidence.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppEvidence" }
+              examples:
+                evidence: { $ref: "#/components/examples/AppEvidence" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/apps/{app_id}/attachments:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    post:
+      tags: [evidence]
+      operationId: uploadAttachment
+      summary: Upload restricted evidence
+      description: |
+        Owner. Uploading never shares the file: it enters a builder package only once marked
+        `reviewed` or `synthetic`, and is still redacted. 1 byte to 4 MiB; the extension must suit
+        the kind. Audited as `evidence.upload`.
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: "#/components/schemas/AttachmentUpload" }
+      responses:
+        "201":
+          description: Stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Attachment" }
+              examples:
+                attachment: { $ref: "#/components/examples/Attachment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/apps/{app_id}/attachments/{attachment_id}:
+    parameters:
+      - { $ref: "#/components/parameters/AppId" }
+      - { name: attachment_id, in: path, required: true, schema: { type: integer } }
+    patch:
+      tags: [evidence]
+      operationId: shareAttachment
+      summary: The owner's review of an attachment
+      description: Owner. Audited as `evidence.share`.
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ShareInput" }
+            examples:
+              reviewed: { value: { share: reviewed } }
+      responses:
+        "200":
+          description: Changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Attachment" }
+              examples:
+                attachment: { $ref: "#/components/examples/Attachment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [evidence]
+      operationId: removeAttachment
+      summary: Remove an attachment
+      description: Owner. Audited as `evidence.remove`.
+      x-twinlab-role: owner
+      responses:
+        "204": { description: "Removed." }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/apps/{app_id}/scenarios:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    get:
+      tags: [evidence]
+      operationId: listScenarios
+      summary: Business scenarios (Review required behaviour)
+      description: Owner. With the form's field labels and limits, and the selected recorded events a scenario can link to.
+      x-twinlab-role: owner
+      responses:
+        "200":
+          description: The scenarios.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScenarioList" }
+              examples:
+                scenarios: { $ref: "#/components/examples/ScenarioList" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [evidence]
+      operationId: createScenario
+      summary: Add a scenario
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScenarioInput" }
+            examples:
+              invoice: { $ref: "#/components/examples/ScenarioInput" }
+      responses:
+        "201":
+          description: Added.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Scenario" }
+              examples:
+                scenario: { $ref: "#/components/examples/Scenario" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/apps/{app_id}/scenarios/{scenario_id}:
+    parameters:
+      - { $ref: "#/components/parameters/AppId" }
+      - { name: scenario_id, in: path, required: true, schema: { type: integer } }
+    put:
+      tags: [evidence]
+      operationId: updateScenario
+      summary: Save a scenario
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScenarioInput" }
+            examples:
+              invoice: { $ref: "#/components/examples/ScenarioInput" }
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Scenario" }
+              examples:
+                scenario: { $ref: "#/components/examples/Scenario" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [evidence]
+      operationId: removeScenario
+      summary: Remove a scenario
+      x-twinlab-role: owner
+      responses:
+        "204": { description: "Removed." }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------------------------
+  # packages
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/apps/{app_id}/packages:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    get:
+      tags: [packages]
+      operationId: listPackages
+      summary: Builder-approved package revisions, newest first
+      x-twinlab-role: builder
+      responses:
+        "200":
+          description: The revisions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PackageList" }
+              examples:
+                packages: { $ref: "#/components/examples/PackageList" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [packages]
+      operationId: freezePackage
+      summary: Freeze the previewed draft as the next revision
+      description: |
+        Owner. The owner's explicit approval (`approve: true`) of exactly the bytes previewed:
+        `sha256` must be the SHA-256 of the current draft from `GET .../package-draft`. If the
+        draft changed since the preview, or nothing changed since the latest revision, 409
+        (`code: draft_changed` / `unchanged`). Needs a business scenario (400). Audited as `package.freeze`.
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FreezeInput" }
+            examples:
+              freeze: { value: { sha256: 8d2f4b6a0c1e3f5a7b9d1c3e5f7a9b1d3c5e7f9a1b3d5c7e9f1a3b5d7c9e1f3a, summary: Adds the unpaid-order scenario., approve: true } }
+      responses:
+        "201":
+          description: Frozen; the new revision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PackageRevision" }
+              examples:
+                rev3: { $ref: "#/components/examples/PackageRevision3" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: The draft changed since the preview (or is unchanged since the latest revision).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+              examples:
+                changed:
+                  value: { type: about:blank, title: Conflict, status: 409, detail: The package changed since you previewed it. Preview it again before approving., code: draft_changed }
+
+  /api/v1/apps/{app_id}/package-draft:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    get:
+      tags: [packages]
+      operationId: previewPackageDraft
+      summary: The draft package exactly as freezing would store it
+      description: |
+        Owner. Every file with its size and SHA-256 (text files in full), the archive's SHA-256 to
+        approve, and the pre-freeze report (what was excluded or redacted, and why). 400 without a
+        business scenario.
+      x-twinlab-role: owner
+      responses:
+        "200":
+          description: The draft.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PackageDraft" }
+              examples:
+                draft: { $ref: "#/components/examples/PackageDraft" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/apps/{app_id}/packages/{rev}:
+    parameters:
+      - { $ref: "#/components/parameters/AppId" }
+      - { $ref: "#/components/parameters/Rev" }
+    get:
+      tags: [packages]
+      operationId: getPackage
+      summary: One frozen revision
+      description: Builder. `report` (the pre-freeze report) is null unless the caller is an owner.
+      x-twinlab-role: builder
+      responses:
+        "200":
+          description: The revision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PackageRevision" }
+              examples:
+                rev2: { $ref: "#/components/examples/PackageRevision2" }
+                rev3: { $ref: "#/components/examples/PackageRevision3" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/apps/{app_id}/packages/{rev}/download:
+    parameters:
+      - { $ref: "#/components/parameters/AppId" }
+      - { $ref: "#/components/parameters/Rev" }
+    get:
+      tags: [packages]
+      operationId: downloadPackage
+      summary: Download a frozen revision
+      description: Builder. Checked against the approved SHA-256 (500 if the stored bytes differ). Audited as `package.download`.
+      x-twinlab-role: builder
+      responses:
+        "200": { $ref: "#/components/responses/Zip" }
+        "302": { $ref: "#/components/responses/Presigned" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/apps/{app_id}/build-pack:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    get:
+      tags: [packages]
+      operationId: downloadLatestPackage
+      summary: Download the latest builder-approved package
+      description: Builder. 400 before an owner has frozen one.
+      x-twinlab-role: builder
+      responses:
+        "200": { $ref: "#/components/responses/Zip" }
+        "302": { $ref: "#/components/responses/Presigned" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/apps/{app_id}/briefs/{revision}/download:
+    parameters:
+      - { $ref: "#/components/parameters/AppId" }
+      - { name: revision, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [packages]
+      operationId: downloadByRevision
+      summary: Download a package by its content revision
+      description: Builder for a frozen revision; a brief stored before packages were frozen only for owners.
+      x-twinlab-role: builder (owner for a legacy brief)
+      responses:
+        "200": { $ref: "#/components/responses/Zip" }
+        "302": { $ref: "#/components/responses/Presigned" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------------------------------------
+  # builds
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/apps/{app_id}/builds:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    get:
+      tags: [builds]
+      operationId: getBuildPage
+      summary: Build sessions of the application (Build page)
+      description: |
+        Builder. The approved package (`pack`, null with `problem` before an owner froze one), the
+        providers and whether each is ready, connected repositories, revisions, and every session.
+      x-twinlab-role: builder
+      responses:
+        "200":
+          description: The build page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BuildPage" }
+              examples:
+                page: { $ref: "#/components/examples/BuildPage" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [builds]
+      operationId: startBuild
+      summary: Start a build session
+      description: |
+        Builder. Sends only an owner-frozen revision. `request_key` makes the start idempotent: the
+        same key answers the session it already started (`created: false`, with a `notice`).
+        Audited as `build.start`.
+      x-twinlab-role: builder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewBuild" }
+            examples:
+              claude: { value: { provider: claude, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, repo: example/billing-desk-demo, base_branch: main, change_summary: Adds the unpaid-order scenario., budget: 20, request_key: 6f1c2a9e0b7d4c3a8e5f1b2d3c4a5e6f } }
+      responses:
+        "201":
+          description: Started (or the session this request key already started).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BuildStarted" }
+              examples:
+                started: { $ref: "#/components/examples/BuildStarted" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/apps/{app_id}/builds/compare:
+    parameters: [{ $ref: "#/components/parameters/AppId" }]
+    get:
+      tags: [builds]
+      operationId: compareBuilds
+      summary: Compare results of build sessions
+      description: Builder. Without `session`, every session with a commit.
+      x-twinlab-role: builder
+      parameters:
+        - name: session
+          in: query
+          style: form
+          explode: true
+          schema: { type: array, items: { type: integer } }
+      responses:
+        "200":
+          description: The comparison.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Comparison" }
+              examples:
+                comparison: { $ref: "#/components/examples/Comparison" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [builds]
+      operationId: runComparison
+      summary: Run the acceptance checks on every candidate
+      description: Owner. Release verification of each session's commit. Per-session refusals come back in `errors`.
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CompareInput" }
+            examples:
+              two: { value: { sessions: [7, 8] } }
+      responses:
+        "200":
+          description: The comparison after the checks.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Comparison" }
+              examples:
+                comparison: { $ref: "#/components/examples/Comparison" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/builds/{build_id}:
+    parameters: [{ $ref: "#/components/parameters/BuildId" }]
+    get:
+      tags: [builds]
+      operationId: getBuild
+      summary: One build session with its conversation
+      description: Builder of the session's application. Poll while `build.final` is false (the old page refreshed every 10 s).
+      x-twinlab-role: builder
+      responses:
+        "200":
+          description: The session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BuildDetail" }
+              examples:
+                waiting: { $ref: "#/components/examples/BuildDetail" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/builds/{build_id}/cancel:
+    parameters: [{ $ref: "#/components/parameters/BuildId" }]
+    post:
+      tags: [builds]
+      operationId: cancelBuild
+      summary: Cancel the session
+      x-twinlab-role: builder
+      responses:
+        "200": { $ref: "#/components/responses/BuildDetail" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/builds/{build_id}/interrupt:
+    parameters: [{ $ref: "#/components/parameters/BuildId" }]
+    post:
+      tags: [builds]
+      operationId: interruptBuild
+      summary: Interrupt the provider (when it can be interrupted)
+      x-twinlab-role: builder
+      responses:
+        "200": { $ref: "#/components/responses/BuildDetail" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/builds/{build_id}/retry:
+    parameters: [{ $ref: "#/components/parameters/BuildId" }]
+    post:
+      tags: [builds]
+      operationId: retryBuild
+      summary: Retry a failed or cancelled session as a new session
+      x-twinlab-role: builder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RequestKey" }
+            examples:
+              key: { value: { request_key: 0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f } }
+      responses:
+        "201":
+          description: The new session (or the one this key already started).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BuildStarted" }
+              examples:
+                started: { $ref: "#/components/examples/BuildStarted" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/builds/{build_id}/messages:
+    parameters: [{ $ref: "#/components/parameters/BuildId" }]
+    post:
+      tags: [builds]
+      operationId: answerBuild
+      summary: Send an answer to the provider (chat)
+      description: |
+        Builder. A clarification is sent to the provider (audited as `build.answer`). With
+        `scope_change: true` it is **not** sent: it becomes a proposed scenario an owner reviews as a
+        new package revision, and `notice` says so.
+      x-twinlab-role: builder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnswerInput" }
+            examples:
+              answer: { value: { answer: VAT is added after the discount., scope_change: false, reply_to: 31, request_key: 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d } }
+      responses:
+        "201":
+          description: The message.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnswerResult" }
+              examples:
+                sent: { $ref: "#/components/examples/AnswerResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/builds/{build_id}/tool-decisions/{message_id}:
+    parameters:
+      - { $ref: "#/components/parameters/BuildId" }
+      - { name: message_id, in: path, required: true, schema: { type: integer } }
+    post:
+      tags: [builds]
+      operationId: decideTool
+      summary: Approve or deny a tool the provider asks to run
+      description: Builder. Audited as `build.tool_decision`.
+      x-twinlab-role: builder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ToolDecision" }
+            examples:
+              approve: { value: { decision: approve, request_key: "tool:32" } }
+      responses:
+        "200": { $ref: "#/components/responses/BuildDetail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  # ---------------------------------------------------------------------------------------------
+  # recordings
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/recordings:
+    get:
+      tags: [recordings]
+      operationId: listRecordings
+      summary: Recordings the caller may open
+      description: Restricted evidence. Only recordings the caller added, or that are linked to an application the caller owns.
+      x-twinlab-role: signed-in (filtered to the recording's reviewers)
+      responses:
+        "200":
+          description: The recordings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecordingList" }
+              examples:
+                recordings: { $ref: "#/components/examples/RecordingList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [recordings]
+      operationId: importRecording
+      summary: Import a Twin Lab recording (steps.jsonl)
+      description: |
+        Signed in. The recording id is the digest of its events. A recovered upload of the same
+        session merges by `event_id`; a conflicting event is 409. Audited as `recording.import`.
+      x-twinlab-role: signed-in
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: "#/components/schemas/RecordingImport" }
+      responses:
+        "201":
+          description: Imported.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecordingRef" }
+              examples:
+                imported: { value: { id: 9f2c4e1a7b3d5f60, name: Order to invoice } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/recordings/{recording_id}:
+    parameters: [{ $ref: "#/components/parameters/RecordingId" }]
+    get:
+      tags: [recordings]
+      operationId: getRecording
+      summary: One recording
+      description: |
+        Restricted evidence: its uploader and the owners of the applications it is linked to (else
+        403). Completeness, preflight, upload progress, evidence preview per application, and the
+        applications the recording holds, **each with its own steps and its own latest
+        builder-approved package** (null when there is none or the caller is not a builder of it).
+      x-twinlab-role: recording reviewer
+      responses:
+        "200":
+          description: The recording.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecordingDetail" }
+              examples:
+                twoApps: { $ref: "#/components/examples/RecordingDetail" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/recordings/{recording_id}/assignments/{app_id}:
+    parameters:
+      - { $ref: "#/components/parameters/RecordingId" }
+      - { $ref: "#/components/parameters/AppId" }
+    get:
+      tags: [recordings]
+      operationId: getAssignment
+      summary: The events of this recording assigned to an application
+      description: Owner of the application, and a reviewer of the recording.
+      x-twinlab-role: owner
+      responses:
+        "200":
+          description: "The assignment (`saved: false` when there is none yet)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Assignment" }
+              examples:
+                assignment: { $ref: "#/components/examples/Assignment" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [recordings]
+      operationId: saveAssignment
+      summary: Save the owner's review of the assignment
+      description: |
+        Owner. Events are chosen by `event_id` (their `seq` is a display order and may change).
+        Saving marks the link reviewed and clears the suggestions. Audited as `evidence.review`.
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AssignmentInput" }
+            examples:
+              save: { value: { events: [0b1c2d3e-0000-4000-8000-000000000001, 0b1c2d3e-0000-4000-8000-000000000002], notes: Invoice is created from the saved order. } }
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Assignment" }
+              examples:
+                assignment: { $ref: "#/components/examples/Assignment" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/recordings/{recording_id}/completeness/accept:
+    parameters: [{ $ref: "#/components/parameters/RecordingId" }]
+    post:
+      tags: [recordings]
+      operationId: acceptRecording
+      summary: Accept a partial or failed recording as it is
+      description: A reviewer of the recording. Audited as `recording.accept`.
+      x-twinlab-role: recording reviewer
+      responses:
+        "200":
+          description: The recording after accepting.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecordingDetail" }
+              examples:
+                twoApps: { $ref: "#/components/examples/RecordingDetail" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------------------------------------
+  # capture sessions (Request a recording)
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/capture-sessions:
+    get:
+      tags: [capture]
+      operationId: listCaptureSessions
+      summary: Requested and recorded sessions, and what a new request can choose
+      description: |
+        Signed in. Sessions the caller requested (all for an admin); the caller's paired machines;
+        applications the caller owns (with how many identities each has: a target needs one).
+      x-twinlab-role: signed-in
+      responses:
+        "200":
+          description: The page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CapturePage" }
+              examples:
+                page: { $ref: "#/components/examples/CapturePage" }
+    post:
+      tags: [capture]
+      operationId: requestRecording
+      summary: Request a recording on a paired machine
+      description: Signed in, owner of every target application. Each target needs an identity.
+      x-twinlab-role: owner of every target
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewCaptureSession" }
+            examples:
+              two: { value: { name: Order to invoice, machine_id: 2, automation_id: 1, targets: [{ app_id: 1, level: full }, { app_id: 2, level: steps }] } }
+      responses:
+        "201":
+          description: Offered to the machine.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CaptureSession" }
+              examples:
+                session: { $ref: "#/components/examples/CaptureSession" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/capture-sessions/{session_id}/withdraw:
+    parameters:
+      - { name: session_id, in: path, required: true, schema: { type: integer } }
+    post:
+      tags: [capture]
+      operationId: withdrawCaptureSession
+      summary: Withdraw a request not yet recorded
+      description: Who requested it, or a portal admin.
+      x-twinlab-role: requester-or-admin
+      responses:
+        "200":
+          description: Withdrawn.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CaptureSession" }
+              examples:
+                session: { $ref: "#/components/examples/CaptureSession" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------------------------------------
+  # machines
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/machines:
+    get:
+      tags: [machines]
+      operationId: listMachines
+      summary: Paired machines
+      description: Signed in. The machines the caller paired; an admin sees all.
+      x-twinlab-role: signed-in
+      responses:
+        "200":
+          description: The machines.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MachineList" }
+              examples:
+                machines: { $ref: "#/components/examples/MachineList" }
+
+  /api/v1/machines/pairing-codes:
+    post:
+      tags: [machines]
+      operationId: makePairingCode
+      summary: Make a pairing code
+      description: Signed in. The code works once, within `minutes`, and is never shown again.
+      x-twinlab-role: signed-in
+      responses:
+        "201":
+          description: The code.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PairingCode" }
+              examples:
+                code: { value: { code: ABCDE23456, display: ABCDE-23456, minutes: 10, expires_at: "2026-11-20T10:10:00+00:00" } }
+
+  /api/v1/machines/{machine_id}/revoke:
+    parameters:
+      - { name: machine_id, in: path, required: true, schema: { type: integer } }
+    post:
+      tags: [machines]
+      operationId: revokeMachine
+      summary: Revoke a machine
+      description: Who paired it, or a portal admin.
+      x-twinlab-role: pairer-or-admin
+      responses:
+        "200":
+          description: The machine.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Machine" }
+              examples:
+                revoked: { value: { id: 3, name: OLD-PC, paired_by: ana, paired_at: "2026-09-01T09:00:00+00:00", last_seen: null, recorder: "", contract_version: null, revoked_at: "2026-11-20T10:00:00+00:00" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------------------------------------
+  # automations
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/automations:
+    get:
+      tags: [automations]
+      operationId: listAutomations
+      summary: Automations, and the applications a new one can link
+      x-twinlab-role: signed-in
+      responses:
+        "200":
+          description: The automations.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutomationPage" }
+              examples:
+                page: { $ref: "#/components/examples/AutomationPage" }
+    post:
+      tags: [automations]
+      operationId: saveAutomation
+      summary: Add (or update by name) an automation
+      description: Signed in; linking an application needs its owner role.
+      x-twinlab-role: owner of every linked application
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewAutomation" }
+            examples:
+              bot: { value: { name: UiPath order to invoice, kind: uipath, notes: "", apps: [1, 2] } }
+      responses:
+        "201":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutomationDetail" }
+              examples:
+                detail: { $ref: "#/components/examples/AutomationDetail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/automations/import:
+    post:
+      tags: [automations]
+      operationId: importAutomation
+      summary: Import a Twin Lab automation.yaml
+      description: Links only the applications (by name) the caller owns; unmatched names go to the notes.
+      x-twinlab-role: signed-in
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, contentMediaType: application/yaml, description: "automation.yaml, at most 256 KiB" }
+      responses:
+        "201":
+          description: Imported.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutomationDetail" }
+              examples:
+                detail: { $ref: "#/components/examples/AutomationDetail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/automations/{automation_id}:
+    parameters:
+      - { name: automation_id, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [automations]
+      operationId: getAutomation
+      summary: One automation
+      description: Its applications the caller can view, and its recordings the caller may open.
+      x-twinlab-role: signed-in
+      responses:
+        "200":
+          description: The automation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutomationDetail" }
+              examples:
+                detail: { $ref: "#/components/examples/AutomationDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------------------------------------
+  # releases
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/releases/{release_id}:
+    parameters: [{ $ref: "#/components/parameters/ReleaseId" }]
+    get:
+      tags: [releases]
+      operationId: getRelease
+      summary: One release
+      description: Viewer of its application.
+      x-twinlab-role: viewer
+      responses:
+        "200":
+          description: The release.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReleaseDetail" }
+              examples:
+                tested: { $ref: "#/components/examples/ReleaseDetail" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/releases/{release_id}/deployments:
+    parameters: [{ $ref: "#/components/parameters/ReleaseId" }]
+    put:
+      tags: [releases]
+      operationId: saveDeployment
+      summary: Register (or change) a deployment by environment, and check its version
+      description: Owner. HTTP or HTTPS URL without credentials. Audited as `deployment.register`.
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeploymentInput" }
+            examples:
+              demo: { value: { environment: OpenShift demo, url: https://billing-demo.apps.example.test, username: demo, secret_ref: vault:demo/billing } }
+      responses:
+        "200": { $ref: "#/components/responses/ReleaseDetail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/releases/{release_id}/deployments/check:
+    parameters: [{ $ref: "#/components/parameters/ReleaseId" }]
+    post:
+      tags: [releases]
+      operationId: checkDeployment
+      summary: Check a deployment's version again
+      x-twinlab-role: builder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeploymentCheck" }
+            examples:
+              demo: { value: { environment: OpenShift demo } }
+      responses:
+        "200": { $ref: "#/components/responses/ReleaseDetail" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/releases/{release_id}/tests:
+    parameters: [{ $ref: "#/components/parameters/ReleaseId" }]
+    post:
+      tags: [releases]
+      operationId: recordTest
+      summary: Record test results (makes the release Tested when everything holds)
+      description: Owner. The commit's checks are fetched first and kept even when the test is refused (400). Audited as `release.test`.
+      x-twinlab-role: owner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TestInput" }
+            examples:
+              pass: { value: { commit: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, platform: "Windows 11, Python 3.13", launch: python app.py, reset_result: pass, reset_notes: "", results: { s1: pass, s2: pass } } }
+      responses:
+        "200": { $ref: "#/components/responses/ReleaseDetail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/releases/{release_id}/checks/refresh:
+    parameters: [{ $ref: "#/components/parameters/ReleaseId" }]
+    post:
+      tags: [releases]
+      operationId: refreshChecks
+      summary: Check GitHub again
+      x-twinlab-role: owner
+      responses:
+        "200": { $ref: "#/components/responses/ReleaseDetail" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/releases/{release_id}/verify:
+    parameters: [{ $ref: "#/components/parameters/ReleaseId" }]
+    post:
+      tags: [releases]
+      operationId: verifyRelease
+      summary: Verify this build
+      description: Owner. Reads the checks, runs the scenario replay, business-outcome and reset checks, stores the report. Audited as `release.verify`.
+      x-twinlab-role: owner
+      responses:
+        "200": { $ref: "#/components/responses/ReleaseDetail" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/releases/{release_id}/publish:
+    parameters: [{ $ref: "#/components/parameters/ReleaseId" }]
+    post:
+      tags: [releases]
+      operationId: publishRelease
+      summary: Publish a Tested release
+      description: Owner. One publish at a time per application (409). Only a Tested release (400). Audited as `release.publish`.
+      x-twinlab-role: owner
+      responses:
+        "200": { $ref: "#/components/responses/ReleaseDetail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/releases/{release_id}/reports/{report_id}:
+    parameters:
+      - { $ref: "#/components/parameters/ReleaseId" }
+      - { name: report_id, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [releases]
+      operationId: downloadVerificationReport
+      summary: Download a verification report (JSON)
+      x-twinlab-role: builder
+      responses:
+        "200":
+          description: The report as a JSON attachment.
+          content:
+            application/json:
+              schema: { type: object }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/releases/{release_id}/download:
+    parameters: [{ $ref: "#/components/parameters/ReleaseId" }]
+    get:
+      tags: [releases]
+      operationId: downloadRelease
+      summary: Download the release ZIP
+      description: A published release for every viewer; one not yet published for builders and owners.
+      x-twinlab-role: viewer (builder before publishing)
+      responses:
+        "200": { $ref: "#/components/responses/Zip" }
+        "302": { $ref: "#/components/responses/Presigned" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------------------------------------
+  # setup
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/setup:
+    get:
+      tags: [setup]
+      operationId: getSetup
+      summary: Setup / Advanced
+      description: Signed in. The applications the caller owns, and the artifact storage (never credentials).
+      x-twinlab-role: signed-in
+      responses:
+        "200":
+          description: The setup page.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SetupPage" }
+              examples:
+                setup: { value: { apps: [{ id: 1, name: Billing Desk }, { id: 2, name: CaseDesk }], storage: { backend: filesystem, location: .state/artifacts, encrypted: false } } }
+
+  /api/v1/setup/builds:
+    get:
+      tags: [setup]
+      operationId: getBuildSetup
+      summary: Build sessions setup
+      description: Portal admins. Keys and tokens are never returned, only whether they are set and where from.
+      x-twinlab-role: admin
+      responses:
+        "200":
+          description: The build setup.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BuildSetup" }
+              examples:
+                setup: { $ref: "#/components/examples/BuildSetup" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/setup/builds/settings:
+    put:
+      tags: [setup]
+      operationId: saveBuildSettings
+      summary: Save build settings
+      description: |
+        Portal admins. Only the keys sent change. An empty secret keeps the saved secret unless its
+        key is listed in `clear`. An environment variable wins over a saved value.
+      x-twinlab-role: admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BuildSettingsInput" }
+            examples:
+              claude: { value: { settings: { CLAUDE_MODEL: claude-opus-5-5, DEFAULT_CLAUDE_BUDGET_USD: "20" }, clear: [] } }
+      responses:
+        "200":
+          description: The build setup after saving.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BuildSetup" }
+              examples:
+                setup: { $ref: "#/components/examples/BuildSetup" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/setup/builds/check:
+    post:
+      tags: [setup]
+      operationId: checkConnections
+      summary: Check Devin and GitHub
+      x-twinlab-role: admin
+      responses:
+        "200":
+          description: One result per service.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConnectionCheck" }
+              examples:
+                check: { value: { results: [{ service: devin, ok: false, message: "Devin is not configured: an admin sets the API key and organisation under Setup." }, { service: github, ok: true, message: "GitHub: the token works for every connected repository." }] } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/setup/builds/repos:
+    post:
+      tags: [setup]
+      operationId: connectRepository
+      summary: Connect a GitHub repository
+      x-twinlab-role: admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repo]
+              properties:
+                repo: { type: string, description: "owner/name" }
+            examples:
+              repo: { value: { repo: example/billing-desk-demo } }
+      responses:
+        "201":
+          description: Connected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Repo" }
+              examples:
+                repo: { value: { repo: example/billing-desk-demo, default_branch: main, private: true, connected_by: root } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      tags: [setup]
+      operationId: disconnectRepository
+      summary: Disconnect a GitHub repository
+      x-twinlab-role: admin
+      parameters:
+        - { name: repo, in: query, required: true, schema: { type: string }, description: "owner/name" }
+      responses:
+        "204": { description: "Disconnected." }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/setup/builds/worker:
+    post:
+      tags: [setup]
+      operationId: startWorker
+      summary: Start a build worker (development only)
+      description: Portal admins, and only when the development worker is allowed (else 403).
+      x-twinlab-role: admin
+      responses:
+        "200":
+          description: The worker.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pid, started]
+                properties:
+                  pid: { type: integer }
+                  started: { type: boolean, description: "false when one was already running" }
+              examples:
+                started: { value: { pid: 4242, started: true } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------------------------
+  # users
+  # ---------------------------------------------------------------------------------------------
+  /api/v1/admin/users:
+    get:
+      tags: [users]
+      operationId: listUsers
+      summary: Local users and portal admins
+      x-twinlab-role: admin
+      responses:
+        "200":
+          description: The users.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserList" }
+              examples:
+                users: { $ref: "#/components/examples/UserList" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/admin/users/{user_name}:
+    parameters:
+      - { name: user_name, in: path, required: true, schema: { type: string, maxLength: 120 } }
+    put:
+      tags: [users]
+      operationId: saveUser
+      summary: Add or change a local user
+      description: Portal admins. An omitted or empty password keeps the saved one. Audited as `user.save`.
+      x-twinlab-role: admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserInput" }
+            examples:
+              ben: { value: { password: "", is_admin: false } }
+      responses:
+        "200":
+          description: The users after saving.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserList" }
+              examples:
+                users: { $ref: "#/components/examples/UserList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------------------------
+  # recorder agent API (unchanged; RECORDER-CONTRACT.md)
+  # ---------------------------------------------------------------------------------------------
+  /api/agent/pair:
+    post:
+      tags: [agent]
+      operationId: agentPair
+      summary: Pair a recorder with a pairing code
+      description: No token yet; the pairing code is the credential. 403 wrong, used or expired code; 429 after too many wrong codes; 426 outdated recorder contract.
+      x-twinlab-role: public (pairing code)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentMessage" }
+      responses:
+        "200": { $ref: "#/components/responses/AgentJson" }
+        "400": { $ref: "#/components/responses/AgentError" }
+        "403": { $ref: "#/components/responses/AgentError" }
+        "426": { $ref: "#/components/responses/AgentError" }
+        "429": { $ref: "#/components/responses/AgentError" }
+  /api/agent/sessions:
+    get:
+      tags: [agent]
+      operationId: agentSessions
+      summary: Sessions offered to this machine, and the keys not to record in full
+      x-twinlab-role: agent-token
+      security: [{ agentToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/AgentJson" }
+        "401": { $ref: "#/components/responses/AgentError" }
+  /api/agent/apps:
+    get:
+      tags: [agent]
+      operationId: agentApps
+      summary: Catalog applications with an identity, for a session started on the recorder
+      x-twinlab-role: agent-token
+      security: [{ agentToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/AgentJson" }
+        "401": { $ref: "#/components/responses/AgentError" }
+  /api/agent/references:
+    post:
+      tags: [agent]
+      operationId: agentReferences
+      summary: The references of a finished recording (applications, steps, timeline, completeness)
+      x-twinlab-role: agent-token
+      security: [{ agentToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentMessage" }
+      responses:
+        "200": { $ref: "#/components/responses/AgentJson" }
+        "400": { $ref: "#/components/responses/AgentError" }
+        "401": { $ref: "#/components/responses/AgentError" }
+        "409": { $ref: "#/components/responses/AgentError" }
+        "426": { $ref: "#/components/responses/AgentError" }
+  /api/uploads:
+    post:
+      tags: [agent]
+      operationId: agentUploadInit
+      summary: Start a resumable upload of a recording's evidence
+      x-twinlab-role: agent-token
+      security: [{ agentToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AgentMessage" }
+      responses:
+        "200": { $ref: "#/components/responses/AgentJson" }
+        "201": { $ref: "#/components/responses/AgentJson" }
+        "400": { $ref: "#/components/responses/AgentError" }
+        "401": { $ref: "#/components/responses/AgentError" }
+  /api/uploads/{upload_id}:
+    parameters:
+      - { name: upload_id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [agent]
+      operationId: agentUploadStatus
+      summary: An upload's status (the parts received)
+      x-twinlab-role: agent-token (then the upload's own token)
+      security: [{ agentToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/AgentJson" }
+        "401": { $ref: "#/components/responses/AgentError" }
+        "404": { $ref: "#/components/responses/AgentError" }
+    put:
+      tags: [agent]
+      operationId: agentUploadChunk
+      summary: Send a chunk (Content-Range)
+      x-twinlab-role: agent-token (then the upload's own token)
+      security: [{ agentToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, contentMediaType: application/octet-stream }
+      responses:
+        "200": { $ref: "#/components/responses/AgentJson" }
+        "400": { $ref: "#/components/responses/AgentError" }
+        "401": { $ref: "#/components/responses/AgentError" }
+        "409": { $ref: "#/components/responses/AgentError" }
+  /api/uploads/{upload_id}/parts:
+    parameters:
+      - { name: upload_id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [agent]
+      operationId: agentUploadParts
+      summary: Presigned part URLs (S3 artifact storage)
+      x-twinlab-role: agent-token (then the upload's own token)
+      security: [{ agentToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/AgentJson" }
+        "401": { $ref: "#/components/responses/AgentError" }
+  /api/uploads/{upload_id}/complete:
+    parameters:
+      - { name: upload_id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [agent]
+      operationId: agentUploadComplete
+      summary: Complete an upload (its SHA-256 is checked)
+      x-twinlab-role: agent-token (then the upload's own token)
+      security: [{ agentToken: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/AgentJson" }
+        "400": { $ref: "#/components/responses/AgentError" }
+        "401": { $ref: "#/components/responses/AgentError" }
+        "409": { $ref: "#/components/responses/AgentError" }
+  /api/recordings/{recording_id}/upload:
+    parameters: [{ $ref: "#/components/parameters/RecordingId" }]
+    get:
+      tags: [agent]
+      operationId: recordingUploadProgress
+      summary: A recording's upload progress (signed-in users; also in RecordingDetail.upload)
+      x-twinlab-role: signed-in
+      responses:
+        "200": { $ref: "#/components/responses/AgentJson" }
+        "404": { $ref: "#/components/responses/AgentError" }
+
+components:
+  securitySchemes:
+    cookieSession:
+      type: apiKey
+      in: cookie
+      name: session
+      description: |
+        The portal's Flask session cookie, set by `POST /api/v1/session` or, behind the OAuth
+        proxy, by the portal on the first request carrying `X-Forwarded-User`. Mutating requests
+        also send `X-CSRF-Token` (see the description).
+    agentToken:
+      type: http
+      scheme: bearer
+      description: A recorder machine's token, from `POST /api/agent/pair`.
+
+  parameters:
+    AppId: { name: app_id, in: path, required: true, schema: { type: integer } }
+    Rev: { name: rev, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    BuildId: { name: build_id, in: path, required: true, schema: { type: integer } }
+    ReleaseId: { name: release_id, in: path, required: true, schema: { type: integer } }
+    RecordingId: { name: recording_id, in: path, required: true, schema: { type: string } }
+
+  responses:
+    BadRequest:
+      description: The request is not acceptable; `detail` says why.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          examples:
+            scenario:
+              value: { type: about:blank, title: Bad Request, status: 400, detail: Add a business scenario before freezing a builder package. }
+    Unauthorized:
+      description: Not signed in.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          examples:
+            signin:
+              value: { type: about:blank, title: Unauthorized, status: 401, detail: Sign in first., code: signed_out }
+    Forbidden:
+      description: "The caller lacks the role (or the CSRF token is missing, `code: csrf`)."
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          examples:
+            role:
+              value: { type: about:blank, title: Forbidden, status: 403, detail: This needs the owner role on this application., code: role }
+    NotFound:
+      description: No such object.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          examples:
+            missing:
+              value: { type: about:blank, title: Not Found, status: 404, detail: Not found. }
+    Conflict:
+      description: The request conflicts with the current state; `detail` says how.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+          examples:
+            conflict:
+              value: { type: about:blank, title: Conflict, status: 409, detail: "Another application already has this identity: merge them instead." }
+    Zip:
+      description: The ZIP file.
+      content:
+        application/zip:
+          schema: { type: string, contentMediaType: application/zip }
+    Presigned:
+      description: A redirect to a short-lived presigned URL (S3 artifact storage).
+      headers:
+        Location: { schema: { type: string, format: uri } }
+    BuildDetail:
+      description: The session after the action (`notice` may say what happened).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/BuildDetail" }
+          examples:
+            waiting: { $ref: "#/components/examples/BuildDetail" }
+    ReleaseDetail:
+      description: The release after the action.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ReleaseDetail" }
+          examples:
+            tested: { $ref: "#/components/examples/ReleaseDetail" }
+    AgentJson:
+      description: The agent API's JSON answer (RECORDER-CONTRACT.md).
+      content:
+        application/json:
+          schema: { type: object }
+    AgentError:
+      description: The agent API's error `{error, ...}` (unchanged; not problem+json).
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+
+  schemas:
+    # -- common -----------------------------------------------------------------------------------
+    Problem:
+      type: object
+      description: RFC 9457 problem details; every error of /api/v1 has this shape.
+      required: [type, title, status, detail]
+      properties:
+        type: { type: string, description: "A URI reference; `about:blank` unless a code needs its own., default: about:blank" }
+        title: { type: string, description: "The HTTP status phrase." }
+        status: { type: integer, minimum: 400, maximum: 599 }
+        detail: { type: string, description: "The sentence to show the user." }
+        instance: { type: string, description: "The request path." }
+        code:
+          type: string
+          description: |
+            A stable machine-readable reason where the web app acts on it: `signed_out`,
+            `wrong_credentials`, `csrf`, `role`, `restricted`, `draft_changed`, `unchanged`,
+            `plan_changed`, `publish_locked`.
+        errors:
+          type: array
+          description: Per-field problems of a request body.
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: { type: string }
+              message: { type: string }
+    Role:
+      type: string
+      enum: [viewer, builder, owner]
+    AppStatus:
+      type: string
+      enum: [known, discovered, not_replicated]
+      description: The scope decision. Labels — known Confirmed application; discovered Discovered, decide scope; not_replicated Not replicated.
+    ShareState:
+      type: string
+      enum: [restricted, reviewed, synthetic]
+    ReleaseState:
+      type: string
+      enum: [packaged, tested, published]
+    TestResult:
+      type: string
+      enum: [pass, fail, not-run]
+    BuildState:
+      type: string
+      enum: [queued, starting, checking_started, running, waiting_for_answer, ready_for_verification, failed, cancelled]
+    Choice:
+      type: object
+      required: [value, label]
+      properties:
+        value: { type: string }
+        label: { type: string }
+    Timestamp:
+      type: string
+      description: ISO 8601, UTC.
+    Sha256:
+      type: string
+      pattern: "^[0-9a-f]{64}$"
+    GitSha:
+      type: string
+      pattern: "^[0-9a-f]{40}$"
+
+    # -- session ----------------------------------------------------------------------------------
+    Session:
+      type: object
+      required: [signed_in, user, is_admin, auth_mode, login_available, csrf_token, roles]
+      properties:
+        signed_in: { type: boolean }
+        user: { type: [string, "null"], description: "The sign-in name." }
+        is_admin: { type: boolean, description: "A portal admin." }
+        auth_mode:
+          type: string
+          enum: [local, proxy, open]
+          description: |
+            `local`: local user store (sign-in form); `proxy`: the OAuth proxy's `X-Forwarded-User`
+            (no sign-in form, no sign-out); `open`: a single-user development portal (user `local`).
+        login_available: { type: boolean, description: "Whether the sign-in form applies." }
+        csrf_token: { type: string, description: "Send as `X-CSRF-Token` on every non-GET request." }
+        roles:
+          type: array
+          description: The caller's role on each application they have one on.
+          items: { $ref: "#/components/schemas/AppRole" }
+    AppRole:
+      type: object
+      required: [app_id, app_name, role]
+      properties:
+        app_id: { type: integer }
+        app_name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+    SignIn:
+      type: object
+      required: [user, password]
+      properties:
+        user: { type: string, maxLength: 80 }
+        password: { type: string }
+
+    # -- apps -------------------------------------------------------------------------------------
+    AppRef:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+    JourneyStep:
+      type: object
+      required: [id, title, state, hint, href, action]
+      properties:
+        id: { type: string, enum: [choose, examples, behaviour, build, verify, open] }
+        title: { type: string }
+        state: { type: string, enum: [done, next, todo] }
+        hint: { type: string, description: "What to do, in one plain sentence." }
+        href: { type: string, description: "A web-app path (the web app keeps the portal's page paths, e.g. `/apps/1#examples`)." }
+        action: { type: string, description: "The button's words." }
+    Journey:
+      type: object
+      required: [stage, missing, out_of_scope, steps, next]
+      properties:
+        stage: { type: string }
+        missing: { type: array, items: { type: string } }
+        out_of_scope: { type: boolean }
+        steps: { type: array, items: { $ref: "#/components/schemas/JourneyStep" } }
+        next: { oneOf: [{ $ref: "#/components/schemas/JourneyStep" }, { type: "null" }] }
+    TestedRelease:
+      type: object
+      description: An application's latest Tested or Published release.
+      required: [id, version, state, platform, counts, deployment]
+      properties:
+        id: { type: integer }
+        version: { type: string }
+        state: { $ref: "#/components/schemas/ReleaseState" }
+        platform: { type: string }
+        counts:
+          type: object
+          required: [pass, fail, not-run]
+          properties:
+            pass: { type: integer }
+            fail: { type: integer }
+            not-run: { type: integer }
+        deployment: { oneOf: [{ $ref: "#/components/schemas/Deployment" }, { type: "null" }] }
+    AppSummary:
+      type: object
+      required: [id, name, status, status_label, owner, purpose, my_role, journey, tested_release]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        status: { $ref: "#/components/schemas/AppStatus" }
+        status_label: { type: string }
+        owner: { type: string, description: "The owners' names for display (roles are authoritative)." }
+        purpose: { type: string }
+        my_role: { oneOf: [{ $ref: "#/components/schemas/Role" }, { type: "null" }] }
+        journey: { $ref: "#/components/schemas/Journey" }
+        tested_release: { oneOf: [{ $ref: "#/components/schemas/TestedRelease" }, { type: "null" }] }
+    Catalog:
+      type: object
+      required: [apps, recordings, journey_titles]
+      properties:
+        apps: { type: array, items: { $ref: "#/components/schemas/AppSummary" } }
+        recordings:
+          type: array
+          description: Recordings the caller may open (restricted evidence).
+          items: { $ref: "#/components/schemas/RecordingRef" }
+        journey_titles: { type: array, items: { type: string } }
+    NewApp:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        owner: { type: string, maxLength: 120 }
+        purpose: { type: string, maxLength: 500 }
+    AppDetail:
+      allOf:
+        - { $ref: "#/components/schemas/AppSummary" }
+        - type: object
+          required: [git_url, url_match, surface, releases, packages, statuses]
+          properties:
+            git_url: { type: string }
+            url_match: { type: string, enum: [path, host] }
+            surface: { type: string, description: "web, desktop, mainframe or empty" }
+            releases: { type: array, items: { $ref: "#/components/schemas/ReleaseSummary" } }
+            packages:
+              type: array
+              description: Builder-approved revisions, newest first; empty unless the caller is a builder or owner.
+              items: { $ref: "#/components/schemas/PackageRevisionSummary" }
+            statuses: { type: array, items: { $ref: "#/components/schemas/Choice" } }
+    AppUpdate:
+      type: object
+      properties:
+        name: { type: string, maxLength: 120 }
+        purpose: { type: string, maxLength: 500 }
+        git_url: { type: string, maxLength: 500 }
+        status: { $ref: "#/components/schemas/AppStatus" }
+        owner: { type: string, maxLength: 120, description: "Assigns this user the owner role." }
+    RoleAssignment:
+      type: object
+      required: [user_name, role]
+      properties:
+        user_name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        assigned_by: { type: [string, "null"] }
+        assigned_at: { type: [string, "null"] }
+    RoleList:
+      type: object
+      required: [roles, role_names]
+      properties:
+        roles: { type: array, items: { $ref: "#/components/schemas/RoleAssignment" } }
+        role_names: { type: array, items: { $ref: "#/components/schemas/Role" } }
+    RoleUpdate:
+      type: object
+      required: [role]
+      properties:
+        role: { $ref: "#/components/schemas/Role" }
+    AuditEntry:
+      type: object
+      required: [id, at, actor, action, object_type, object_id, details]
+      properties:
+        id: { type: integer }
+        at: { $ref: "#/components/schemas/Timestamp" }
+        actor: { type: string }
+        action: { type: string }
+        object_type: { type: string }
+        object_id: { type: string }
+        details: { type: object, additionalProperties: true }
+    History:
+      type: object
+      required: [app, entries]
+      properties:
+        app: { $ref: "#/components/schemas/AppRef" }
+        entries: { type: array, items: { $ref: "#/components/schemas/AuditEntry" } }
+    Identity:
+      type: object
+      required: [key, surface]
+      properties:
+        key: { type: string, description: "exe:…, web:…, mainframe:… or desktop:…" }
+        surface: { type: string }
+    AppSetup:
+      type: object
+      required: [app, identities, platforms, github_repo, github_token_configured, default_windows_pattern, releases]
+      properties:
+        app:
+          type: object
+          required: [id, name, git_url, url_match, required_checks, target_platform, windows_check_pattern, lab_url, launch]
+          properties:
+            id: { type: integer }
+            name: { type: string }
+            git_url: { type: string }
+            url_match: { type: string, enum: [path, host] }
+            required_checks: { type: string }
+            target_platform: { type: string }
+            windows_check_pattern: { type: string }
+            lab_url: { type: string }
+            launch: { type: string }
+        identities: { type: array, items: { $ref: "#/components/schemas/Identity" } }
+        platforms: { type: array, items: { $ref: "#/components/schemas/Choice" } }
+        github_repo: { type: [string, "null"] }
+        github_token_configured: { type: boolean }
+        default_windows_pattern: { type: string }
+        releases: { type: array, items: { $ref: "#/components/schemas/ReleaseSummary" } }
+    IdentityInput:
+      type: object
+      required: [key]
+      properties:
+        key: { type: string, description: "CaseDesk.exe, https://host/path, tn3270://host:port or desktop:Company/Product" }
+    UrlMatchInput:
+      type: object
+      required: [url_match]
+      properties:
+        url_match: { type: string, enum: [path, host] }
+    VerificationSettings:
+      type: object
+      required: [required_checks, target_platform]
+      properties:
+        required_checks: { type: string, maxLength: 4000, description: "One check name or glob per line; empty means every check reported." }
+        target_platform: { type: string, enum: ["", web, windows-desktop] }
+        windows_check_pattern: { type: string, maxLength: 200 }
+        lab_url: { type: string, maxLength: 500 }
+        launch: { type: string, maxLength: 8000 }
+    VerifyCommitInput:
+      type: object
+      required: [sha]
+      properties:
+        repo: { type: string, description: "owner/name; defaults to the application's GitHub repository." }
+        sha: { $ref: "#/components/schemas/GitSha" }
+        pr_number: { type: integer, minimum: 1 }
+        ref: { type: string, maxLength: 200 }
+        build_id: { type: integer, description: "The build session the commit is from." }
+    VerifyOutcome:
+      type: object
+      required: [release_id, tested, reasons]
+      properties:
+        release_id: { type: integer }
+        tested: { type: boolean }
+        reasons: { type: array, items: { type: string } }
+        report_sha: { type: [string, "null"] }
+    MergeSide:
+      type: object
+      required: [id, name, url_match]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        url_match: { type: string }
+    MergePlan:
+      type: object
+      required: [source, target, identities, flows, links, combined, automations, briefs, scenarios, blockers, fingerprint]
+      properties:
+        source: { $ref: "#/components/schemas/MergeSide" }
+        target: { $ref: "#/components/schemas/MergeSide" }
+        identities: { type: array, items: { type: string } }
+        flows:
+          type: array
+          items:
+            type: object
+            required: [recording_id, name, key, shared]
+            properties:
+              recording_id: { type: string }
+              name: { type: string }
+              key: { type: string }
+              shared: { type: boolean }
+        links:
+          type: array
+          items:
+            type: object
+            required: [recording_id, name, selected]
+            properties:
+              recording_id: { type: string }
+              name: { type: string }
+              selected: { type: integer }
+        combined:
+          type: array
+          items:
+            type: object
+            required: [recording_id, name, shown, shown_suggested, source, target, selection, suggested, notes, reviewed]
+            properties:
+              recording_id: { type: string }
+              name: { type: string }
+              shown: { type: array, items: { type: integer } }
+              shown_suggested: { type: array, items: { type: integer } }
+              source: { type: array, items: { type: string } }
+              target: { type: array, items: { type: string } }
+              selection: { type: array, items: { type: string } }
+              suggested: { type: array, items: { type: string } }
+              notes: { type: string }
+              reviewed: { type: integer, enum: [0, 1] }
+        automations: { type: array, items: { type: string } }
+        briefs:
+          type: array
+          items:
+            type: object
+            required: [revision, package]
+            properties:
+              revision: { type: string }
+              package: { type: boolean }
+        scenarios: { type: array, items: { type: string } }
+        blockers: { type: array, items: { type: string } }
+        fingerprint: { type: string }
+    MergeInput:
+      type: object
+      required: [into, confirm]
+      properties:
+        into: { type: integer }
+        confirm: { type: string, description: "The plan's fingerprint." }
+
+    # -- evidence ---------------------------------------------------------------------------------
+    FlowStep:
+      type: object
+      description: One recorded step of an application.
+      required: [n, action]
+      properties:
+        n: { type: integer }
+        seq: { type: integer }
+        event_id: { type: string }
+        action: { type: string }
+        key: { type: [string, "null"] }
+        control: { type: [string, "null"] }
+        label: { type: [string, "null"] }
+        screen: { type: [string, "null"] }
+    RecordedFlow:
+      type: object
+      required: [recording_id, recording_name, key, level, machine, received_at, steps]
+      properties:
+        recording_id: { type: string }
+        recording_name: { type: string }
+        key: { type: string }
+        level: { type: string, enum: [full, steps] }
+        machine: { type: [string, "null"] }
+        received_at: { type: [string, "null"] }
+        steps: { type: array, items: { $ref: "#/components/schemas/FlowStep" } }
+    EvidenceLink:
+      type: object
+      required: [recording_id, name, selected_count, suggested_count, reviewed, notes]
+      properties:
+        recording_id: { type: string }
+        name: { type: string }
+        selected_count: { type: integer }
+        suggested_count: { type: integer, description: "New events from a later send, not yet reviewed." }
+        reviewed: { type: boolean }
+        notes: { type: string }
+    Attachment:
+      type: object
+      required: [id, title, kind, extension, share, added_by]
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        kind: { type: string, enum: [Screen, API, Database, Utility, Acceptance] }
+        extension: { type: string }
+        share: { $ref: "#/components/schemas/ShareState" }
+        added_by: { type: string }
+    AttachmentUpload:
+      type: object
+      required: [file, title, kind]
+      properties:
+        file: { type: string, contentMediaType: application/octet-stream }
+        title: { type: string, maxLength: 200 }
+        kind: { type: string, enum: [Screen, API, Database, Utility, Acceptance] }
+        share: { $ref: "#/components/schemas/ShareState" }
+    ShareInput:
+      type: object
+      required: [share]
+      properties:
+        share: { $ref: "#/components/schemas/ShareState" }
+    AutomationRef:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+    AppEvidence:
+      type: object
+      required: [recorded_flows, links, attachments, automations, attachment_kinds, share_states, merge_candidates]
+      properties:
+        recorded_flows: { type: array, items: { $ref: "#/components/schemas/RecordedFlow" } }
+        links: { type: array, items: { $ref: "#/components/schemas/EvidenceLink" } }
+        attachments: { type: array, items: { $ref: "#/components/schemas/Attachment" } }
+        automations: { type: array, items: { $ref: "#/components/schemas/AutomationRef" } }
+        attachment_kinds:
+          type: object
+          description: Per evidence kind, the file extensions it accepts.
+          additionalProperties: { type: array, items: { type: string } }
+        share_states: { type: array, items: { $ref: "#/components/schemas/Choice" } }
+        merge_candidates:
+          type: array
+          description: Other applications the caller can view, to merge this one into.
+          items: { $ref: "#/components/schemas/AppRef" }
+    ScenarioInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 200 }
+        starting: { type: string, maxLength: 4000 }
+        actions: { type: string, maxLength: 8000 }
+        expected: { type: string, maxLength: 4000 }
+        failures: { type: string, maxLength: 4000 }
+        examples: { type: string, maxLength: 4000 }
+        questions: { type: string, maxLength: 4000 }
+        notes: { type: string, maxLength: 20000 }
+        events:
+          type: array
+          description: Linked events as `recording#event_id`, from the selected events of the application.
+          items: { type: string }
+    Scenario:
+      allOf:
+        - { $ref: "#/components/schemas/ScenarioInput" }
+        - type: object
+          required: [id, name, starting, actions, expected, failures, examples, questions, notes, events]
+          properties:
+            id: { type: integer }
+    ScenarioField:
+      type: object
+      required: [key, label, max_length]
+      properties:
+        key: { type: string }
+        label: { type: string }
+        max_length: { type: integer }
+    EventChoice:
+      type: object
+      required: [ref, seq, action, recording]
+      properties:
+        ref: { type: string, description: "recording#event_id" }
+        seq: { type: integer }
+        action: { type: string }
+        label: { type: [string, "null"] }
+        screen: { type: [string, "null"] }
+        recording: { type: string }
+    ScenarioList:
+      type: object
+      required: [scenarios, fields, event_choices]
+      properties:
+        scenarios: { type: array, items: { $ref: "#/components/schemas/Scenario" } }
+        fields: { type: array, items: { $ref: "#/components/schemas/ScenarioField" } }
+        event_choices: { type: array, items: { $ref: "#/components/schemas/EventChoice" } }
+
+    # -- packages ---------------------------------------------------------------------------------
+    PackageFile:
+      type: object
+      required: [path, size, sha256]
+      properties:
+        path: { type: string }
+        size: { type: integer }
+        sha256: { $ref: "#/components/schemas/Sha256" }
+        text: { type: [string, "null"], description: "A text file in full; null for a binary file. Absent in a revision's file list." }
+    ReportEntry:
+      type: object
+      required: [item, outcome, reasons]
+      properties:
+        item: { type: string }
+        outcome: { type: string, description: "excluded, redacted, …" }
+        reasons: { type: array, items: { type: string } }
+    PackageRevisionSummary:
+      type: object
+      required: [rev, revision, sha256, size, approved_by, approved_at]
+      properties:
+        rev: { type: integer, minimum: 1 }
+        revision: { type: string, description: "The content revision." }
+        sha256: { $ref: "#/components/schemas/Sha256" }
+        size: { type: integer }
+        approved_by: { type: string }
+        approved_at: { $ref: "#/components/schemas/Timestamp" }
+    PackageRevision:
+      allOf:
+        - { $ref: "#/components/schemas/PackageRevisionSummary" }
+        - type: object
+          required: [app, summary, diff, files, report]
+          properties:
+            app: { $ref: "#/components/schemas/AppRef" }
+            summary: { type: string, description: "The change summary." }
+            diff: { type: string, description: "Against the previous revision; empty for the first." }
+            files: { type: array, items: { $ref: "#/components/schemas/PackageFile" } }
+            report:
+              description: The pre-freeze report; null unless the caller is an owner.
+              oneOf: [{ type: array, items: { $ref: "#/components/schemas/ReportEntry" } }, { type: "null" }]
+    PackageList:
+      type: object
+      required: [app, packages]
+      properties:
+        app: { $ref: "#/components/schemas/AppRef" }
+        packages: { type: array, items: { $ref: "#/components/schemas/PackageRevisionSummary" } }
+    PackageDraft:
+      type: object
+      required: [app, revision, sha256, size, files, report, summary, latest, unchanged, next_rev]
+      properties:
+        app: { $ref: "#/components/schemas/AppRef" }
+        revision: { type: string }
+        sha256: { $ref: "#/components/schemas/Sha256" }
+        size: { type: integer }
+        files: { type: array, items: { $ref: "#/components/schemas/PackageFile" } }
+        report: { type: array, items: { $ref: "#/components/schemas/ReportEntry" } }
+        summary: { type: string, description: "The pre-freeze report in one sentence." }
+        latest: { oneOf: [{ $ref: "#/components/schemas/PackageRevisionSummary" }, { type: "null" }] }
+        unchanged: { type: boolean, description: "The draft is the latest revision's bytes; nothing to freeze." }
+        next_rev: { type: integer }
+    FreezeInput:
+      type: object
+      required: [sha256, approve]
+      properties:
+        sha256: { $ref: "#/components/schemas/Sha256" }
+        summary: { type: string, description: "What changed and why." }
+        approve: { type: boolean, const: true, description: "The owner approves exactly these bytes." }
+
+    # -- builds -----------------------------------------------------------------------------------
+    ApprovedPack:
+      allOf:
+        - { $ref: "#/components/schemas/PackageRevisionSummary" }
+        - type: object
+          required: [files]
+          properties:
+            files: { type: array, items: { $ref: "#/components/schemas/PackageFile" } }
+    Repo:
+      type: object
+      required: [repo, default_branch, private, connected_by]
+      properties:
+        repo: { type: string }
+        default_branch: { type: string }
+        private: { type: boolean }
+        connected_by: { type: string }
+    Provider:
+      type: object
+      required: [name, label, capabilities, capability_text, ready, budget_unit, budget, model, status_label]
+      properties:
+        name: { type: string }
+        label: { type: string }
+        capabilities: { type: array, items: { type: string } }
+        capability_text: { type: string }
+        ready: { type: [string, "null"], description: "Null when ready; else why it is not." }
+        budget_unit: { type: string }
+        budget: { type: number }
+        model: { type: string }
+        status_label: { type: string }
+    Build:
+      type: object
+      required: [id, app_id, provider, provider_label, model, state, state_label, final, revision, package_rev, pack_sha256,
+                 repo, base_branch, base_sha, branch, parent_build, budget, budget_unit, cost, cost_unit, pr_number, pr_url,
+                 head_sha, outstanding, requested_by, created_at]
+      properties:
+        id: { type: integer }
+        app_id: { type: integer }
+        provider: { type: string }
+        provider_label: { type: string }
+        model: { type: string }
+        state: { $ref: "#/components/schemas/BuildState" }
+        state_label: { type: string }
+        final: { type: boolean, description: "ready_for_verification, failed or cancelled." }
+        revision: { type: string }
+        package_rev: { type: [integer, "null"] }
+        pack_sha256: { type: string }
+        repo: { type: string }
+        base_branch: { type: string }
+        base_sha: { type: string }
+        branch: { type: string }
+        parent_build: { type: [integer, "null"] }
+        budget: { type: number }
+        budget_unit: { type: string }
+        cost: { type: [number, "null"] }
+        cost_unit: { type: string }
+        pr_number: { type: [integer, "null"] }
+        pr_url: { type: [string, "null"] }
+        head_sha: { type: [string, "null"] }
+        outstanding: { type: integer, description: "Questions and tool approvals waiting for an answer." }
+        requested_by: { type: string }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+    BuildFull:
+      allOf:
+        - { $ref: "#/components/schemas/Build" }
+        - type: object
+          required: [error, note, change_summary, previous_revision, provider_session_id, provider_url, provider_status, provider_detail]
+          properties:
+            error: { type: [string, "null"] }
+            note: { type: [string, "null"] }
+            change_summary: { type: string }
+            previous_revision: { type: [string, "null"] }
+            provider_session_id: { type: [string, "null"] }
+            provider_url: { type: [string, "null"] }
+            provider_status: { type: [string, "null"] }
+            provider_detail: { type: [string, "null"] }
+    BuildPage:
+      type: object
+      required: [app, pack, problem, frozen, repos, providers, revisions, sessions, previous, changes, default_budget, starting_points]
+      properties:
+        app: { $ref: "#/components/schemas/AppRef" }
+        pack: { oneOf: [{ $ref: "#/components/schemas/ApprovedPack" }, { type: "null" }] }
+        problem: { type: [string, "null"], description: "Why there is no approved package yet." }
+        frozen:
+          oneOf:
+            - type: object
+              required: [frozen_by, frozen_at]
+              properties:
+                frozen_by: { type: string }
+                frozen_at: { $ref: "#/components/schemas/Timestamp" }
+            - { type: "null" }
+        repos: { type: array, items: { $ref: "#/components/schemas/Repo" } }
+        providers: { type: array, items: { $ref: "#/components/schemas/Provider" } }
+        revisions: { type: array, items: { $ref: "#/components/schemas/PackageRevisionSummary" } }
+        sessions: { type: array, items: { $ref: "#/components/schemas/Build" } }
+        previous: { oneOf: [{ $ref: "#/components/schemas/Build" }, { type: "null" }] }
+        changes: { type: array, items: { type: string }, description: "What changed in the pack since the previous session's revision." }
+        default_budget: { type: number }
+        starting_points: { type: array, items: { $ref: "#/components/schemas/Build" }, description: "Sessions with a commit to start from." }
+    NewBuild:
+      type: object
+      required: [provider, revision, repo, budget, request_key]
+      properties:
+        provider: { type: string }
+        model: { type: string }
+        revision: { type: string, description: "A frozen content revision of the application." }
+        repo: { type: string }
+        base_branch: { type: string }
+        start_from_build: { type: integer, description: "Start from that session's commit (the session becomes the parent)." }
+        change_summary: { type: string, description: "Required for a later build of a changed pack." }
+        budget: { type: number, exclusiveMinimum: 0, description: "In the provider's unit (Devin ACU, Claude USD, Copilot premium requests)." }
+        request_key: { type: string, description: "Idempotency key, one per form." }
+    BuildStarted:
+      type: object
+      required: [build, created]
+      properties:
+        build: { $ref: "#/components/schemas/Build" }
+        created: { type: boolean }
+        notice: { type: [string, "null"] }
+    RequestKey:
+      type: object
+      required: [request_key]
+      properties:
+        request_key: { type: string }
+    BuildMessage:
+      type: object
+      required: [id, direction, kind, author, body, created_at, state, state_label, error, reply_to, scenario_id, data, decision]
+      properties:
+        id: { type: integer }
+        direction: { type: string, enum: [from_provider, to_provider] }
+        kind: { type: string, enum: [clarification, tool_approval, scope_change, status] }
+        author: { type: string }
+        body: { type: string }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+        state: { type: [string, "null"], description: "Delivery of a message to the provider: queued, sending, sent, acknowledged, delivery_uncertain, failed, held_for_review, received." }
+        state_label: { type: [string, "null"] }
+        error: { type: [string, "null"] }
+        reply_to: { type: [integer, "null"] }
+        scenario_id: { type: [integer, "null"], description: "A scope change proposed as this scenario." }
+        data: { type: object, additionalProperties: true, description: "A tool approval: {tool, input}." }
+        decision: { type: [string, "null"], description: "A tool approval already answered: approve or deny." }
+    BuildDetail:
+      type: object
+      required: [build, app, messages, questions, outstanding, capabilities, parent, frozen]
+      properties:
+        build: { $ref: "#/components/schemas/BuildFull" }
+        app: { $ref: "#/components/schemas/AppRef" }
+        messages: { type: array, items: { $ref: "#/components/schemas/BuildMessage" } }
+        questions: { type: array, items: { type: string } }
+        outstanding:
+          type: array
+          items:
+            type: object
+            required: [id, kind]
+            properties:
+              id: { type: integer }
+              kind: { type: string }
+        capabilities: { type: array, items: { type: string } }
+        parent: { oneOf: [{ $ref: "#/components/schemas/Build" }, { type: "null" }] }
+        frozen: { type: boolean }
+        notice: { type: [string, "null"] }
+    AnswerInput:
+      type: object
+      required: [answer, request_key]
+      properties:
+        answer: { type: string, minLength: 1 }
+        scope_change: { type: boolean, default: false }
+        reply_to: { type: [integer, "null"] }
+        request_key: { type: string }
+    AnswerResult:
+      type: object
+      required: [message, created]
+      properties:
+        message: { $ref: "#/components/schemas/BuildMessage" }
+        created: { type: boolean }
+        notice: { type: [string, "null"] }
+    ToolDecision:
+      type: object
+      required: [decision, request_key]
+      properties:
+        decision: { type: string, enum: [approve, deny] }
+        request_key: { type: string }
+    CompareInput:
+      type: object
+      required: [sessions]
+      properties:
+        sessions: { type: array, items: { type: integer }, minItems: 1 }
+    Candidate:
+      type: object
+      required: [build, release, checks, reasons, tested, scenarios]
+      properties:
+        build: { $ref: "#/components/schemas/Build" }
+        release: { oneOf: [{ $ref: "#/components/schemas/ReleaseSummary" }, { type: "null" }] }
+        checks:
+          type: array
+          items:
+            type: object
+            required: [name, conclusion]
+            properties:
+              name: { type: string }
+              conclusion: { type: string }
+        reasons: { type: array, items: { type: string } }
+        tested: { type: boolean }
+        scenarios:
+          type: array
+          items:
+            type: object
+            required: [name, result]
+            properties:
+              name: { type: string }
+              result: { $ref: "#/components/schemas/TestResult" }
+    Comparison:
+      type: object
+      required: [app, results]
+      properties:
+        app: { $ref: "#/components/schemas/AppRef" }
+        results: { type: array, items: { $ref: "#/components/schemas/Candidate" } }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [build_id, detail]
+            properties:
+              build_id: { type: integer }
+              detail: { type: string }
+
+    # -- recordings -------------------------------------------------------------------------------
+    RecordingRef:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+    Gap:
+      type: object
+      required: [from, to]
+      properties:
+        from: { $ref: "#/components/schemas/Timestamp" }
+        to: { $ref: "#/components/schemas/Timestamp" }
+        reason: { type: [string, "null"] }
+    Channel:
+      type: object
+      required: [status, gaps, notes]
+      properties:
+        status: { type: string }
+        gaps: { type: array, items: { $ref: "#/components/schemas/Gap" } }
+        notes: { type: array, items: { type: string } }
+    Completeness:
+      type: object
+      required: [overall, channels, network_evidence]
+      properties:
+        overall: { type: string, description: "complete, partial or failed" }
+        recovered: { type: boolean }
+        loss_window_seconds: { type: [number, "null"] }
+        network_evidence: { type: string }
+        channels: { type: object, additionalProperties: { $ref: "#/components/schemas/Channel" } }
+    Preflight:
+      type: object
+      required: [ready, checks]
+      properties:
+        ready: { type: boolean }
+        checks:
+          type: array
+          items:
+            type: object
+            required: [name, ok]
+            properties:
+              name: { type: string }
+              ok: { type: boolean }
+              detail: { type: [string, "null"] }
+    RecordingStatus:
+      type: object
+      required: [label, summary, attention, accepted, accepted_by, accepted_at, workstation, completeness, preflight]
+      properties:
+        label: { type: string }
+        summary: { type: string }
+        attention: { type: boolean, description: "Partial or failed, and nobody accepted it." }
+        accepted: { type: boolean }
+        accepted_by: { type: [string, "null"] }
+        accepted_at: { type: [string, "null"] }
+        workstation: { type: boolean, description: "Sent by a recorder (not an imported event log)." }
+        completeness: { oneOf: [{ $ref: "#/components/schemas/Completeness" }, { type: "null" }] }
+        preflight: { oneOf: [{ $ref: "#/components/schemas/Preflight" }, { type: "null" }] }
+    RecordingSummary:
+      type: object
+      required: [id, name, machine, received_at, automation, apps, status]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        machine: { type: [string, "null"], description: "Null for an imported recording." }
+        received_at: { type: [string, "null"] }
+        automation: { type: [string, "null"] }
+        apps: { type: [string, "null"], description: "The applications recorded, e.g. `Billing Desk (full), CaseDesk (steps)`." }
+        status: { $ref: "#/components/schemas/RecordingStatus" }
+    RecordingList:
+      type: object
+      required: [recordings]
+      properties:
+        recordings: { type: array, items: { $ref: "#/components/schemas/RecordingSummary" } }
+    RecordingImport:
+      type: object
+      required: [name, log]
+      properties:
+        name: { type: string }
+        log: { type: string, contentMediaType: application/jsonl, description: "A Twin Lab steps.jsonl" }
+    Event:
+      type: object
+      required: [event_id, seq, action, source, in_gap]
+      properties:
+        event_id: { type: string }
+        seq: { type: integer }
+        action: { type: string }
+        source: { type: string }
+        key: { type: [string, "null"] }
+        control: { type: [string, "null"] }
+        label: { type: [string, "null"] }
+        screen: { type: [string, "null"] }
+        time: { type: [string, "null"] }
+        channel: { type: [string, "null"] }
+        in_gap: { type: boolean, description: "Recorded in an interrupted period." }
+    EvidencePreview:
+      type: object
+      required: [app_id, name, count, reviewed, suggested, events]
+      properties:
+        app_id: { type: integer }
+        name: { type: string }
+        count: { type: integer }
+        reviewed: { type: boolean }
+        suggested: { type: integer }
+        events: { type: array, items: { $ref: "#/components/schemas/Event" }, description: "The first selected events." }
+    RecordedApp:
+      type: object
+      description: One application the recording holds, with its own steps and its own latest package.
+      required: [app_id, name, status, status_label, level, key, steps, my_role, latest_package]
+      properties:
+        app_id: { type: integer }
+        name: { type: string }
+        status: { $ref: "#/components/schemas/AppStatus" }
+        status_label: { type: string }
+        level: { type: string, enum: [full, steps] }
+        key: { type: string }
+        steps: { type: array, items: { $ref: "#/components/schemas/FlowStep" } }
+        my_role: { oneOf: [{ $ref: "#/components/schemas/Role" }, { type: "null" }] }
+        latest_package:
+          description: The application's latest builder-approved revision; null when none, or the caller is not a builder of it.
+          oneOf: [{ $ref: "#/components/schemas/PackageRevisionSummary" }, { type: "null" }]
+    Lane:
+      type: object
+      required: [label, status, gaps]
+      properties:
+        label: { type: string }
+        status: { type: string }
+        gaps:
+          type: array
+          items:
+            type: object
+            required: [text]
+            properties:
+              left: { type: [number, "null"], description: "Percent from the start of the session." }
+              width: { type: [number, "null"] }
+              text: { type: string }
+              reason: { type: [string, "null"] }
+    RecordingRefs:
+      type: object
+      description: What the recorder sent about a recording made on a paired machine.
+      required: [machine, automation, session, contract, timeline, ranges, apps]
+      properties:
+        machine: { type: [string, "null"], description: "Null when the machine was revoked." }
+        automation: { type: [string, "null"] }
+        session:
+          type: object
+          required: [id]
+          properties:
+            id: { type: string }
+            started: { type: [string, "null"] }
+            ended: { type: [string, "null"] }
+            state: { type: [string, "null"] }
+        contract:
+          oneOf:
+            - type: object
+              required: [recorder, recorder_version, contract_version]
+              properties:
+                recorder: { type: string }
+                recorder_version: { type: string }
+                contract_version: { type: string }
+                twinlab_commit: { type: [string, "null"] }
+            - { type: "null" }
+        timeline:
+          type: array
+          items:
+            type: object
+            required: [app, name, steps]
+            properties:
+              app: { type: string, description: "An identity key, or `presence` for other applications." }
+              name: { type: string }
+              steps: { type: integer }
+        ranges: { type: array, items: { $ref: "#/components/schemas/Lane" } }
+        apps: { type: array, items: { $ref: "#/components/schemas/RecordedApp" } }
+    UploadProgress:
+      type: object
+      required: [text, percent, complete]
+      properties:
+        text: { type: string }
+        percent: { type: [number, "null"] }
+        complete: { type: boolean }
+    RecordingDetail:
+      type: object
+      required: [id, name, status, upload, preview, refs, events, assignable_apps]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        status: { $ref: "#/components/schemas/RecordingStatus" }
+        upload: { oneOf: [{ $ref: "#/components/schemas/UploadProgress" }, { type: "null" }] }
+        preview: { type: array, items: { $ref: "#/components/schemas/EvidencePreview" } }
+        refs: { oneOf: [{ $ref: "#/components/schemas/RecordingRefs" }, { type: "null" }], description: "Null for an imported event log." }
+        events: { type: array, items: { $ref: "#/components/schemas/Event" } }
+        assignable_apps:
+          type: array
+          description: Applications the caller owns, to assign events to.
+          items: { $ref: "#/components/schemas/AppRef" }
+    Assignment:
+      type: object
+      required: [app_id, recording_id, saved, reviewed, selected, suggested, notes]
+      properties:
+        app_id: { type: integer }
+        recording_id: { type: string }
+        saved: { type: boolean, description: "False when no events are assigned yet." }
+        reviewed: { type: boolean, description: "False when selected automatically from the recording." }
+        selected: { type: array, items: { type: string }, description: "event_ids" }
+        suggested: { type: array, items: { type: string }, description: "event_ids new in a later send, not yet reviewed" }
+        notes: { type: string }
+    AssignmentInput:
+      type: object
+      required: [events]
+      properties:
+        events: { type: array, items: { type: string }, minItems: 1, description: "event_ids of this recording" }
+        notes: { type: string }
+
+    # -- capture ----------------------------------------------------------------------------------
+    CaptureTarget:
+      type: object
+      required: [app_id, name, level]
+      properties:
+        app_id: { type: integer }
+        name: { type: string }
+        level: { type: string, enum: [full, steps] }
+    CaptureSession:
+      type: object
+      required: [id, name, status, machine, automation, targets, recording_id, created_by, created_at]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        status: { type: string, description: "offered (shown as requested), recording, recorded, withdrawn, …" }
+        machine: { type: string }
+        automation: { type: [string, "null"] }
+        targets: { type: array, items: { $ref: "#/components/schemas/CaptureTarget" } }
+        recording_id: { type: [string, "null"] }
+        created_by: { type: string }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+    CapturePage:
+      type: object
+      required: [sessions, machines, apps, automations]
+      properties:
+        sessions: { type: array, items: { $ref: "#/components/schemas/CaptureSession" } }
+        machines: { type: array, items: { $ref: "#/components/schemas/AppRef" }, description: "The caller's paired machines, not revoked." }
+        apps:
+          type: array
+          description: Applications the caller owns (not marked not replicated).
+          items:
+            type: object
+            required: [id, name, identity_count]
+            properties:
+              id: { type: integer }
+              name: { type: string }
+              identity_count: { type: integer }
+        automations: { type: array, items: { $ref: "#/components/schemas/AutomationRef" } }
+    NewCaptureSession:
+      type: object
+      required: [name, machine_id, targets]
+      properties:
+        name: { type: string, maxLength: 120 }
+        machine_id: { type: integer }
+        automation_id: { type: [integer, "null"] }
+        targets:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [app_id, level]
+            properties:
+              app_id: { type: integer }
+              level: { type: string, enum: [full, steps] }
+
+    # -- machines ---------------------------------------------------------------------------------
+    Machine:
+      type: object
+      required: [id, name, paired_by, paired_at, last_seen, recorder, contract_version, revoked_at]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        paired_by: { type: string }
+        paired_at: { $ref: "#/components/schemas/Timestamp" }
+        last_seen: { type: [string, "null"] }
+        recorder: { type: string }
+        contract_version: { type: [string, "null"] }
+        revoked_at: { type: [string, "null"] }
+    MachineList:
+      type: object
+      required: [machines, code_minutes]
+      properties:
+        machines: { type: array, items: { $ref: "#/components/schemas/Machine" } }
+        code_minutes: { type: integer }
+    PairingCode:
+      type: object
+      required: [code, display, minutes, expires_at]
+      properties:
+        code: { type: string, pattern: "^[A-HJ-NP-Z2-9]{10}$" }
+        display: { type: string, description: "The code as shown, XXXXX-XXXXX." }
+        minutes: { type: integer }
+        expires_at: { $ref: "#/components/schemas/Timestamp" }
+
+    # -- automations ------------------------------------------------------------------------------
+    Automation:
+      type: object
+      required: [id, name, kind, notes, apps]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        kind: { type: string }
+        notes: { type: string }
+        apps: { type: [string, "null"], description: "The applications it touches, comma separated." }
+    AutomationPage:
+      type: object
+      required: [automations, apps]
+      properties:
+        automations: { type: array, items: { $ref: "#/components/schemas/Automation" } }
+        apps: { type: array, items: { $ref: "#/components/schemas/AppRef" }, description: "Applications the caller owns." }
+    NewAutomation:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 120 }
+        kind: { type: string, maxLength: 40 }
+        notes: { type: string, maxLength: 2000 }
+        apps: { type: array, items: { type: integer } }
+    AutomationDetail:
+      type: object
+      required: [automation, apps, recordings]
+      properties:
+        automation: { $ref: "#/components/schemas/Automation" }
+        apps: { type: array, items: { $ref: "#/components/schemas/AppRef" } }
+        recordings:
+          type: array
+          items:
+            type: object
+            required: [id, name, received_at]
+            properties:
+              id: { type: string }
+              name: { type: string }
+              received_at: { type: [string, "null"] }
+
+    # -- releases ---------------------------------------------------------------------------------
+    ReleaseSummary:
+      type: object
+      required: [id, version, revision, commit_sha, archive_sha, state]
+      properties:
+        id: { type: integer }
+        version: { type: string }
+        revision: { type: string }
+        commit_sha: { type: string }
+        archive_sha: { type: string }
+        state: { $ref: "#/components/schemas/ReleaseState" }
+    Deployment:
+      type: object
+      required: [environment, url, username, secret_ref, verification, label, reason, observed_commit, checked_at]
+      properties:
+        environment: { type: string }
+        url: { type: string }
+        username: { type: string }
+        secret_ref: { type: string }
+        verification: { type: string, description: "verified, mismatch, unreachable, unchecked, …" }
+        label: { type: string }
+        reason: { type: string }
+        observed_commit: { type: [string, "null"] }
+        checked_at: { type: [string, "null"] }
+    ReleaseTest:
+      type: object
+      required: [commit_sha, platform, launch, reset_result, reset_notes, tested_by, tested_at, results]
+      properties:
+        commit_sha: { type: string }
+        platform: { type: string }
+        launch: { type: string }
+        reset_result: { type: string, enum: [pass, fail] }
+        reset_notes: { type: string }
+        tested_by: { type: string }
+        tested_at: { $ref: "#/components/schemas/Timestamp" }
+        results:
+          type: array
+          items:
+            type: object
+            required: [name, result]
+            properties:
+              id: { type: string }
+              name: { type: string }
+              result: { $ref: "#/components/schemas/TestResult" }
+    CheckSummary:
+      type: object
+      required: [repository, pr_number, source_ref, platform, required, windows, checked_at, checks, reasons, reports]
+      properties:
+        repository: { type: [string, "null"] }
+        pr_number: { type: [integer, "null"] }
+        source_ref: { type: [string, "null"] }
+        platform: { type: string }
+        required:
+          type: array
+          items:
+            type: object
+            required: [pattern, state]
+            properties:
+              pattern: { type: string }
+              state: { type: string }
+        windows:
+          type: object
+          required: [required, state, checks, pattern]
+          properties:
+            required: { type: boolean }
+            state: { type: string }
+            checks: { type: array, items: { type: string } }
+            pattern: { type: string }
+        checked_at: { type: [string, "null"] }
+        checks:
+          type: array
+          items:
+            type: object
+            required: [name, kind, conclusion]
+            properties:
+              name: { type: string }
+              kind: { type: string, enum: [status, check_run] }
+              conclusion: { type: string }
+              url: { type: [string, "null"] }
+              completed_at: { type: [string, "null"] }
+        reasons: { type: array, items: { type: string }, description: "Why the release is not ready for Tested." }
+        reports:
+          type: array
+          items:
+            type: object
+            required: [id, created_at, sha256]
+            properties:
+              id: { type: integer }
+              created_at: { $ref: "#/components/schemas/Timestamp" }
+              sha256: { type: string }
+    ReleaseDetail:
+      type: object
+      required: [release, app, my_role, can_download, deployments, test, scenarios, results, checks, version_path]
+      properties:
+        release:
+          allOf:
+            - { $ref: "#/components/schemas/ReleaseSummary" }
+            - type: object
+              required: [published_at, repository, pr_number, source_ref]
+              properties:
+                published_at: { type: [string, "null"] }
+                repository: { type: [string, "null"] }
+                pr_number: { type: [integer, "null"] }
+                source_ref: { type: [string, "null"] }
+        app: { $ref: "#/components/schemas/AppRef" }
+        my_role: { oneOf: [{ $ref: "#/components/schemas/Role" }, { type: "null" }] }
+        can_download: { type: boolean, description: "Published, or the caller is a builder or owner." }
+        deployments: { type: array, items: { $ref: "#/components/schemas/Deployment" } }
+        test: { oneOf: [{ $ref: "#/components/schemas/ReleaseTest" }, { type: "null" }] }
+        scenarios:
+          type: array
+          description: The build brief's scenarios, to record a result for each.
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: { type: string }
+              name: { type: string }
+        results: { type: array, items: { $ref: "#/components/schemas/TestResult" } }
+        checks: { $ref: "#/components/schemas/CheckSummary" }
+        version_path: { type: string, description: "The deployment's version path, `.twinlab/version`." }
+        notice: { type: [string, "null"] }
+    DeploymentInput:
+      type: object
+      required: [environment, url]
+      properties:
+        environment: { type: string }
+        url: { type: string, format: uri }
+        username: { type: string }
+        secret_ref: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._:/#@-]{0,255}$" }
+    DeploymentCheck:
+      type: object
+      required: [environment]
+      properties:
+        environment: { type: string }
+    TestInput:
+      type: object
+      required: [commit, platform, launch, reset_result, results]
+      properties:
+        commit: { type: string }
+        platform: { type: string }
+        launch: { type: string }
+        reset_result: { type: string, enum: [pass, fail] }
+        reset_notes: { type: string }
+        results:
+          type: object
+          description: Per brief scenario id, its result.
+          additionalProperties: { $ref: "#/components/schemas/TestResult" }
+
+    # -- setup ------------------------------------------------------------------------------------
+    SetupPage:
+      type: object
+      required: [apps, storage]
+      properties:
+        apps: { type: array, items: { $ref: "#/components/schemas/AppRef" }, description: "Applications the caller owns." }
+        storage:
+          type: object
+          description: The artifact storage, described without credentials.
+          additionalProperties: { type: [string, boolean, number, "null"] }
+    Worker:
+      type: object
+      required: [id, started_at, seen_at, current_job, stopped_at, state]
+      properties:
+        id: { type: string }
+        started_at: { type: string }
+        seen_at: { type: string }
+        current_job: { type: [string, "null"] }
+        stopped_at: { type: [string, "null"] }
+        state: { type: string, enum: [running, stopped, stale] }
+    Job:
+      type: object
+      required: [id, type, state, attempts, due, lease_owner, error]
+      properties:
+        id: { type: string }
+        type: { type: string }
+        state: { type: string }
+        attempts: { type: integer }
+        due: { type: [string, "null"], description: "lease_until or run_after" }
+        lease_owner: { type: [string, "null"] }
+        error: { type: [string, "null"] }
+    BuildSetup:
+      type: object
+      required: [devin, devin_error, github, saved, settings, repos, providers, workers, jobs, job_counts, lease_seconds, dev_worker, budget, claude_budget]
+      properties:
+        devin:
+          type: object
+          required: [api_key_set, api_key_source, org_id, org_id_source, base_url]
+          properties:
+            api_key_set: { type: boolean }
+            api_key_source: { type: [string, "null"] }
+            org_id: { type: [string, "null"] }
+            org_id_source: { type: [string, "null"] }
+            base_url: { type: string }
+        devin_error: { type: [string, "null"] }
+        github:
+          type: object
+          required: [token_set, source, api]
+          properties:
+            token_set: { type: boolean }
+            source: { type: [string, "null"] }
+            api: { type: string }
+        saved:
+          type: object
+          description: For each secret setting, whether a value is saved (never the value).
+          additionalProperties: { type: boolean }
+        settings:
+          type: object
+          description: The saved non-secret settings.
+          additionalProperties: { type: [string, "null"] }
+        repos: { type: array, items: { $ref: "#/components/schemas/Repo" } }
+        providers: { type: array, items: { $ref: "#/components/schemas/Provider" } }
+        workers: { type: array, items: { $ref: "#/components/schemas/Worker" } }
+        jobs: { type: array, items: { $ref: "#/components/schemas/Job" } }
+        job_counts: { type: object, additionalProperties: { type: integer } }
+        lease_seconds: { type: integer }
+        dev_worker: { type: boolean, description: "Whether starting a worker from the page is allowed (development)." }
+        budget: { type: number, description: "Default ACU budget (Devin)." }
+        claude_budget: { type: number, description: "Default Claude budget (USD)." }
+    BuildSettingsInput:
+      type: object
+      required: [settings]
+      properties:
+        settings:
+          type: object
+          description: |
+            Keys: DEVIN_API_KEY, DEVIN_ORG_ID, DEVIN_BASE_URL, GITHUB_TOKEN, GITHUB_API, DEFAULT_ACU_BUDGET,
+            ANTHROPIC_API_KEY, CLAUDE_MODEL, DEFAULT_CLAUDE_BUDGET_USD, COPILOT_GITHUB_TOKEN, COPILOT_MODEL.
+          additionalProperties: { type: string }
+        clear:
+          type: array
+          description: Secret keys whose saved value is removed.
+          items: { type: string, enum: [DEVIN_API_KEY, GITHUB_TOKEN, ANTHROPIC_API_KEY, COPILOT_GITHUB_TOKEN] }
+    ConnectionCheck:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [service, ok, message]
+            properties:
+              service: { type: string, enum: [devin, github] }
+              ok: { type: boolean }
+              message: { type: string }
+
+    # -- users ------------------------------------------------------------------------------------
+    LocalUser:
+      type: object
+      required: [name, has_password, is_admin, created_by, created_at]
+      properties:
+        name: { type: string }
+        has_password: { type: boolean }
+        is_admin: { type: boolean }
+        created_by: { type: string }
+        created_at: { $ref: "#/components/schemas/Timestamp" }
+    UserList:
+      type: object
+      required: [users]
+      properties:
+        users: { type: array, items: { $ref: "#/components/schemas/LocalUser" } }
+    UserInput:
+      type: object
+      required: [is_admin]
+      properties:
+        password: { type: string, description: "Empty or omitted keeps the saved password." }
+        is_admin: { type: boolean }
+
+    AgentMessage:
+      type: object
+      description: A recorder message as RECORDER-CONTRACT.md defines it (with `contract_version`).
+      additionalProperties: true
+
+  # -----------------------------------------------------------------------------------------------
+  # examples: one coherent catalog; the web app's tests serve these through MSW.
+  #   users: ana (owner of Billing Desk and CaseDesk), ben (builder on Billing Desk),
+  #   vic (viewer on Billing Desk), root (portal admin)
+  #   apps: 1 Billing Desk (web), 2 CaseDesk (desktop), 3 Outlook (discovered)
+  #   recording 9f2c4e1a7b3d5f60 holds Billing Desk and CaseDesk, each with its own steps and package
+  # -----------------------------------------------------------------------------------------------
+  examples:
+    SessionOwner:
+      value:
+        signed_in: true
+        user: ana
+        is_admin: false
+        auth_mode: local
+        login_available: true
+        csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
+        roles:
+          - { app_id: 1, app_name: Billing Desk, role: owner }
+          - { app_id: 2, app_name: CaseDesk, role: owner }
+    SessionBuilder:
+      value:
+        signed_in: true
+        user: ben
+        is_admin: false
+        auth_mode: local
+        login_available: true
+        csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
+        roles:
+          - { app_id: 1, app_name: Billing Desk, role: builder }
+    SessionViewer:
+      value:
+        signed_in: true
+        user: vic
+        is_admin: false
+        auth_mode: proxy
+        login_available: false
+        csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
+        roles:
+          - { app_id: 1, app_name: Billing Desk, role: viewer }
+    SessionAdmin:
+      value:
+        signed_in: true
+        user: root
+        is_admin: true
+        auth_mode: local
+        login_available: true
+        csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
+        roles: []
+    SessionSignedOut:
+      value:
+        signed_in: false
+        user: null
+        is_admin: false
+        auth_mode: local
+        login_available: true
+        csrf_token: 3c1f0e2d9a8b7c6d5e4f3a2b1c0d9e8f
+        roles: []
+
+    Catalog:
+      value:
+        journey_titles: [Choose application, Add examples, Review required behaviour, Build, Verify, Open or download]
+        recordings:
+          - { id: 9f2c4e1a7b3d5f60, name: Order to invoice }
+        apps:
+          - id: 1
+            name: Billing Desk
+            status: known
+            status_label: Confirmed application
+            owner: ana
+            purpose: Invoice from saved orders
+            my_role: owner
+            journey:
+              stage: Verify
+              missing: []
+              out_of_scope: false
+              steps:
+                - { id: choose, title: Choose application, state: done, hint: Confirm the application., href: "/apps/1#choose", action: Choose }
+                - { id: examples, title: Add examples, state: done, hint: Record the process., href: "/apps/1#examples", action: Request a recording }
+                - { id: behaviour, title: Review required behaviour, state: done, hint: Add a business scenario., href: "/apps/1#behaviour", action: Add a scenario }
+                - { id: build, title: Build, state: done, hint: Register a release., href: "/apps/1#build", action: Register a release }
+                - { id: verify, title: Verify, state: next, hint: Verify the release against its scenarios., href: /releases/5, action: Verify release }
+                - { id: open, title: Open or download, state: todo, hint: "Publish the tested release, so that others can open the demo or download it.", href: /releases/5, action: Publish release }
+              next: { id: verify, title: Verify, state: next, hint: Verify the release against its scenarios., href: /releases/5, action: Verify release }
+            tested_release:
+              id: 5
+              version: 1.0.0
+              state: tested
+              platform: Web
+              counts: { pass: 2, fail: 0, not-run: 0 }
+              deployment:
+                environment: OpenShift demo
+                url: https://billing-demo.apps.example.test
+                username: demo
+                secret_ref: vault:demo/billing
+                verification: verified
+                label: Verified
+                reason: The deployment reports this release's commit.
+                observed_commit: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b
+                checked_at: "2026-11-19T16:02:00+00:00"
+          - id: 2
+            name: CaseDesk
+            status: known
+            status_label: Confirmed application
+            owner: ana
+            purpose: Case handling desktop client
+            my_role: owner
+            journey:
+              stage: Build
+              missing: []
+              out_of_scope: false
+              steps:
+                - { id: choose, title: Choose application, state: done, hint: Confirm the application., href: "/apps/2#choose", action: Choose }
+                - { id: examples, title: Add examples, state: done, hint: Record the process., href: "/apps/2#examples", action: Request a recording }
+                - { id: behaviour, title: Review required behaviour, state: done, hint: Add a business scenario., href: "/apps/2#behaviour", action: Add a scenario }
+                - { id: build, title: Build, state: next, hint: Start a build session from the approved package., href: "/apps/2#build", action: Register a release }
+                - { id: verify, title: Verify, state: todo, hint: Verify the release., href: "/apps/2#build", action: Verify release }
+                - { id: open, title: Open or download, state: todo, hint: Publish the tested release., href: "/apps/2#build", action: Publish release }
+              next: { id: build, title: Build, state: next, hint: Start a build session from the approved package., href: "/apps/2#build", action: Register a release }
+            tested_release: null
+          - id: 3
+            name: Outlook
+            status: discovered
+            status_label: "Discovered: decide scope"
+            owner: ana
+            purpose: ""
+            my_role: owner
+            journey:
+              stage: Choose application
+              missing: [purpose]
+              out_of_scope: false
+              steps:
+                - { id: choose, title: Choose application, state: next, hint: "Decide whether to replicate it.", href: "/apps/3#choose", action: Decide scope }
+                - { id: examples, title: Add examples, state: todo, hint: Record the process., href: "/apps/3#examples", action: Request a recording }
+                - { id: behaviour, title: Review required behaviour, state: todo, hint: Add a business scenario., href: "/apps/3#behaviour", action: Add a scenario }
+                - { id: build, title: Build, state: todo, hint: Freeze a builder package., href: /apps/3/build-pack/preview, action: Freeze builder package }
+                - { id: verify, title: Verify, state: todo, hint: Verify the release., href: "/apps/3#build", action: Verify release }
+                - { id: open, title: Open or download, state: todo, hint: Publish the tested release., href: "/apps/3#build", action: Publish release }
+              next: { id: choose, title: Choose application, state: next, hint: "Decide whether to replicate it.", href: "/apps/3#choose", action: Decide scope }
+            tested_release: null
+
+    AppDetailOwner:
+      value:
+        id: 1
+        name: Billing Desk
+        status: known
+        status_label: Confirmed application
+        owner: ana
+        purpose: Invoice from saved orders
+        my_role: owner
+        git_url: https://github.com/example/billing-desk-demo
+        url_match: path
+        surface: web
+        journey:
+          stage: Verify
+          missing: []
+          out_of_scope: false
+          steps:
+            - { id: choose, title: Choose application, state: done, hint: Confirm the application., href: "/apps/1#choose", action: Choose }
+            - { id: examples, title: Add examples, state: done, hint: Record the process., href: "/apps/1#examples", action: Request a recording }
+            - { id: behaviour, title: Review required behaviour, state: done, hint: Add a business scenario., href: "/apps/1#behaviour", action: Add a scenario }
+            - { id: build, title: Build, state: done, hint: Register a release., href: "/apps/1#build", action: Register a release }
+            - { id: verify, title: Verify, state: next, hint: Verify the release against its scenarios., href: /releases/5, action: Verify release }
+            - { id: open, title: Open or download, state: todo, hint: Publish the tested release., href: /releases/5, action: Publish release }
+          next: { id: verify, title: Verify, state: next, hint: Verify the release against its scenarios., href: /releases/5, action: Verify release }
+        tested_release: null
+        releases:
+          - { id: 5, version: 1.0.0, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
+        packages:
+          - { rev: 2, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, sha256: 1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c, size: 18432, approved_by: ana, approved_at: "2026-11-18T09:30:00+00:00" }
+          - { rev: 1, revision: 4c0d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c, sha256: 0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b, size: 16210, approved_by: ana, approved_at: "2026-11-10T14:00:00+00:00" }
+        statuses:
+          - { value: known, label: Confirmed application }
+          - { value: discovered, label: "Discovered: decide scope" }
+          - { value: not_replicated, label: Not replicated }
+    AppDetailViewer:
+      value:
+        id: 1
+        name: Billing Desk
+        status: known
+        status_label: Confirmed application
+        owner: ana
+        purpose: Invoice from saved orders
+        my_role: viewer
+        git_url: https://github.com/example/billing-desk-demo
+        url_match: path
+        surface: web
+        journey:
+          stage: Verify
+          missing: []
+          out_of_scope: false
+          steps:
+            - { id: choose, title: Choose application, state: done, hint: Confirm the application., href: "/apps/1#choose", action: Choose }
+            - { id: examples, title: Add examples, state: done, hint: Record the process., href: "/apps/1#examples", action: Request a recording }
+            - { id: behaviour, title: Review required behaviour, state: done, hint: Add a business scenario., href: "/apps/1#behaviour", action: Add a scenario }
+            - { id: build, title: Build, state: done, hint: Register a release., href: "/apps/1#build", action: Register a release }
+            - { id: verify, title: Verify, state: next, hint: Verify the release against its scenarios., href: /releases/5, action: Verify release }
+            - { id: open, title: Open or download, state: todo, hint: Publish the tested release., href: /releases/5, action: Publish release }
+          next: { id: verify, title: Verify, state: next, hint: Verify the release against its scenarios., href: /releases/5, action: Verify release }
+        tested_release: null
+        releases:
+          - { id: 5, version: 1.0.0, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
+        packages: []
+        statuses:
+          - { value: known, label: Confirmed application }
+          - { value: discovered, label: "Discovered: decide scope" }
+          - { value: not_replicated, label: Not replicated }
+
+    Roles:
+      value:
+        role_names: [viewer, builder, owner]
+        roles:
+          - { user_name: ana, role: owner, assigned_by: ana, assigned_at: "2026-11-01T09:00:00+00:00" }
+          - { user_name: ben, role: builder, assigned_by: ana, assigned_at: "2026-11-02T09:00:00+00:00" }
+          - { user_name: vic, role: viewer, assigned_by: ana, assigned_at: "2026-11-02T09:05:00+00:00" }
+
+    History:
+      value:
+        app: { id: 1, name: Billing Desk }
+        entries:
+          - { id: 12, at: "2026-11-18T09:30:00+00:00", actor: ana, action: package.freeze, object_type: builder_package, object_id: 1/rev2, details: { rev: 2, sha256: 1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c } }
+          - { id: 9, at: "2026-11-02T09:00:00+00:00", actor: ana, action: role.assign, object_type: role, object_id: 1/ben, details: { user: ben, role: builder, previous: null } }
+
+    AppSetup:
+      value:
+        app: { id: 1, name: Billing Desk, git_url: https://github.com/example/billing-desk-demo, url_match: path, required_checks: "build\ntest (*)", target_platform: web, windows_check_pattern: "", lab_url: "", launch: Open the demo URL. }
+        identities:
+          - { key: "web:https://billing.example.test/desk", surface: web }
+        platforms:
+          - { value: "", label: Not set }
+          - { value: web, label: Web }
+          - { value: windows-desktop, label: Windows desktop }
+        github_repo: example/billing-desk-demo
+        github_token_configured: true
+        default_windows_pattern: "*windows*"
+        releases:
+          - { id: 5, version: 1.0.0, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
+
+    VerifyOutcome:
+      value: { release_id: 5, tested: false, reasons: ["Required check build is not green."], report_sha: 2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f }
+
+    MergePlan:
+      value:
+        source: { id: 3, name: Outlook, url_match: path }
+        target: { id: 1, name: Billing Desk, url_match: path }
+        identities: ["exe:OUTLOOK.EXE"]
+        flows: [{ recording_id: 9f2c4e1a7b3d5f60, name: Order to invoice, key: "exe:OUTLOOK.EXE", shared: false }]
+        links: []
+        combined: []
+        automations: []
+        briefs: []
+        scenarios: []
+        blockers: []
+        fingerprint: 0a1b2c3d4e5f6a7b
+
+    AppEvidence:
+      value:
+        recorded_flows:
+          - recording_id: 9f2c4e1a7b3d5f60
+            recording_name: Order to invoice
+            key: "web:https://billing.example.test/desk"
+            level: full
+            machine: CLERK-PC
+            received_at: "2026-11-15T10:42:00+00:00"
+            steps:
+              - { n: 1, seq: 1, event_id: 0b1c2d3e-0000-4000-8000-000000000001, action: click, control: button, label: Search, screen: Orders }
+              - { n: 2, seq: 2, event_id: 0b1c2d3e-0000-4000-8000-000000000002, action: click, control: button, label: Invoice, screen: Order 1001 }
+        links:
+          - { recording_id: 9f2c4e1a7b3d5f60, name: Order to invoice, selected_count: 2, suggested_count: 0, reviewed: true, notes: Invoice is created from the saved order. }
+        attachments:
+          - { id: 4, title: Invoice screen, kind: Screen, extension: .png, share: restricted, added_by: ana }
+        automations:
+          - { id: 1, name: UiPath order to invoice }
+        attachment_kinds:
+          Screen: [.jpeg, .jpg, .png]
+          API: [.har, .json, .md, .txt, .yaml, .yml]
+          Database: [.csv, .json, .md, .sql, .txt]
+          Utility: [.csv, .json, .md, .txt]
+          Acceptance: [.json, .md, .txt]
+        share_states:
+          - { value: restricted, label: Restricted evidence (not shared with the builder) }
+          - { value: reviewed, label: "Reviewed by the owner: share, redacted" }
+          - { value: synthetic, label: "Synthetic data: share, redacted" }
+        merge_candidates:
+          - { id: 2, name: CaseDesk }
+          - { id: 3, name: Outlook }
+
+    Attachment:
+      value: { id: 4, title: Invoice screen, kind: Screen, extension: .png, share: restricted, added_by: ana }
+
+    ScenarioInput:
+      value:
+        name: Create an invoice from a saved order
+        starting: Signed in as a clerk; order 1001 exists and is unpaid.
+        actions: "Search for the order\nOpen it and press Invoice"
+        expected: An invoice for order 1001 is shown with status Open.
+        failures: "Unknown order number: 'No order found' and no invoice"
+        examples: "Order number: 1001\nCustomer: Example Ltd"
+        questions: ""
+        notes: ""
+        events: ["9f2c4e1a7b3d5f60#0b1c2d3e-0000-4000-8000-000000000001"]
+    Scenario:
+      value:
+        id: 11
+        name: Create an invoice from a saved order
+        starting: Signed in as a clerk; order 1001 exists and is unpaid.
+        actions: "Search for the order\nOpen it and press Invoice"
+        expected: An invoice for order 1001 is shown with status Open.
+        failures: "Unknown order number: 'No order found' and no invoice"
+        examples: "Order number: 1001\nCustomer: Example Ltd"
+        questions: ""
+        notes: ""
+        events: ["9f2c4e1a7b3d5f60#0b1c2d3e-0000-4000-8000-000000000001"]
+    ScenarioList:
+      value:
+        scenarios:
+          - id: 11
+            name: Create an invoice from a saved order
+            starting: Signed in as a clerk; order 1001 exists and is unpaid.
+            actions: "Search for the order\nOpen it and press Invoice"
+            expected: An invoice for order 1001 is shown with status Open.
+            failures: "Unknown order number: 'No order found' and no invoice"
+            examples: "Order number: 1001\nCustomer: Example Ltd"
+            questions: ""
+            notes: ""
+            events: ["9f2c4e1a7b3d5f60#0b1c2d3e-0000-4000-8000-000000000001"]
+        fields:
+          - { key: name, label: Scenario name, max_length: 200 }
+          - { key: starting, label: Starting conditions, max_length: 4000 }
+          - { key: actions, label: Actions (one per line), max_length: 8000 }
+          - { key: expected, label: Expected result, max_length: 4000 }
+          - { key: failures, label: Failure cases (one per line), max_length: 4000 }
+          - { key: examples, label: "Synthetic example values (one per line, made-up data only)", max_length: 4000 }
+          - { key: questions, label: Unresolved questions (one per line), max_length: 4000 }
+          - { key: notes, label: Notes, max_length: 20000 }
+        event_choices:
+          - { ref: "9f2c4e1a7b3d5f60#0b1c2d3e-0000-4000-8000-000000000001", seq: 1, action: click, label: Search, screen: Orders, recording: Order to invoice }
+          - { ref: "9f2c4e1a7b3d5f60#0b1c2d3e-0000-4000-8000-000000000002", seq: 2, action: click, label: Invoice, screen: Order 1001, recording: Order to invoice }
+
+    PackageList:
+      value:
+        app: { id: 1, name: Billing Desk }
+        packages:
+          - { rev: 2, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, sha256: 1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c, size: 18432, approved_by: ana, approved_at: "2026-11-18T09:30:00+00:00" }
+          - { rev: 1, revision: 4c0d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c, sha256: 0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b, size: 16210, approved_by: ana, approved_at: "2026-11-10T14:00:00+00:00" }
+    PackageDraft:
+      value:
+        app: { id: 1, name: Billing Desk }
+        revision: 6e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d1e
+        sha256: 8d2f4b6a0c1e3f5a7b9d1c3e5f7a9b1d3c5e7f9a1b3d5c7e9f1a3b5d7c9e1f3a
+        size: 19876
+        summary: 1 item excluded, 1 redacted.
+        files:
+          - { path: BRIEF.md, size: 1204, sha256: aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66, text: "# Billing Desk\n\nCreate an invoice from a saved order.\n" }
+          - { path: evidence/invoice.png, size: 18672, sha256: bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66ee77, text: null }
+        report:
+          - { item: Invoice screen, outcome: excluded, reasons: ["restricted evidence: the owner has not marked this screenshot reviewed or synthetic"] }
+          - { item: orders.har, outcome: redacted, reasons: [credentials removed, 2 e-mail addresses] }
+        latest: { rev: 2, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, sha256: 1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c, size: 18432, approved_by: ana, approved_at: "2026-11-18T09:30:00+00:00" }
+        unchanged: false
+        next_rev: 3
+    PackageRevision2:
+      value:
+        app: { id: 1, name: Billing Desk }
+        rev: 2
+        revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d
+        sha256: 1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c
+        size: 18432
+        approved_by: ana
+        approved_at: "2026-11-18T09:30:00+00:00"
+        summary: First scenario with recorded events.
+        diff: ""
+        files:
+          - { path: BRIEF.md, size: 1100, sha256: aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66 }
+        report: null
+    PackageRevision3:
+      value:
+        app: { id: 1, name: Billing Desk }
+        rev: 3
+        revision: 6e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d1e
+        sha256: 8d2f4b6a0c1e3f5a7b9d1c3e5f7a9b1d3c5e7f9a1b3d5c7e9f1a3b5d7c9e1f3a
+        size: 19876
+        approved_by: ana
+        approved_at: "2026-11-20T10:00:00+00:00"
+        summary: Adds the unpaid-order scenario.
+        diff: "--- BRIEF.md\n+++ BRIEF.md\n+Unpaid orders only.\n"
+        files:
+          - { path: BRIEF.md, size: 1204, sha256: aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66 }
+          - { path: evidence/invoice.png, size: 18672, sha256: bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66ee77 }
+        report:
+          - { item: Invoice screen, outcome: excluded, reasons: ["restricted evidence: the owner has not marked this screenshot reviewed or synthetic"] }
+
+    BuildSummary7:
+      value: &build7
+        id: 7
+        app_id: 1
+        provider: claude
+        provider_label: Claude
+        model: claude-opus-5-5
+        state: waiting_for_answer
+        state_label: Waiting for your answer
+        final: false
+        revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d
+        package_rev: 2
+        pack_sha256: 1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c
+        repo: example/billing-desk-demo
+        base_branch: main
+        base_sha: 9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d
+        branch: twinlab2/app-1/session-7-claude
+        parent_build: null
+        budget: 20
+        budget_unit: USD
+        cost: 3.5
+        cost_unit: USD
+        pr_number: null
+        pr_url: null
+        head_sha: null
+        outstanding: 1
+        requested_by: ben
+        created_at: "2026-11-20T08:00:00+00:00"
+    BuildPage:
+      value:
+        app: { id: 1, name: Billing Desk }
+        pack:
+          rev: 2
+          revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d
+          sha256: 1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c
+          size: 18432
+          approved_by: ana
+          approved_at: "2026-11-18T09:30:00+00:00"
+          files:
+            - { path: BRIEF.md, size: 1100, sha256: aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66, text: "# Billing Desk\n" }
+        problem: null
+        frozen: { frozen_by: ana, frozen_at: "2026-11-18T09:30:00+00:00" }
+        repos:
+          - { repo: example/billing-desk-demo, default_branch: main, private: true, connected_by: root }
+        providers:
+          - { name: devin, label: Devin, capabilities: [start, read_events, reply], capability_text: "start, read events, reply", ready: "Devin is not configured: an admin sets the API key and organisation under Setup.", budget_unit: ACU, budget: 10, model: "", status_label: "" }
+          - { name: claude, label: Claude, capabilities: [start, reply, tool_approval], capability_text: "start, reply, tool approvals", ready: null, budget_unit: USD, budget: 20, model: claude-opus-5-5, status_label: "" }
+        revisions:
+          - { rev: 2, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, sha256: 1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c, size: 18432, approved_by: ana, approved_at: "2026-11-18T09:30:00+00:00" }
+        sessions: [*build7]
+        previous: *build7
+        changes: []
+        default_budget: 10
+        starting_points: []
+    BuildStarted:
+      value:
+        build: *build7
+        created: true
+        notice: null
+    BuildDetail:
+      value:
+        build:
+          <<: *build7
+          error: null
+          note: null
+          change_summary: ""
+          previous_revision: null
+          provider_session_id: sess_01
+          provider_url: null
+          provider_status: running
+          provider_detail: null
+        app: { id: 1, name: Billing Desk }
+        messages:
+          - { id: 31, direction: from_provider, kind: clarification, author: Claude, body: Is VAT added before or after the discount?, created_at: "2026-11-20T08:10:00+00:00", state: received, state_label: Received, error: null, reply_to: null, scenario_id: null, data: {}, decision: null }
+          - { id: 32, direction: from_provider, kind: tool_approval, author: Claude, body: "", created_at: "2026-11-20T08:11:00+00:00", state: received, state_label: Received, error: null, reply_to: null, scenario_id: null, data: { tool: bash, input: { command: npm test } }, decision: null }
+        questions: []
+        outstanding: [{ id: 31, kind: clarification }]
+        capabilities: [start, reply, tool_approval, cancel]
+        parent: null
+        frozen: true
+        notice: null
+    AnswerResult:
+      value:
+        message: { id: 33, direction: to_provider, kind: clarification, author: ben, body: VAT is added after the discount., created_at: "2026-11-20T08:20:00+00:00", state: queued, state_label: Queued, error: null, reply_to: 31, scenario_id: null, data: {}, decision: null }
+        created: true
+        notice: null
+    Comparison:
+      value:
+        app: { id: 1, name: Billing Desk }
+        results:
+          - build:
+              <<: *build7
+              state: ready_for_verification
+              state_label: Ready for verification
+              final: true
+              head_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b
+              outstanding: 0
+            release: { id: 5, version: 1.0.0, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested }
+            checks: [{ name: build, conclusion: success }]
+            reasons: []
+            tested: true
+            scenarios: [{ name: Create an invoice from a saved order, result: pass }]
+        errors: []
+
+    RecordingStatusComplete:
+      value: &statusComplete
+        label: Complete
+        summary: Every channel recorded the whole session
+        attention: false
+        accepted: false
+        accepted_by: null
+        accepted_at: null
+        workstation: true
+        completeness:
+          overall: complete
+          recovered: false
+          loss_window_seconds: null
+          network_evidence: captured
+          channels:
+            steps: { status: complete, gaps: [], notes: [] }
+            network: { status: complete, gaps: [], notes: [] }
+        preflight:
+          ready: true
+          checks: [{ name: Recorder can see the target application, ok: true, detail: null }]
+    RecordingList:
+      value:
+        recordings:
+          - id: 9f2c4e1a7b3d5f60
+            name: Order to invoice
+            machine: CLERK-PC
+            received_at: "2026-11-15T10:42:00+00:00"
+            automation: UiPath order to invoice
+            apps: Billing Desk (full), CaseDesk (steps)
+            status: *statusComplete
+    RecordingDetail:
+      value:
+        id: 9f2c4e1a7b3d5f60
+        name: Order to invoice
+        status: *statusComplete
+        upload: { text: Uploaded, percent: 100, complete: true }
+        preview:
+          - app_id: 1
+            name: Billing Desk
+            count: 2
+            reviewed: true
+            suggested: 0
+            events:
+              - { event_id: 0b1c2d3e-0000-4000-8000-000000000001, seq: 1, action: click, source: billing.example.test, control: button, label: Search, screen: Orders, time: "2026-11-15T10:30:05+00:00", channel: steps, in_gap: false }
+              - { event_id: 0b1c2d3e-0000-4000-8000-000000000002, seq: 2, action: click, source: billing.example.test, control: button, label: Invoice, screen: Order 1001, time: "2026-11-15T10:30:20+00:00", channel: steps, in_gap: false }
+        refs:
+          machine: CLERK-PC
+          automation: UiPath order to invoice
+          session: { id: 20261115T103000Z-1a2b3c4d, started: "2026-11-15T10:30:00+00:00", ended: "2026-11-15T10:41:00+00:00", state: stopped }
+          contract: { recorder: TwinLabRecorder, recorder_version: 1.4.0, contract_version: "1.1", twinlab_commit: 90bdd91c0ffee00000000000000000000000000 }
+          timeline:
+            - { app: "web:https://billing.example.test", name: Billing Desk, steps: 2 }
+            - { app: "exe:CaseDesk.exe", name: CaseDesk, steps: 3 }
+            - { app: presence, name: Other applications, steps: 1 }
+          ranges: []
+          apps:
+            - app_id: 1
+              name: Billing Desk
+              status: known
+              status_label: Confirmed application
+              level: full
+              key: "web:https://billing.example.test/desk"
+              my_role: owner
+              steps:
+                - { n: 1, seq: 1, event_id: 0b1c2d3e-0000-4000-8000-000000000001, action: click, control: button, label: Search, screen: Orders }
+                - { n: 2, seq: 2, event_id: 0b1c2d3e-0000-4000-8000-000000000002, action: click, control: button, label: Invoice, screen: Order 1001 }
+              latest_package: { rev: 2, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, sha256: 1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c, size: 18432, approved_by: ana, approved_at: "2026-11-18T09:30:00+00:00" }
+            - app_id: 2
+              name: CaseDesk
+              status: known
+              status_label: Confirmed application
+              level: steps
+              key: "exe:CaseDesk.exe"
+              my_role: owner
+              steps:
+                - { n: 1, seq: 3, event_id: 0b1c2d3e-0000-4000-8000-000000000003, action: dblclick, control: list item, label: Case 77, screen: Open cases }
+                - { n: 2, seq: 4, event_id: 0b1c2d3e-0000-4000-8000-000000000004, action: type, control: edit, label: Note, screen: Case 77 }
+                - { n: 3, seq: 5, event_id: 0b1c2d3e-0000-4000-8000-000000000005, action: click, control: button, label: Close case, screen: Case 77 }
+              latest_package: { rev: 1, revision: 7f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d1e2f, sha256: 2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d, size: 9120, approved_by: ana, approved_at: "2026-11-16T11:00:00+00:00" }
+        events:
+          - { event_id: 0b1c2d3e-0000-4000-8000-000000000001, seq: 1, action: click, source: billing.example.test, control: button, label: Search, screen: Orders, in_gap: false }
+          - { event_id: 0b1c2d3e-0000-4000-8000-000000000002, seq: 2, action: click, source: billing.example.test, control: button, label: Invoice, screen: Order 1001, in_gap: false }
+          - { event_id: 0b1c2d3e-0000-4000-8000-000000000003, seq: 3, action: dblclick, source: CaseDesk.exe, control: list item, label: Case 77, screen: Open cases, in_gap: false }
+          - { event_id: 0b1c2d3e-0000-4000-8000-000000000004, seq: 4, action: type, source: CaseDesk.exe, control: edit, label: Note, screen: Case 77, in_gap: false }
+          - { event_id: 0b1c2d3e-0000-4000-8000-000000000005, seq: 5, action: click, source: CaseDesk.exe, control: button, label: Close case, screen: Case 77, in_gap: true }
+        assignable_apps:
+          - { id: 1, name: Billing Desk }
+          - { id: 2, name: CaseDesk }
+    Assignment:
+      value:
+        app_id: 1
+        recording_id: 9f2c4e1a7b3d5f60
+        saved: true
+        reviewed: true
+        selected: [0b1c2d3e-0000-4000-8000-000000000001, 0b1c2d3e-0000-4000-8000-000000000002]
+        suggested: []
+        notes: Invoice is created from the saved order.
+
+    CaptureSession:
+      value:
+        id: 14
+        name: Order to invoice
+        status: offered
+        machine: CLERK-PC
+        automation: UiPath order to invoice
+        targets: [{ app_id: 1, name: Billing Desk, level: full }, { app_id: 2, name: CaseDesk, level: steps }]
+        recording_id: null
+        created_by: ana
+        created_at: "2026-11-20T09:00:00+00:00"
+    CapturePage:
+      value:
+        sessions:
+          - id: 14
+            name: Order to invoice
+            status: offered
+            machine: CLERK-PC
+            automation: UiPath order to invoice
+            targets: [{ app_id: 1, name: Billing Desk, level: full }, { app_id: 2, name: CaseDesk, level: steps }]
+            recording_id: null
+            created_by: ana
+            created_at: "2026-11-20T09:00:00+00:00"
+        machines: [{ id: 2, name: CLERK-PC }]
+        apps:
+          - { id: 1, name: Billing Desk, identity_count: 1 }
+          - { id: 2, name: CaseDesk, identity_count: 1 }
+          - { id: 3, name: Outlook, identity_count: 0 }
+        automations: [{ id: 1, name: UiPath order to invoice }]
+
+    MachineList:
+      value:
+        code_minutes: 10
+        machines:
+          - { id: 2, name: CLERK-PC, paired_by: ana, paired_at: "2026-11-01T08:00:00+00:00", last_seen: "2026-11-20T08:55:00+00:00", recorder: TwinLabRecorder 1.4.0, contract_version: "1.1", revoked_at: null }
+          - { id: 3, name: OLD-PC, paired_by: ana, paired_at: "2026-09-01T09:00:00+00:00", last_seen: null, recorder: "", contract_version: null, revoked_at: "2026-10-01T09:00:00+00:00" }
+
+    AutomationPage:
+      value:
+        automations:
+          - { id: 1, name: UiPath order to invoice, kind: uipath, notes: "", apps: "Billing Desk, CaseDesk" }
+        apps:
+          - { id: 1, name: Billing Desk }
+          - { id: 2, name: CaseDesk }
+    AutomationDetail:
+      value:
+        automation: { id: 1, name: UiPath order to invoice, kind: uipath, notes: Imported from automation.yaml., apps: "Billing Desk, CaseDesk" }
+        apps:
+          - { id: 1, name: Billing Desk }
+          - { id: 2, name: CaseDesk }
+        recordings:
+          - { id: 9f2c4e1a7b3d5f60, name: Order to invoice, received_at: "2026-11-15T10:42:00+00:00" }
+
+    ReleaseDetail:
+      value:
+        release: { id: 5, version: 1.0.0, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b, archive_sha: 7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b, state: tested, published_at: null, repository: example/billing-desk-demo, pr_number: 12, source_ref: null }
+        app: { id: 1, name: Billing Desk }
+        my_role: owner
+        can_download: true
+        deployments:
+          - environment: OpenShift demo
+            url: https://billing-demo.apps.example.test
+            username: demo
+            secret_ref: vault:demo/billing
+            verification: verified
+            label: Verified
+            reason: The deployment reports this release's commit.
+            observed_commit: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b
+            checked_at: "2026-11-19T16:02:00+00:00"
+        test:
+          commit_sha: 3f9a1c2d4e5b6a7980a1b2c3d4e5f60718293a4b
+          platform: Web
+          launch: Open the demo URL.
+          reset_result: pass
+          reset_notes: ""
+          tested_by: ana
+          tested_at: "2026-11-19T16:00:00+00:00"
+          results:
+            - { id: s1, name: Create an invoice from a saved order, result: pass }
+            - { id: s2, name: Unknown order number, result: pass }
+        scenarios:
+          - { id: s1, name: Create an invoice from a saved order }
+          - { id: s2, name: Unknown order number }
+        results: [pass, fail, not-run]
+        checks:
+          repository: example/billing-desk-demo
+          pr_number: 12
+          source_ref: null
+          platform: Web
+          required: [{ pattern: build, state: success }]
+          windows: { required: false, state: missing, checks: [], pattern: "*windows*" }
+          checked_at: "2026-11-19T15:58:00+00:00"
+          checks: [{ name: build, kind: check_run, conclusion: success, url: null, completed_at: "2026-11-19T15:50:00+00:00" }]
+          reasons: []
+          reports: [{ id: 1, created_at: "2026-11-19T16:00:00+00:00", sha256: 2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f }]
+        version_path: .twinlab/version
+        notice: null
+
+    BuildSetup:
+      value:
+        devin: { api_key_set: false, api_key_source: null, org_id: null, org_id_source: null, base_url: "https://api.devin.ai" }
+        devin_error: null
+        github: { token_set: true, source: environment, api: "https://api.github.com" }
+        saved: { DEVIN_API_KEY: false, GITHUB_TOKEN: false, ANTHROPIC_API_KEY: true, COPILOT_GITHUB_TOKEN: false }
+        settings: { DEVIN_ORG_ID: null, DEVIN_BASE_URL: null, GITHUB_API: null, DEFAULT_ACU_BUDGET: "10", CLAUDE_MODEL: claude-opus-5-5, DEFAULT_CLAUDE_BUDGET_USD: "20", COPILOT_MODEL: null }
+        repos:
+          - { repo: example/billing-desk-demo, default_branch: main, private: true, connected_by: root }
+        providers:
+          - { name: claude, label: Claude, capabilities: [start, reply], capability_text: "start, reply", ready: null, budget_unit: USD, budget: 20, model: claude-opus-5-5, status_label: "" }
+        workers:
+          - { id: w-1, started_at: "2026-11-20T07:00:00", seen_at: "2026-11-20T09:00:00", current_job: null, stopped_at: null, state: running }
+        jobs:
+          - { id: 1f2e3d4c5b6a, type: build.start, state: done, attempts: 1, due: null, lease_owner: null, error: null }
+        job_counts: { queued: 0, running: 0, done: 1, failed: 0 }
+        lease_seconds: 60
+        dev_worker: true
+        budget: 10
+        claude_budget: 20
+
+    UserList:
+      value:
+        users:
+          - { name: ana, has_password: true, is_admin: false, created_by: root, created_at: "2026-11-01T08:00:00+00:00" }
+          - { name: ben, has_password: true, is_admin: false, created_by: root, created_at: "2026-11-01T08:01:00+00:00" }
+          - { name: root, has_password: true, is_admin: true, created_by: cli, created_at: "2026-10-30T12:00:00+00:00" }
