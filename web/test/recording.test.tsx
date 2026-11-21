@@ -2,7 +2,7 @@ import { screen, within } from "@testing-library/react";
 import { HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 import { example, on } from "./contract";
-import { renderApp } from "./render";
+import { choose, renderApp } from "./render";
 import { server } from "./setup";
 
 describe("a recording that holds several applications", () => {
@@ -51,7 +51,7 @@ describe("a recording that holds several applications", () => {
       return HttpResponse.json(example("saveAssignment") as never);
     }));
     const { user } = renderApp("/recordings/9f2c4e1a7b3d5f60", "owner");
-    await user.selectOptions(await screen.findByLabelText("Demo app"), "CaseDesk");
+    await choose(user, "Demo app", "CaseDesk");
     await user.click(screen.getByRole("button", { name: "Open assignment" }));
     const form = await screen.findByRole("form", { name: "Assignment" });
     // the saved selection of the example (events 1 and 2) is loaded; add event 5

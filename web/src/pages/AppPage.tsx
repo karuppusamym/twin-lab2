@@ -2,10 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, data, postForm, type Schemas } from "../api/client";
+import { Combobox } from "../components/Combobox";
 import { ScenarioForm } from "../components/ScenarioForm";
 import { FlowTable, JourneyNav } from "../components/shared";
 import { ActionButton, Badge, ConflictView, Crumbs, DirtyNote, ErrorText, QueryView, conflictOf, useAction, useDraft, useField, useLeaveWarning, useTitle } from "../components/ui";
-import { plural, short, when } from "../lib/format";
+import { plural, releaseName, short, when } from "../lib/format";
 import { useCan, useRefreshSession } from "../session";
 
 export function useAppId() {
@@ -112,14 +113,14 @@ function AppView({ item, evidence, scenarios, evidenceError }: {
         )}
         <h3>Releases</h3>
         {item.releases.length ? item.releases.map((r) => (
-          <p key={r.id}><Link to={`/releases/${r.id}`}>{r.version}</Link> <code>{short(r.commit_sha)}</code> <Badge kind={r.state}>{r.state.charAt(0).toUpperCase() + r.state.slice(1)}</Badge></p>
+          <p key={r.id}><Link to={`/releases/${r.id}`} aria-label={`Release ${releaseName(item.name, r)}`}>{releaseName(null, r)}</Link> <code className="muted">{short(r.commit_sha)}</code> <Badge kind={r.state}>{r.state.charAt(0).toUpperCase() + r.state.slice(1)}</Badge></p>
         )) : <p>No release yet. {builder ? <>A release comes from a build: <Link to={`/apps/${item.id}/build#register`}>verify a build session&apos;s commit, or register a commit</Link>.</> : "It appears here once a build is registered."}</p>}
       </section>
 
       <section id="verify" aria-labelledby="verify-h">
         <h2 id="verify-h">{n("verify")}. Verify, then open or download</h2>
         {item.releases[0]
-          ? <p>Verify and open each release from its page: <Link to={`/releases/${item.releases[0].id}`}>{item.releases[0].version}</Link> is the latest.</p>
+          ? <p>Verify and open each release from its page: <Link to={`/releases/${item.releases[0].id}`}>{releaseName(item.name, item.releases[0])}</Link> is the latest.</p>
           : <p>A release appears here once it is built and registered.</p>}
       </section>
     </>
@@ -217,12 +218,9 @@ function OwnerForms({ item, others }: { item: Schemas["AppDetail"]; others: Sche
         <button disabled={saveStatus.isPending}>Save</button>
       </form>
       {others.length > 0 && (
-        <form aria-label="Merge" onSubmit={(e) => { e.preventDefault(); navigate(`/apps/${item.id}/merge?into=${into || others[0]?.id}`); }}>
-          <label>Same application as
-            <select value={into || String(others[0]?.id)} onChange={(e) => setInto(e.target.value)}>
-              {others.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-            </select>
-          </label>
+        <form aria-label="Merge" onSubmit={(e) => { e.preventDefault(); if (into || others[0]) navigate(`/apps/${item.id}/merge?into=${into || others[0]?.id}`); }}>
+          <Combobox label="Same application as" value={into || String(others[0]?.id)} onChange={setInto} required
+            options={others.map((o) => ({ value: String(o.id), label: o.name }))} />
           <button className="secondary">Preview merge</button>
         </form>
       )}

@@ -20,7 +20,7 @@ const MAIN_PAGES: [path: string, heading: RegExp, who?: Who][] = [
   ["/apps/1/build-pack/preview", /Builder package preview/],
   ["/apps/1/build", /Build sessions: Billing Desk/],
   ["/builds/7", /Build session #7: Billing Desk, Claude/],
-  ["/releases/5", /Billing Desk 1.0.0/],
+  ["/releases/5", /Billing Desk 1.1/],
   ["/sessions", /^Request a recording$/],
   ["/setup", /^Setup$/],
   ["/admin/users", /Users and portal admins/, "admin"],

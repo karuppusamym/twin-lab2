@@ -22,7 +22,7 @@ describe("role gating on an application's page", () => {
     expect(screen.queryByRole("link", { name: "Preview and approve a builder package" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Builder-approved packages" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Audit history" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: "1.0.0" })[0]).toHaveAttribute("href", "/releases/5");
+    expect(screen.getAllByRole("link", { name: "Release Billing Desk 1.1 (3f9a1c2)" })[0]).toHaveAttribute("href", "/releases/5");
     expect(seen.map((r) => r.path).filter((p) => evidencePaths.includes(p))).toEqual([]);
   });
 

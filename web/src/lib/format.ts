@@ -27,3 +27,13 @@ export function capitalize(value: string) {
 export function words(value: string) {
   return value.replace(/_/g, " ");
 }
+
+/** A release as people say it: "Billing 1.2 (7c41e9b)". The full commit stays on the release page. */
+export function releaseName(app: string | null | undefined, release: { label: string; commit_sha: string }) {
+  return `${app ? `${app} ` : ""}${release.label} (${release.commit_sha.slice(0, 7)})`;
+}
+
+/** The GitHub page of a commit, when the repository is a GitHub "owner/name". */
+export function commitUrl(repository: string | null | undefined, sha: string | null | undefined) {
+  return repository && sha && /^[\w.-]+\/[\w.-]+$/.test(repository) ? `https://github.com/${repository}/commit/${sha}` : null;
+}

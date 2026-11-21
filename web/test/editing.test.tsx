@@ -6,7 +6,7 @@ import { HttpResponse } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { affectedFamilies } from "../src/components/ui";
 import { example, on } from "./contract";
-import { renderApp } from "./render";
+import { choose, renderApp } from "./render";
 import { server } from "./setup";
 
 type Assignment = { revision: number; notes: string; selected: string[]; saved: boolean; removed: boolean };
@@ -15,7 +15,7 @@ const E = (n: number) => `0b1c2d3e-0000-4000-8000-00000000000${n}`;
 
 async function openAssignment(path = RECORDING) {
   const rendered = renderApp(path, "owner");
-  await rendered.user.selectOptions(await screen.findByLabelText("Demo app"), "CaseDesk");
+  await choose(rendered.user, "Demo app", "CaseDesk");
   await rendered.user.click(screen.getByRole("button", { name: "Open assignment" }));
   const form = await screen.findByRole("form", { name: "Assignment" });
   await within(form).findByLabelText(/^1 · click/);
@@ -249,19 +249,20 @@ describe("a recording with 2,000 events", () => {
         const limit = Number(p.get("limit") ?? 100);
         const offset = Number(p.get("offset") ?? 0);
         return HttpResponse.json({
-          events: found.slice(offset, offset + limit), sources: [{ source: "CaseDesk.exe", count: 1000 }, { source: "billing.example.test", count: 1000 }],
+          events: found.slice(offset, offset + limit), sources: [{ source: "CaseDesk.exe", count: 1000 }, { source: "billing.example.test", count: 1000 }], screens: [],
           page: { total: found.length, limit, offset, next_offset: offset + limit < found.length ? offset + limit : null },
           ...(p.get("ids") === "true" ? { ids: found.map((e) => e.event_id) } : {}),
         } as never);
       }),
     );
     const { user } = renderApp(RECORDING, "owner");
-    await user.selectOptions(await screen.findByLabelText("Demo app"), "CaseDesk");
+    await choose(user, "Demo app", "CaseDesk");
     await user.click(screen.getByRole("button", { name: "Open assignment" }));
     const table = await screen.findByRole("table", { name: "Recording events" });
-    expect(within(table).getAllByRole("row")).toHaveLength(101);  // a header and one page
-    expect(screen.getByText("2000 matching events")).toBeInTheDocument();
-    expect(within(screen.getByRole("navigation", { name: "Event pages" })).getByRole("status")).toHaveTextContent("1–100 of 2000");
+    expect(within(table).getAllByRole("checkbox")).toHaveLength(100);  // one page
+    expect(within(table).getAllByRole("rowheader").length).toBeGreaterThan(0);  // grouped by screen
+    expect(screen.getByText(/^2000 matching events/)).toBeInTheDocument();
+    expect(within(screen.getByRole("navigation", { name: "Recording events: pages" })).getByRole("status")).toHaveTextContent("1–100 of 2000");
 
     const started = performance.now();
     await user.click(screen.getByRole("button", { name: "Select all 2000 matching" }));
@@ -270,7 +271,7 @@ describe("a recording with 2,000 events", () => {
     expect(within(table).getAllByRole("checkbox").every((c) => (c as HTMLInputElement).checked)).toBe(true);
 
     await user.type(screen.getByRole("searchbox", { name: "Search events" }), "screen 39");
-    await waitFor(() => expect(screen.getByText("50 matching events")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/^50 matching events/)).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "Clear 50 matching" }));
     expect(await screen.findByText(/^1950 events selected/)).toBeInTheDocument();
   });

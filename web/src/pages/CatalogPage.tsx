@@ -122,7 +122,7 @@ function AppCard({ app }: { app: Schemas["AppSummary"] }) {
         <dt>Stage</dt><dd>{j.stage}</dd>
         {j.missing.length > 0 && <><dt>Missing</dt><dd>{j.missing.join(", ")}</dd></>}
       </dl>
-      {app.tested_release && <TestedReleaseLine release={app.tested_release} />}
+      {app.tested_release && <TestedReleaseLine release={app.tested_release} app={app.name} />}
       {j.out_of_scope ? (
         <p className="muted">Recordings note it only as used.</p>
       ) : j.next ? (
