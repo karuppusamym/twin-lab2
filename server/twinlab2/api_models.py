@@ -1048,7 +1048,7 @@ class PausedPeriods_PeriodsItem(Model):
 
 
 class PausedPeriods(Model):
-    """Recorder contract 1.6: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap."""
+    """Recorder contract 1.7: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap."""
     count: int
     seconds: float
     periods: list[PausedPeriods_PeriodsItem]

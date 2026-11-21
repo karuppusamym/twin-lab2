@@ -3245,7 +3245,7 @@ export interface components {
             local_exclusions?: components["schemas"]["LocalExclusions"];
             paused?: components["schemas"]["PausedPeriods"];
         };
-        /** @description Recorder contract 1.6: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap. */
+        /** @description Recorder contract 1.7: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap. */
         PausedPeriods: {
             /** @description How many times the recording was paused. */
             count: number;

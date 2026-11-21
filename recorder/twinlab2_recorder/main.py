@@ -431,11 +431,35 @@ def window_parts() -> str:
     return f"pywebview {version}".strip() + f", page {webwindow.UI.name}/index.html"
 
 
+def dpi_aware() -> float:
+    """Declare this process DPI-aware before its first window, so Windows does not stretch the
+    window as a bitmap (blurred text, and PrintWindow shows it in a corner of a larger frame at
+    150 %). -> the scale of the primary display (1.0 at 96 dpi, 1.5 at 144 dpi). Only the
+    window's process: the collectors run in processes of their own."""
+    if sys.platform != "win32":
+        return 1.0
+    import ctypes
+
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per monitor
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()  # Windows 7: the system DPI
+        except (AttributeError, OSError):
+            return 1.0
+    try:
+        dpi = int(ctypes.windll.user32.GetDpiForSystem())
+    except (AttributeError, OSError, ValueError):
+        return 1.0
+    return max(1.0, dpi / 96.0)
+
+
 def gui(cfg: st.Settings, ca_bundle: str | None) -> None:
     """The window: twinlab2_recorder.app (what it does) in WebView2 (twinlab2_recorder.webwindow)."""
     from twinlab2_recorder import webwindow
 
     _hide_own_console()
+    dpi_aware()
     webwindow.run(cfg, ca_bundle)
 
 

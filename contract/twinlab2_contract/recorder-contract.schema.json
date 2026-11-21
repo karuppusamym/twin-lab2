@@ -3,7 +3,7 @@
   "$id": "https://github.com/karuppusamym/twin-lab2/blob/main/contract/recorder-contract.schema.json",
   "title": "TwinLab recorder contract",
   "description": "What a workstation recorder sends to the TwinLab2 portal: the pairing request (#/$defs/pair) and the references of a recorded session (#/$defs/references for contract 1.0.x, #/$defs/references_1_1 for 1.1.0 and later minors; from 1.3.0 an optional screens block). See RECORDER-CONTRACT.md. Unknown fields are allowed, so that a minor version can add optional ones, and are ignored: the portal stores only the fields named here.",
-  "x-contract-version": "1.6.0",
+  "x-contract-version": "1.7.0",
   "oneOf": [
     {
       "$ref": "#/$defs/pair"
@@ -356,7 +356,7 @@
           }
         },
         "paused": {
-          "description": "1.6: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap, and no channel is less complete for it.",
+          "description": "1.7: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap, and no channel is less complete for it.",
           "type": "object",
           "required": [
             "count",
@@ -741,6 +741,11 @@
         },
         "intensified": {
           "type": "boolean"
+        },
+        "in": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "1.6: the region this is inside, by its identifier or, for a region named only by its caption, by that label"
         }
       }
     },
@@ -790,6 +795,16 @@
               },
               "visible": {
                 "type": "boolean"
+              },
+              "in": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "1.6: the region this is inside, by its identifier or, for a region named only by its caption, by that label"
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "1.6: the caption of a region that has no identifier"
               }
             }
           }
@@ -824,6 +839,11 @@
               },
               "visible": {
                 "type": "boolean"
+              },
+              "in": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "1.6: the region this is inside, by its identifier or, for a region named only by its caption, by that label"
               }
             }
           }

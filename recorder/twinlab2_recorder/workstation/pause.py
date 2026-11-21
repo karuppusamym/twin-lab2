@@ -13,7 +13,7 @@ it would have recorded at the point where it takes events in:
 
 The session (in the recording process) writes a `pause` and a `resume` row to the journal at
 each change, and the periods go to session.json (`pauses`) and the references' completeness
-(`paused`, recorder contract 1.6). A pause is not a gap: the person chose it.
+(`paused`, recorder contract 1.7). A pause is not a gap: the person chose it.
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ class Pauses:
 
 
 def summary(periods: list[dict]) -> dict | None:
-    """`completeness.paused` (contract 1.6): how many pauses, their seconds, and the periods
+    """`completeness.paused` (contract 1.7): how many pauses, their seconds, and the periods
     (at most 50). None when the recording was never paused."""
     out = []
     total = 0.0

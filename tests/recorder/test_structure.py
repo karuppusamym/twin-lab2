@@ -190,7 +190,7 @@ class SessionStructureTest(unittest.TestCase):
             folder = Path(tmp)
             self.session(folder)
             box = timeline.build(folder)
-        self.assertEqual(box["contract_version"], "1.6.0")
+        self.assertEqual(box["contract_version"], "1.7.0")
         [screens] = box["screens"].values()
         by_screen = {sc["screen"]: sc for sc in screens}
         search = by_screen["https://orders.example.test/orders/search"]
@@ -221,10 +221,10 @@ class SessionStructureTest(unittest.TestCase):
 
 
 class OlderContractsTest(unittest.TestCase):
-    def test_the_1_0_to_1_5_references_are_still_valid(self):
+    def test_the_1_0_to_1_6_references_are_still_valid(self):
         for name, version in (("references-ten-apps-1.1.json", "1.1.0"), ("references-ten-apps-1.2.json", "1.2.0"),
                               ("references-ten-apps-1.3.json", "1.3.0"), ("references-ten-apps-1.4.json", "1.4.0"),
-                              ("references-ten-apps-1.5.json", "1.5.0")):
+                              ("references-ten-apps-1.5.json", "1.5.0"), ("references-ten-apps-1.6.json", "1.6.0")):
             doc = agent_main.contract_references(json.loads((FIXTURES / name).read_text(encoding="utf-8")))
             self.assertEqual(doc["contract_version"], version)
             self.assertEqual(contract.errors(doc, "references"), [], name)
@@ -232,8 +232,8 @@ class OlderContractsTest(unittest.TestCase):
                                                         .read_text(encoding="utf-8")))
         self.assertEqual(old["contract_version"], "1.0.0")
         self.assertEqual(contract.errors(old, "references"), [])
-        self.assertEqual(contract.CONTRACT_VERSION, "1.6.0")
-        self.assertEqual(contract.schema()["x-contract-version"], "1.6.0")
+        self.assertEqual(contract.CONTRACT_VERSION, "1.7.0")
+        self.assertEqual(contract.schema()["x-contract-version"], "1.7.0")
 
     def test_a_1_0_send_carries_no_screens(self):
         box = json.loads((FIXTURES / "references-ten-apps.json").read_text(encoding="utf-8"))

@@ -1,6 +1,6 @@
 """Pausing a recording (twinlab2_recorder.workstation.pause): while the session folder holds the
 file `paused`, no collector records anything, the journal says when, and the references carry the
-periods (recorder contract 1.6 `completeness.paused`).
+periods (recorder contract 1.7 `completeness.paused`).
 
 Plain Python on fakes: no window is opened or read, no browser or mainframe is reached."""
 
@@ -236,11 +236,11 @@ class SessionRunTest(Folder):
         self.assertEqual(block["count"], 2)
         self.assertGreater(block["seconds"], 0.5)
         box = json.loads((folder / "portal-outbox.json").read_text(encoding="utf-8"))
-        self.assertEqual(box["contract_version"], "1.6.0")
+        self.assertEqual(box["contract_version"], "1.7.0")
         self.assertEqual(box["completeness"]["paused"]["count"], 2)
         doc = agent_main.contract_references(
             box
-        )  # checked against the 1.6 schema before sending
+        )  # checked against the 1.7 schema before sending
         self.assertEqual(doc["completeness"]["paused"]["count"], 2)
 
     def test_a_recovered_session_reads_its_pauses_from_the_journal(self):

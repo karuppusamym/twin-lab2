@@ -174,9 +174,14 @@ def web_state(html: str) -> dict:
 DESKTOP_CONTROLS = {"Button", "Edit", "ComboBox", "CheckBox", "RadioButton", "MenuItem", "TabItem",
                     "SplitButton", "Spinner", "Slider", "Hyperlink", "Document"}  # fmt: skip
 DESKTOP_GRIDS = {"Table", "DataGrid", "List", "Tree"}
+# Containers named by an AutomationId: a region, and the `in` of what is inside it. Custom holds
+# a modern app's navigation view (Calculator's NavView), MenuBar and TitleBar a window's own.
+DESKTOP_REGIONS = {"Pane", "Group", "Window", "Tab", "ToolBar", "StatusBar", "Text", "Custom", "MenuBar",
+                   "TitleBar"}
 DESKTOP_NAMED = {"Button", "CheckBox", "RadioButton", "MenuItem", "ComboBox", "Edit", "SplitButton",
                  "TabItem"}  # fmt: skip
 DATA_ITEMS = {"DataItem", "ListItem", "TreeItem"}
+NAMED_REGIONS = {"Group", "Pane", "Custom"}  # containers a label alone can name (contract 1.6)
 # An item outside any grid or list with an identifier that is a plain word (Windows Calculator's
 # navigation: `Standard`, `Scientific` in a Group) is a place of the application, not a record.
 NAV_ID = re.compile(r"[A-Za-z][A-Za-z_]{1,39}")
@@ -198,14 +203,15 @@ def desktop_state(tree: dict, combos: dict | None = None) -> dict:
     texts: list[dict] = []
     withheld = 0
 
-    def walk(n: dict, in_data: bool, parent: str | None = None) -> None:
+    def walk(n: dict, in_data: bool, parent: str | None = None, region: str | None = None) -> None:
         nonlocal withheld
         t = n.get("type") or "Custom"
+        where = {"in": region} if region else {}
         if t in DATA_ITEMS:
             if (t == "ListItem" and parent not in DESKTOP_GRIDS and not in_data
                     and NAV_ID.fullmatch(n.get("aid") or "")):  # fmt: skip
                 item: dict = {"kind": t, "id": n["aid"], "visible": bool(n.get("visible", True)),
-                              "enabled": bool(n.get("enabled", True))}  # fmt: skip
+                              "enabled": bool(n.get("enabled", True)), **where}  # fmt: skip
                 if n.get("name_is") == "structure" and n.get("name"):
                     item["label"] = n["name"]
                 if n.get("selected") is not None:
@@ -224,10 +230,11 @@ def desktop_state(tree: dict, combos: dict | None = None) -> dict:
                     c.get("name") or "" for c in heads]
             if "visible" in n:
                 grid["visible"] = bool(n["visible"])
+            grid.update(where)
             grids.append(grid)
             return
         if t in DESKTOP_CONTROLS and not in_data:
-            c: dict = {"kind": t}
+            c: dict = {"kind": t, **where}
             if aid:
                 c["id"] = aid
             if t in DESKTOP_NAMED and n.get("name_is") == "structure" and n.get("name"):
@@ -257,15 +264,24 @@ def desktop_state(tree: dict, combos: dict | None = None) -> dict:
             if t in ("Edit", "Document", "ComboBox", "Spinner") and not n.get("password"):
                 c["value"] = "filled" if str(n.get("value") or "").strip() else "empty"
             controls.append(c)
-        elif aid and t in ("Pane", "Group", "Window", "Tab", "ToolBar", "StatusBar", "Text"):
+            if t == "TabItem" and aid:
+                region = aid  # a tab holds its page: what is on it is in the tab (1.6 `in`)
+        elif aid and t in DESKTOP_REGIONS:
             if t != "Text" or n.get("name_is") in ("structure", "message"):
-                regions.append({"kind": t, "id": aid, "visible": bool(n.get("visible", True))})
+                regions.append({"kind": t, "id": aid, "visible": bool(n.get("visible", True)), **where})
+                if t != "Text" and n is not tree:  # the window itself is the screen
+                    region = aid  # what it holds is in it (contract 1.6 `in`)
+        elif (t in NAMED_REGIONS and n is not tree and n.get("name_is") == "structure"
+              and st.words(n.get("name"), 4) == n.get("name")):  # fmt: skip
+            # a container named only by its caption ("Scientific functions"): a region by label
+            regions.append({"kind": t, "label": n["name"], "visible": bool(n.get("visible", True)), **where})
+            region = n["name"]
         if t == "Text" and n.get("name_is") == "message" and n.get("name") and not in_data:
             # A message box's (#32770) message is the application's own text (privacy.clean
             # keeps it, digit tokens masked); its Win32 id (65535) is no identifier.
             texts.append({"kind": "message", "text": n["name"]})
         for child in n.get("children") or []:
-            walk(child, in_data or t in DATA_ITEMS, t)
+            walk(child, in_data or t in DATA_ITEMS, t, region)
 
     walk(tree, False)
     out = {"controls": controls, "regions": regions, "grids": grids, "withheld": withheld}

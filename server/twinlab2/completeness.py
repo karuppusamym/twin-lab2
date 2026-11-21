@@ -15,7 +15,7 @@ A 1.5 recorder may say that the PC's own exclude list kept applications out of t
 That is not a gap and does not make a recording partial: the pages say "N applications excluded on
 this PC" so that the missing activity is not taken for a failure.
 
-A 1.6 recorder may say that the person paused the recording (`paused`: how many times, for how
+A 1.7 recorder may say that the person paused the recording (`paused`: how many times, for how
 long, and each period). Nothing was captured meanwhile, by their choice: not a gap either, and
 the pages say "Paused twice, for 3 min 21 s in all".
 """
@@ -76,7 +76,7 @@ def _seconds(value) -> float | None:
 
 
 def clean_paused(doc) -> dict | None:
-    """`paused` (contract 1.6) in the stored form: how many pauses, their seconds in all, and
+    """`paused` (contract 1.7) in the stored form: how many pauses, their seconds in all, and
     the periods with a valid start and end (at most 50). None when there was no pause."""
     if not isinstance(doc, dict):
         return None

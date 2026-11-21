@@ -4211,7 +4211,7 @@ components:
         paused: { $ref: "#/components/schemas/PausedPeriods" }
     PausedPeriods:
       type: object
-      description: "Recorder contract 1.6: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap."
+      description: "Recorder contract 1.7: when the person paused the recording. Nothing was captured meanwhile, by their choice: not a gap."
       required: [count, seconds, periods]
       properties:
         count: { type: integer, minimum: 0, description: "How many times the recording was paused." }

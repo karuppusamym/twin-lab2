@@ -1,4 +1,4 @@
-"""Recorder contract 1.6: the person paused a recording (`completeness.paused`). The portal keeps
+"""Recorder contract 1.7: the person paused a recording (`completeness.paused`). The portal keeps
 how many times, for how long and when, says "paused twice, for 3 min 21 s in all" beside the
 completeness, and does not treat the pauses as a gap."""
 
@@ -19,7 +19,7 @@ def with_pauses(paused=PAUSED):
     report = completeness_report()
     report["paused"] = copy.deepcopy(paused)
     doc = references_1_1(report=report)
-    doc["contract_version"] = "1.6.0"
+    doc["contract_version"] = "1.7.0"
     return doc
 
 
@@ -56,7 +56,7 @@ class CleanTest(unittest.TestCase):
         self.assertEqual(completeness.duration_text(3720), "1 h 2 min")
 
     def test_the_contract_accepts_the_block_and_refuses_more(self):
-        self.assertEqual(contract.CONTRACT_VERSION, "1.6.0")
+        self.assertEqual(contract.CONTRACT_VERSION, "1.7.0")
         doc = with_pauses()
         doc["recorder"] = {"name": "TwinLabRecorder", "version": "0.2.0"}
         self.assertEqual(contract.errors(doc, "references"), [])
@@ -74,10 +74,10 @@ class PortalTest(Base):
         self.assertEqual(status["label"], "Complete")
         self.assertFalse(status["attention"])
 
-    def test_a_1_5_recorder_is_still_accepted(self):
+    def test_a_1_6_recorder_is_still_accepted(self):
         self.pair()
         doc = references_1_1()
-        doc["contract_version"] = "1.5.0"
+        doc["contract_version"] = "1.6.0"
         self.send(doc)
         self.assertNotIn("paused", self.recording()["status"]["completeness"])
 
