@@ -18,7 +18,7 @@ can live with, or restoring the database from before the migration.
   Keep the extra tables. When the fixed version is deployed, it finds the migration already applied.
 - **A migration that rewrote or dropped data**: the old image may misread it. Restore instead (step 2).
 
-Migration 15 (data lifecycle) is additive. It adds `tombstones`, `retention_runs` and `audit_prune_window`, and
+Migration 16 (data lifecycle) is additive. It adds `tombstones`, `retention_runs` and `audit_prune_window`, and
 columns on `artifacts`, and it replaces the audit log's delete guard. An old image runs on it unchanged.
 Downloads of files deleted after the upgrade then fail with "not found" instead of 410 `gone`.
 

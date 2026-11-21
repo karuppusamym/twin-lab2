@@ -18,7 +18,7 @@ Retention (`policy`, `apply_retention`): a number of days per kind, `None` keepi
 | `evidence` | uploaded evidence files (`attachments` and their artifacts) |
 | `frozen_packages` | the bytes of frozen builder packages, except each application's latest revision and any revision a release was made from |
 | `build_logs` | build conversation messages (`build_messages`) |
-| `audit` | audit history rows (`audit_log`), through the prune window of migration 15 |
+| `audit` | audit history rows (`audit_log`), through the prune window of migration 16 |
 
 The policy is stored in `settings` (`retention_policy`), with defaults from
 `TWINLAB2_RETENTION_<KIND>_DAYS`. A run is a `retention` job (worker.py): a dry run counts what
@@ -285,7 +285,7 @@ def apply_retention(db, actor, dry_run=True, run_id=None, target=None) -> dict:
 
 
 def prune_audit(db, before):
-    """Delete audit rows older than `before` through the prune window (migration 15): the
+    """Delete audit rows older than `before` through the prune window (migration 16): the
     append-only guard lets a DELETE through only for rows older than a window row, which exists
     only inside this transaction."""
     db.execute("INSERT INTO audit_prune_window(cutoff) VALUES (?)", (before,))
