@@ -53,6 +53,23 @@ def headings(dom: str) -> list[str]:
     return out
 
 
+def typed_by(steps: list[dict], seq: int) -> set[str]:
+    """The VALUES names typed (type steps) before step `seq`, by replay.FIELDS (selector -> names)."""
+    from replay import FIELDS
+
+    used: dict[str, int] = {}
+    out = set()
+    for s in steps:
+        if s["seq"] >= seq:
+            break
+        if s["action"] == "type" and s.get("selector") in FIELDS:
+            names = FIELDS[s["selector"]]
+            i = used.get(s["selector"], 0)
+            used[s["selector"]] = i + 1
+            out.add(names[min(i, len(names) - 1)])
+    return out
+
+
 def norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
@@ -104,19 +121,26 @@ def main(argv) -> int:
         if not s.get("screenshot"):
             continue
         text = ocr.text(web / s["screenshot"]) or ""
-        flat = norm(text)
+        lines = [norm(line) for line in text.splitlines() if norm(line)]
+        page_text = norm(re.sub(r"<[^>]+>", " ", doms.get(s["seq"]) or ""))
+
+        def on_a_line(phrase: str) -> bool:  # OCR keeps a field's or a heading's text on one line
+            return bool(norm(phrase)) and any(norm(phrase) in line for line in lines)
         own = headings(doms.get(s["seq"]) or "")
         later = next((t for t in steps[n + 1:] if t.get("dom") and t.get("tab") == s.get("tab")
                       and t.get("url") != s.get("url")), None)  # fmt: skip
         nxt = [h for h in headings(doms.get(later["seq"]) or "") if h not in own] if later else []
-        shows_own = any(norm(h) and norm(h) in flat for h in own) if own else None
-        shows_next = [h for h in nxt if norm(h) and norm(h) in flat]
-        hits = [k for k, v in values.items() if norm(v) and norm(v) in flat]
+        shows_own = any(on_a_line(h) for h in own) if own else None
+        shows_next = [h for h in nxt if on_a_line(h)]
+        # a chosen option, or a value the page itself shows as text (an order total), is no leak
+        typed = typed_by(steps, s["seq"])
+        hits = [k for k, v in values.items() if k in typed and on_a_line(v) and norm(v) not in page_text]
         ocr_rows.append({"seq": s["seq"], "action": s["action"], "own_headings": own, "shows_own": shows_own,
                          "shows_next_page": shows_next, "typed_values_seen": hits})
         if hits:
             leaks.append({"seq": s["seq"], "values": hits})
-        if shows_own is False or shows_next:
+        if shows_own is False:  # its own page's heading is missing (shows_next: reported only;
+            # a navigation bar can hold the next page's words)
             wrong.append({"seq": s["seq"], "own": own, "next_seen": shows_next})
     report["ocr"] = {"engine": ocr.available(), "pictures": len(ocr_rows), "typed_values_in_pictures": leaks,
                      "pictures_not_of_their_step": wrong, "rows": ocr_rows}
@@ -137,8 +161,10 @@ def main(argv) -> int:
         other = rows(web_folder(where) / "steps.jsonl")
         mine = [(s["action"], s.get("selector")) for s in steps if s["action"] not in ("setup",)]
         theirs = [(s["action"], s.get("selector")) for s in other if s["action"] not in ("setup",)]
-        diff = [{"i": i, "launched": a, "attach": b} for i, (a, b) in
-                enumerate(zip(mine + [None] * (len(theirs) - len(mine)), theirs + [None] * (len(mine) - len(theirs)))) if a != b]
+        import difflib
+
+        ops = difflib.SequenceMatcher(a=mine, b=theirs, autojunk=False).get_opcodes()
+        diff = [{"op": op, "launched": mine[i1:i2], "attach": theirs[j1:j2]} for op, i1, i2, j1, j2 in ops if op != "equal"]
         report["steps_vs_attach"] = {"launched": len(mine), "attach": len(theirs), "same": not diff, "differences": diff[:40],
                                      "launched_by_action": dict(Counter(a for a, _ in mine)),
                                      "attach_by_action": dict(Counter(a for a, _ in theirs))}
