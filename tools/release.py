@@ -6,10 +6,11 @@
     python tools/release.py check --unreleased    -> (pull requests) versions agree, CHANGELOG has [Unreleased]
     python tools/release.py notes 0.3.0           -> that version's CHANGELOG section (the release notes)
 
-One version for the product: contract/, server/ and recorder/ (pyproject.toml) and the recorder's
-VERSION (twinlab2_recorder/settings.py) carry the same semantic version (MAJOR.MINOR.PATCH, with an
-optional -rc.N style pre-release). The recorder contract version (CONTRACT_VERSION) is a protocol
-version and is not changed here. CHANGELOG.md follows https://keepachangelog.com/en/1.1.0/.
+One release version: contract/ and server/ (pyproject.toml) carry the same semantic version
+(MAJOR.MINOR.PATCH, with an optional -rc.N style pre-release). The recorder program has its own
+version (twinlab2_recorder/settings.py VERSION, changed with the recorder's changes; it names the
+MSI) and the recorder contract version (CONTRACT_VERSION) is a protocol version: neither is changed
+here. CHANGELOG.md follows https://keepachangelog.com/en/1.1.0/.
 Standard library only.
 """
 
@@ -23,10 +24,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$")
-PYPROJECTS = ["contract/pyproject.toml", "server/pyproject.toml", "recorder/pyproject.toml"]
-RECORDER_SETTINGS = "recorder/twinlab2_recorder/settings.py"
+PYPROJECTS = ["contract/pyproject.toml", "server/pyproject.toml"]  # the release (product) version
 PYPROJECT_VERSION = re.compile(r'^(version\s*=\s*")([^"]+)(")', re.M)
-RECORDER_VERSION = re.compile(r'^(VERSION\s*=\s*")([^"]+)(")', re.M)
 SECTION = re.compile(r"^## \[(?P<version>[^\]]+)\](?: - (?P<date>\d{4}-\d{2}-\d{2}))?\s*$", re.M)
 
 
@@ -39,8 +38,6 @@ def versions(root: Path = ROOT) -> dict[str, str]:
     for rel in PYPROJECTS:
         match = PYPROJECT_VERSION.search((root / rel).read_text(encoding="utf-8"))
         found[rel] = match.group(2) if match else ""
-    match = RECORDER_VERSION.search((root / RECORDER_SETTINGS).read_text(encoding="utf-8"))
-    found[RECORDER_SETTINGS] = match.group(2) if match else ""
     return found
 
 
@@ -116,7 +113,7 @@ def bump(version: str, today: date | None = None, root: Path = ROOT) -> None:
     when = (today or date.today()).isoformat()
     changelog = re.sub(r"^## \[Unreleased\]\s*$", f"## [Unreleased]\n\n## [{version}] - {when}", changelog, count=1, flags=re.M)
     path.write_text(changelog, encoding="utf-8", newline="\n")
-    for rel, pattern in [*((p, PYPROJECT_VERSION) for p in PYPROJECTS), (RECORDER_SETTINGS, RECORDER_VERSION)]:
+    for rel, pattern in [(p, PYPROJECT_VERSION) for p in PYPROJECTS]:
         file = root / rel
         text = file.read_text(encoding="utf-8")
         file.write_text(pattern.sub(lambda m: m.group(1) + version + m.group(3), text, count=1), encoding="utf-8", newline="\n")

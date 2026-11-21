@@ -131,7 +131,7 @@ class ReleaseTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root, True)
-        for rel in [*release.PYPROJECTS, release.RECORDER_SETTINGS]:
+        for rel in release.PYPROJECTS:
             (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(ROOT / rel, self.root / rel)
         (self.root / "CHANGELOG.md").write_text(

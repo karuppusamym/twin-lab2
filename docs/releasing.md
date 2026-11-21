@@ -12,9 +12,11 @@ the rest. Nothing is released by hand.
     [api-versioning.md](api-versioning.md)) or the recorders already in the field.
   - MINOR: new features, compatible.
   - PATCH: fixes only.
-- One version everywhere: `contract/`, `server/` and `recorder/` `pyproject.toml` and the recorder's
-  `VERSION` (`recorder/twinlab2_recorder/settings.py`). `tools/release.py` keeps them in step and
-  `tests/server/test_supply_chain.py` fails when they disagree.
+- One release version: `contract/pyproject.toml` and `server/pyproject.toml` (the portal) carry it;
+  `tools/release.py` keeps them in step and `tests/server/test_supply_chain.py` fails when they
+  disagree. The recorder program has its own version (`VERSION` in
+  `recorder/twinlab2_recorder/settings.py`, shown in the MSI's file name): change it with the
+  recorder's own changes, and the release notes say which recorder a release ships.
 - The recorder contract version (`CONTRACT_VERSION`) is a protocol version with its own rules
   ([RECORDER-CONTRACT.md](RECORDER-CONTRACT.md)); a release does not change it.
 
@@ -30,7 +32,7 @@ Fixed, Security). The release notes are that section, word for word.
 
        python tools/release.py bump 0.3.0
 
-   which sets the version in all four places and turns `[Unreleased]` into `## [0.3.0] - <today>`
+   which sets the version in both packages and turns `[Unreleased]` into `## [0.3.0] - <today>`
    (with a new empty `[Unreleased]` above it).
 2. Open a pull request ("Release 0.3.0"); merge it when every check is green.
 3. Tag the merge commit on `main` and push the tag:
@@ -45,8 +47,9 @@ Fixed, Security). The release notes are that section, word for word.
      `ghcr.io/<owner>/twinlab2-portal:<version>` and records its build provenance in the
      registry (`actions/attest-build-provenance`, signed through GitHub's Sigstore instance);
    - builds `TwinLabRecorder` on `windows-latest` (`recorder/build.py`), signs it when the
-     certificate is configured (below), zips it as `TwinLabRecorder-<version>-win-x64.zip`, writes
-     its SHA-256 beside it and attests the zip;
+     certificate is configured (below), builds the per-machine MSI (`recorder/build.py --msi`, [the installer's own CI](../.github/workflows/recorder-dist.yml)
+     tests it), zips the folder as `TwinLabRecorder-<version>-win-x64.zip`, writes the SHA-256 of
+     each file beside it and attests them;
    - creates the GitHub release with the changelog section, the zip, its `.sha256` and the image
      SBOM.
 5. Deploy by digest, not by tag: the release notes give `ghcr.io/...@sha256:...`
@@ -81,8 +84,8 @@ preferably in a protected `release` environment that requires approval:
 | `TWINLAB_SIGN_PFX_BASE64` | the certificate and private key as a PFX file, base64-encoded |
 | `TWINLAB_SIGN_PFX_PASSWORD` | the PFX's password |
 
-The job imports the PFX into the runner's user store and `recorder/build.py` signs
-`TwinLabRecorder.exe` and Playwright's `node.exe` with `signtool` (SHA-256, RFC 3161 timestamp;
-`TWINLAB_SIGN_TIMESTAMP` overrides the timestamp server). A certificate on a hardware token or in a
+The job writes the PFX to a temporary file and sets `TWINLAB_SIGN_PFX` (and its password), which
+`recorder/installer/sign.py` uses to sign `TwinLabRecorder.exe`, Playwright's `node.exe` and the MSI
+with `signtool` (SHA-256, RFC 3161 timestamp; `TWINLAB_SIGN_TIMESTAMP` overrides the server). A certificate on a hardware token or in a
 cloud HSM (EV certificates usually are) needs a different step instead: Azure Trusted Signing or
 the vendor's signing tool; replace the placeholder step with it and keep the same outputs.
