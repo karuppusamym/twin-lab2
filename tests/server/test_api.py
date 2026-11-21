@@ -641,6 +641,64 @@ class ApiTest(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    # -- conventions (tests/server/test_ocp_readiness.py has the rest) ------------------------
+
+    def test_recordings_list_their_applications_as_a_list(self):
+        """Reproduced: `apps` was one comma-joined text (`Billing Desk (full), CaseDesk (steps)`)."""
+        listed = self.as_("alice").get("/api/v1/recordings")
+        self.assertEqual(listed.headers["deprecation"], "true")  # `apps` (the text) is deprecated
+        recording = next(r for r in self.ok(listed)["recordings"] if r["id"] == RECORDING)
+        self.assertEqual({(a["app_id"], a["name"]) for a in recording["apps_list"]},
+                         {(self.billing, "Billing Desk"), (self.casedesk, "CaseDesk")})
+        for item in recording["apps_list"]:
+            self.assertIn(f"{item['name']} ({item['mode']})", recording["apps"])
+        schema = contract.spec()["components"]["schemas"]["RecordingSummary"]["properties"]["apps"]
+        self.assertTrue(schema["deprecated"])
+
+    def test_build_chat_polling_answers_304_while_unchanged(self):
+        bob = self.as_("bob")
+        for path in (f"/api/v1/builds/{self.build_id}", f"/api/v1/apps/{self.billing}/builds"):
+            first = bob.get(path)
+            etag = first.headers["etag"]
+            self.assertEqual(first.headers["cache-control"], "no-cache")
+            unchanged = bob.get(path, headers={"If-None-Match": etag})
+            self.assertEqual((unchanged.status_code, unchanged.content), (304, b""), path)
+            self.assertEqual(unchanged.headers["etag"], etag)
+            self.assertEqual(bob.get(path, headers={"If-None-Match": '"other"'}).status_code, 200)
+        # a new message changes the session: the old ETag no longer matches
+        path = f"/api/v1/builds/{self.build_id}"
+        etag = bob.get(path).headers["etag"]
+        self.ok(bob.post(f"{path}/messages", json={"answer": "VAT after the discount."},
+                         headers={"Idempotency-Key": "etag-change-1"}), 201)
+        self.assertEqual(bob.get(path, headers={"If-None-Match": etag}).status_code, 200)
+
+    def test_a_role_refusal_says_whom_to_ask(self):
+        """Reproduced: a 403 said only "This needs the builder role on this application."."""
+        refused = self.as_("vera").get(f"/api/v1/apps/{self.billing}/builds")  # vera is a viewer there
+        body = refused.json()
+        self.assertEqual((refused.status_code, body["code"], body["type"]), (403, "role", "/errors/role"))
+        self.assertEqual(body["owners"], ["alice"])
+        self.assertIn("alice", body["detail"])
+        stranger = self.as_("carol").get(f"/api/v1/apps/{self.billing}/builds").json()  # no role: not told who owns it
+        self.assertEqual(stranger["code"], "role")
+        self.assertNotIn("owners", stranger)
+        self.assertNotIn("alice", stranger["detail"])
+
+    def test_the_build_request_key_is_an_alias_of_the_idempotency_key(self):
+        bob = self.as_("bob")
+        path = f"/api/v1/builds/{self.build_id}/messages"
+        first = self.ok(bob.post(path, json={"answer": "Rounded per line."}, headers={"Idempotency-Key": "alias-1"}), 201)
+        self.assertTrue(first["created"])
+        again = bob.post(path, json={"answer": "Rounded per line.", "request_key": "alias-1"})
+        self.assertEqual(again.status_code, 201)
+        self.assertFalse(again.json()["created"])
+        self.assertEqual(again.json()["message"]["id"], first["message"]["id"])
+        self.assertEqual(again.headers["idempotent-replayed"], "true")
+        other = bob.post(path, json={"answer": "Something else.", "request_key": "alias-1"})
+        self.assertEqual((other.status_code, other.json()["code"]), (422, "idempotency_key_reused"))
+        both = bob.post(path, json={"answer": "x", "request_key": "alias-2"}, headers={"Idempotency-Key": "alias-3"})
+        self.assertEqual((both.status_code, both.json()["code"]), (400, "idempotency_key_mismatch"))
+
 
 class LocalSignInTest(unittest.TestCase):
     """A portal with local users (no proxy): sign in, wrong password, sign out."""

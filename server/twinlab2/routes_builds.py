@@ -134,7 +134,7 @@ def budget_text(value):
 
 
 @routes.post(V1 + "/apps/{app_id:int}/builds", require_role("builder"), response_model=m.BuildStarted,
-             status_code=201)
+             status_code=201, idempotent="native")
 def start_build(app_id: int, data: m.NewBuild):
     get_app(app_id)
     provider = data.provider or "devin"
@@ -213,7 +213,7 @@ def interrupt_build(build_id: int):
 
 
 @routes.post(V1 + "/builds/{build_id:int}/retry", require_role("builder", resolve=build_app),
-             response_model=m.BuildStarted, status_code=201)
+             response_model=m.BuildStarted, status_code=201, idempotent="native")
 def retry_build(build_id: int, data: m.RequestKey):
     try:
         build, created = builds.retry(db(), build_id, g.user, data.request_key)
@@ -234,7 +234,7 @@ SCOPE_NOTICE = ("Not sent: a change to agreed behaviour becomes a proposed scena
 
 
 @routes.post(V1 + "/builds/{build_id:int}/messages", require_role("builder", resolve=build_app),
-             response_model=m.AnswerResult, status_code=201)
+             response_model=m.AnswerResult, status_code=201, idempotent="native")
 def answer_build(build_id: int, data: m.AnswerInput):
     kind = "scope_change" if data.scope_change else "clarification"
     if not data.answer.strip():
@@ -255,7 +255,7 @@ def answer_build(build_id: int, data: m.AnswerInput):
 
 
 @routes.post(V1 + "/builds/{build_id:int}/tool-decisions/{message_id:int}",
-             require_role("builder", resolve=build_app), response_model=m.BuildDetail)
+             require_role("builder", resolve=build_app), response_model=m.BuildDetail, idempotent="native")
 def decide_tool(build_id: int, message_id: int, data: m.ToolDecision):
     try:
         message, created = builds.decide_tool(db(), build_id, message_id, data.decision, g.user, data.request_key)

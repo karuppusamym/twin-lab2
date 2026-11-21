@@ -429,6 +429,20 @@ AUTH_SESSIONS = [
 ]
 
 
+# -- 13: Idempotency-Key of the create-type POSTs ----------------------------------------------------
+
+IDEMPOTENCY_KEYS = [
+    # idempotency.py: one row per (caller, key) for 24 hours; `body` is the first response's JSON
+    # ("stored" routes), NULL where the operation deduplicates by itself ("native")
+    """CREATE TABLE IF NOT EXISTS idempotency_keys (
+        user_name TEXT NOT NULL, idem_key TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL, status INTEGER, body TEXT, created_at TEXT NOT NULL,
+        PRIMARY KEY (user_name, idem_key)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idempotency_keys_created ON idempotency_keys(created_at)",
+]
+
+
 # -- the list ----------------------------------------------------------------------------------------
 # (version, name, steps). Append only.
 
@@ -450,6 +464,7 @@ MIGRATIONS = [
     # was frozen over critical gaps: JSON text, '' for revisions frozen before this
     (12, "package completeness", [add_columns([("builder_packages", "completeness", "TEXT NOT NULL DEFAULT ''"),
                                                ("builder_packages", "known_gaps", "TEXT NOT NULL DEFAULT ''")])]),
+    (13, "idempotency keys", IDEMPOTENCY_KEYS),
 ]
 
 

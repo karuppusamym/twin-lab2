@@ -649,6 +649,7 @@ export interface paths {
          * Build sessions of the application (Build page)
          * @description Builder. The approved package (`pack`, null with `problem` before an owner froze one), the
          *     providers and whether each is ready, connected repositories, revisions, and every session.
+         *     Conditional: `If-None-Match` with the last `ETag` gives 304 while nothing changed.
          */
         get: operations["getBuildPage"];
         put?: never;
@@ -702,7 +703,8 @@ export interface paths {
         };
         /**
          * One build session with its conversation
-         * @description Builder of the session's application. Poll while `build.final` is false (the old page refreshed every 10 s).
+         * @description Builder of the session's application. Poll while `build.final` is false (the old page
+         *     refreshed every 10 s), sending the last `ETag` as `If-None-Match`: 304 while nothing changed.
          */
         get: operations["getBuild"];
         put?: never;
@@ -1804,7 +1806,10 @@ export interface components {
     schemas: {
         /** @description RFC 9457 problem details; every error of /api/v1 has this shape. */
         Problem: {
-            /** @description A URI reference; `about:blank` unless a code needs its own., default: about:blank */
+            /**
+             * Format: uri-reference
+             * @description `/errors/<code>`: a URI reference relative to the portal, stable per code (see Errors).
+             */
             type: string;
             /** @description The HTTP status phrase. */
             title: string;
@@ -1813,12 +1818,11 @@ export interface components {
             detail: string;
             /** @description The request path. */
             instance?: string;
-            /**
-             * @description A stable machine-readable reason where the web app acts on it: `signed_out`,
-             *     `wrong_credentials`, `csrf`, `role`, `restricted`, `draft_changed`, `unchanged`,
-             *     `incomplete_package`, `plan_changed`, `publish_locked`, `conflict` (a stale conditional update).
-             */
-            code?: string;
+            code?: components["schemas"]["ErrorCode"];
+            /** @description The response's `Request-Id` (see Request ids). */
+            request_id?: string;
+            /** @description With `code: role` on an application: its owners, who can grant the role (only to a caller who may see them). */
+            owners?: string[];
             /** @description Per-field problems of a request body. */
             errors?: {
                 field: string;
@@ -1829,6 +1833,12 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /**
+         * @description The stable machine-readable reason of an error (see Errors); `x-twinlab-codes` says what each
+         *     means. New codes may be added within v1: treat an unknown code by its HTTP status.
+         * @enum {string}
+         */
+        ErrorCode: "invalid_request" | "idempotency_key_mismatch" | "signed_out" | "wrong_credentials" | "forbidden" | "csrf" | "role" | "restricted" | "not_found" | "method_not_allowed" | "conflict" | "state_conflict" | "draft_changed" | "unchanged" | "incomplete_package" | "plan_changed" | "publish_locked" | "idempotency_in_progress" | "too_large" | "unsupported_media_type" | "idempotency_key_reused" | "internal" | "bad_gateway" | "unavailable" | "error";
         /** @description Where a page of a paginated list is (see Pagination). */
         Page: {
             /** @description Items matching the filters, on every page. */
@@ -2501,8 +2511,8 @@ export interface components {
             change_summary?: string;
             /** @description In the provider's unit (Devin ACU, Claude USD, Copilot premium requests). */
             budget: number;
-            /** @description Idempotency key, one per form. */
-            request_key: string;
+            /** @description Alias of the `Idempotency-Key` header (see Idempotency); one of the two is expected. */
+            request_key?: string;
         };
         BuildStarted: {
             build: components["schemas"]["Build"];
@@ -2510,7 +2520,8 @@ export interface components {
             notice?: string | null;
         };
         RequestKey: {
-            request_key: string;
+            /** @description Alias of the `Idempotency-Key` header (see Idempotency). */
+            request_key?: string;
         };
         BuildMessage: {
             id: number;
@@ -2554,7 +2565,8 @@ export interface components {
             /** @default false */
             scope_change: boolean;
             reply_to?: number | null;
-            request_key: string;
+            /** @description Alias of the `Idempotency-Key` header (see Idempotency). */
+            request_key?: string;
         };
         AnswerResult: {
             message: components["schemas"]["BuildMessage"];
@@ -2564,7 +2576,8 @@ export interface components {
         ToolDecision: {
             /** @enum {string} */
             decision: "approve" | "deny";
-            request_key: string;
+            /** @description Alias of the `Idempotency-Key` header (see Idempotency). */
+            request_key?: string;
         };
         CompareInput: {
             sessions: number[];
@@ -2643,8 +2656,18 @@ export interface components {
             machine: string | null;
             received_at: string | null;
             automation: string | null;
-            /** @description The applications recorded, e.g. `Billing Desk (full), CaseDesk (steps)`. */
+            /**
+             * @deprecated
+             * @description Deprecated: use `apps_list`. The applications recorded as one text, e.g. `Billing Desk (full), CaseDesk (steps)`.
+             */
             apps: string | null;
+            /** @description The applications recorded, by name. */
+            apps_list: {
+                app_id: number;
+                name: string;
+                /** @description What was recorded of it: `full` or `steps`. */
+                mode: string;
+            }[];
             status: components["schemas"]["RecordingStatus"];
         };
         RecordingList: {
@@ -3490,9 +3513,22 @@ export interface components {
         Offset: number;
         /** @description The revision the change was made from (see Conditional updates). */
         ExpectedRevision: number;
+        /** @description One key per intended action (see Idempotency). */
+        IdempotencyKey: string;
+        /** @description The `ETag` of the last answer (see Conditional GETs). */
+        IfNoneMatch: string;
     };
     requestBodies: never;
-    headers: never;
+    headers: {
+        /** @description The request's id (see Request ids). */
+        RequestId: string;
+        /** @description `true` when the answer is a replay of an earlier request with the same `Idempotency-Key`. */
+        IdempotentReplayed: "true";
+        /** @description The answer's entity tag (see Conditional GETs). */
+        ETag: string;
+        /** @description `true` when the answer carries a deprecated member (see Deprecations). */
+        Deprecation: string;
+    };
     pathItems: never;
 }
 export type $defs = Record<string, never>;
@@ -3613,7 +3649,10 @@ export interface operations {
     createApp: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -3820,7 +3859,10 @@ export interface operations {
     addIdentity: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 app_id: components["parameters"]["AppId"];
             };
@@ -4176,7 +4218,10 @@ export interface operations {
     createScenario: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 app_id: components["parameters"]["AppId"];
             };
@@ -4284,7 +4329,10 @@ export interface operations {
     freezePackage: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 app_id: components["parameters"]["AppId"];
             };
@@ -4426,7 +4474,10 @@ export interface operations {
     getBuildPage: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The `ETag` of the last answer (see Conditional GETs). */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
             path: {
                 app_id: components["parameters"]["AppId"];
             };
@@ -4437,11 +4488,20 @@ export interface operations {
             /** @description The build page. */
             200: {
                 headers: {
+                    ETag: components["headers"]["ETag"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["BuildPage"];
                 };
+            };
+            /** @description Unchanged since the `ETag` sent. */
+            304: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             403: components["responses"]["Forbidden"];
         };
@@ -4449,7 +4509,10 @@ export interface operations {
     startBuild: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 app_id: components["parameters"]["AppId"];
             };
@@ -4530,7 +4593,10 @@ export interface operations {
     getBuild: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description The `ETag` of the last answer (see Conditional GETs). */
+                "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+            };
             path: {
                 build_id: components["parameters"]["BuildId"];
             };
@@ -4541,11 +4607,20 @@ export interface operations {
             /** @description The session. */
             200: {
                 headers: {
+                    ETag: components["headers"]["ETag"];
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["BuildDetail"];
                 };
+            };
+            /** @description Unchanged since the `ETag` sent. */
+            304: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -4588,7 +4663,10 @@ export interface operations {
     retryBuild: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 build_id: components["parameters"]["BuildId"];
             };
@@ -4617,7 +4695,10 @@ export interface operations {
     answerBuild: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 build_id: components["parameters"]["BuildId"];
             };
@@ -4647,7 +4728,10 @@ export interface operations {
     decideTool: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 build_id: components["parameters"]["BuildId"];
                 message_id: number;
@@ -4685,6 +4769,7 @@ export interface operations {
             /** @description The recordings. */
             200: {
                 headers: {
+                    Deprecation: components["headers"]["Deprecation"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -5021,7 +5106,10 @@ export interface operations {
     requestRecording: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -5091,7 +5179,10 @@ export interface operations {
     makePairingCode: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -5155,7 +5246,10 @@ export interface operations {
     saveAutomation: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description One key per intended action (see Idempotency). */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };

@@ -183,27 +183,23 @@ def sign_in(body: m.SignIn):
     via = auth.login_user(name, data.get("password") if isinstance(data.get("password"), str) else "") if name else None
     if via is None:
         fail(401, "Wrong name or password.", "wrong_credentials")
-    session, token = g.session, g.session.get("form_token")
+    session = g.session
     with db():
         if session.get("sid"):
             auth.revoke_session(db(), session["sid"])
         sid = auth.start_session(db(), name, via, g.settings.session_hours)
-    session.clear()
+    session.clear()  # a new form token too (session_view makes it): one read before sign-in is no use after
     session["user"], session["sid"] = name, sid
-    if token:
-        session["form_token"] = token
     return session_view()
 
 
 @routes.delete(V1 + "/session", auth.public, status_code=204)
 def sign_out():
-    session, token = g.session, g.session.get("form_token")
+    session = g.session
     if session.get("sid"):  # revoked on the server: a copy of the cookie no longer signs in
         with db():
             auth.revoke_session(db(), session["sid"])
-    session.clear()
-    if token:
-        session["form_token"] = token
+    session.clear()  # and the form token with it: GET /api/v1/session hands out a new one
     return Response(status_code=204)
 
 
@@ -290,7 +286,8 @@ def change_app(app_id, data, current=None):
         raise revisions.conflict((current or app_detail)(app_id), "this application")
 
 
-@routes.post(V1 + "/apps", auth.signed_in, response_model=m.AppRef, status_code=201)
+@routes.post(V1 + "/apps", auth.signed_in, response_model=m.AppRef, status_code=201,
+             idempotent="stored")
 def create_app_(body: m.NewApp):
     if not auth.may_create_apps():
         fail(403, {"owners": "Adding an application needs the owner role on an application, or a portal admin.",
@@ -592,7 +589,8 @@ def list_scenarios(app_id: int):
     }
 
 
-@routes.post(V1 + "/apps/{app_id:int}/scenarios", require_role("owner"), response_model=m.Scenario, status_code=201)
+@routes.post(V1 + "/apps/{app_id:int}/scenarios", require_role("owner"), response_model=m.Scenario, status_code=201,
+             idempotent="stored")
 def create_scenario(app_id: int, body: m.ScenarioInput):
     return save_scenario(app_id, body)
 
@@ -1023,7 +1021,8 @@ def preview_pack(app_id: int, override_reason: str = ""):
             "known_gaps": json.loads(d.manifest).get("known_gaps")}
 
 
-@routes.post(V1 + "/apps/{app_id:int}/packages", require_role("owner"), response_model=m.PackageRevision, status_code=201)
+@routes.post(V1 + "/apps/{app_id:int}/packages", require_role("owner"), response_model=m.PackageRevision, status_code=201,
+             idempotent="stored")
 def freeze_package(app_id: int, body: m.FreezeInput):
     """The owner's explicit approval: freeze the previewed draft as the next revision."""
     get_app(app_id)
@@ -1374,13 +1373,14 @@ def release_openshift(release_id: int, image_digest: str = ""):
     if item["state"] != "published":
         auth.ensure("builder", app_id=item["app_id"])
     app = get_app(item["app_id"])
-    if demo_target.kind(db(), app) == "desktop":
+    surface = demo_target.kind(db(), app)
+    if surface == "desktop":
         fail(404, "A desktop demo has no OpenShift deployment.")
     git_url = app["git_url"] or (f"https://github.com/{item['repository']}.git" if item["repository"] else "")
     try:
         text_ = demo_target.release_manifest(app, demo_target.backend(db(), app)["engine"], VERSION_PATH,
                                              {"commit": item["commit_sha"], "version": item["version"],
-                                              "image_digest": image_digest.strip()}, git_url)
+                                              "image_digest": image_digest.strip()}, git_url, surface)
     except ValueError as error:
         fail(400, str(error))
     return download(text_.encode("utf-8"), "application/yaml",

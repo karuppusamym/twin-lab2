@@ -73,7 +73,7 @@ import secrets
 
 from fastapi import Request
 
-from twinlab2.rest import check_csrf, db, fail, form_token, g, is_api
+from twinlab2.rest import check_csrf, db, fail, g
 
 ROLES = ("viewer", "builder", "owner")
 RANK = {role: rank for rank, role in enumerate(ROLES, 1)}
@@ -477,7 +477,26 @@ def ensure(*roles, app_id=None):
     """403 (`role`) unless the current user holds one of `roles` on `app_id`."""
     if not allowed(roles, app_id):
         names = " or ".join(r if r != ADMIN else "portal admin" for r in roles)
-        fail(403, f"This needs the {names} role" + (" on this application." if app_id is not None else "."), "role")
+        detail, extra = f"This needs the {names} role" + (" on this application." if app_id is not None else "."), None
+        if app_id is not None and [r for r in roles if r in RANK]:
+            hint, extra = access_hint(app_id)
+            detail += " " + hint
+        elif ADMIN in roles:
+            detail += " Ask a portal admin."
+        fail(403, detail, "role", extra=extra)
+
+
+def access_hint(app_id):
+    """(sentence, problem members) on how to get a role on the application: its owners' names
+    for a caller who already holds a role there (or an admin); others learn only whom to ask,
+    not who owns an application they cannot see."""
+    user, admin = g.get("user"), g.get("is_admin", False)
+    if admin or (user and role_of(_db(), app_id, user) is not None):
+        names = owners(_db(), app_id)
+        if names:
+            return f"Ask an owner ({', '.join(names)}) for it.", {"owners": names}
+        return "The application has no owner: ask a portal admin.", {"owners": []}
+    return "Ask the application's owner, or a portal admin, to give you a role on it.", None
 
 
 def can(*roles, app_id=None):
@@ -519,9 +538,9 @@ class Policy:
         self.mark = (kind, self.roles)
 
         def dependency(request: Request):
+            # no form token here: GET /api/v1/session hands it out (and so starts the cookie); a
+            # request that is refused (401, 403) sets no cookie
             g.request = request
-            if is_api(request.url.path):
-                form_token()
             if self.kind == "roles":
                 identify()
                 target = self.resolve(dict(request.path_params)) if self.resolve else None

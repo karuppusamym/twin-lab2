@@ -30,7 +30,10 @@ BACKENDS = {"": "Predict from the data model", "sqlite": "SQLite", "postgresql":
             "sqlserver": "SQL Server"}
 ENGINES = ("sqlite", "postgresql", "sqlserver")
 DEFAULT = "sqlite"
-PORT = 8080
+PORT = 8080  # HTTP: the demo itself, or only the version endpoint for a mainframe demo
+TN3270_PORT = 3270  # a mainframe demo's terminal port, separate from HTTP
+LOCAL_HOST, CONTAINER_HOST = "127.0.0.1", "0.0.0.0"
+IN_MEMORY = "memory unless DATABASE_URL is set"
 # dialect markers in DDL: each match counts for its engine
 DIALECTS = {
     "sqlserver": [r"^\s*GO\s*$", r"\bIDENTITY\s*\(\s*\d+\s*,\s*\d+\s*\)", r"\bN?VARCHAR\s*\(\s*MAX\s*\)",
@@ -158,7 +161,7 @@ DIGEST_PLACEHOLDER = "sha256:REPLACE-WITH-THE-BUILT-IMAGE-DIGEST"
 MANIFEST = "twinlab2.io/manifest"
 
 
-def openshift(app, engine, version_path, git_url=None, release=None):
+def openshift(app, engine, version_path, git_url=None, release=None, surface="web"):
     """The OpenShift resources of a web demo, built in the cluster from its repository.
 
     Without `release`: the *development* manifest of the builder package, which builds branch
@@ -166,7 +169,11 @@ def openshift(app, engine, version_path, git_url=None, release=None):
     With `release` = {"commit": SHA, "version", "image_digest" (optional)}: the *release*
     manifest, pinned to what was verified: the BuildConfig builds exactly that commit into the
     tag `<name>:<commit>`, nothing follows a tag, and the Deployment runs the built image by
-    digest (`<name>@sha256:…`, resolved through the ImageStream's local lookup)."""
+    digest (`<name>@sha256:…`, resolved through the ImageStream's local lookup).
+
+    A `mainframe` demo serves TN3270 on its own port (`TN3270_PORT`) beside HTTP (`PORT`, the
+    version endpoint and the readiness probe): the container and the Service expose both; the
+    Route carries only HTTP."""
     name = resource_name(app)
     repo = public_git_url(app["git_url"] if git_url is None else git_url)
     labels = {"app.kubernetes.io/name": name, "app.kubernetes.io/part-of": "twinlab2-demos"}
@@ -175,7 +182,14 @@ def openshift(app, engine, version_path, git_url=None, release=None):
             raise ValueError("A release manifest needs the release's 40-hex commit SHA.")
         if release.get("image_digest") and not DIGEST.fullmatch(release["image_digest"]):
             raise ValueError("Give the built image's digest as sha256: and 64 hex digits.")
-    env = [{"name": "PORT", "value": str(PORT)}, {"name": "DATA_BACKEND", "value": engine}]
+    env = [{"name": "HOST", "value": CONTAINER_HOST}, {"name": "PORT", "value": str(PORT)},
+           {"name": "DATA_BACKEND", "value": engine}]
+    ports = [{"name": "http", "containerPort": PORT}]
+    service_ports = [{"name": "http", "port": PORT, "targetPort": "http"}]
+    if surface == "mainframe":
+        env.insert(2, {"name": "TN3270_PORT", "value": str(TN3270_PORT)})
+        ports.append({"name": "tn3270", "containerPort": TN3270_PORT})
+        service_ports.append({"name": "tn3270", "port": TN3270_PORT, "targetPort": "tn3270"})
     volumes, mounts = [], []
     if engine == "sqlite":
         # the file lives on the pod's own disk: a restart resets the demo to its seed data
@@ -186,7 +200,7 @@ def openshift(app, engine, version_path, git_url=None, release=None):
         # the database server and its Secret are set up by hand; no credential is in the pack
         env.append({"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": f"{name}-db", "key": "url"}}})
     image = f"{name}@{release.get('image_digest') or DIGEST_PLACEHOLDER}" if release else f"{name}:latest"
-    container = {"name": name, "image": image, "ports": [{"name": "http", "containerPort": PORT}],
+    container = {"name": name, "image": image, "ports": ports,
                  "env": env, "readinessProbe": {"httpGet": {"path": "/" + version_path.lstrip("/"), "port": "http"}}}
     if mounts:
         container["volumeMounts"] = mounts
@@ -194,7 +208,7 @@ def openshift(app, engine, version_path, git_url=None, release=None):
     if volumes:
         pod["volumes"] = volumes
     if release is not None:
-        return _release_resources(name, labels, repo, release, pod)
+        return _release_resources(name, labels, repo, release, pod, service_ports)
     trigger = [{"from": {"kind": "ImageStreamTag", "name": f"{name}:latest"},
                 "fieldPath": f'spec.template.spec.containers[?(@.name=="{name}")].image'}]
     return {"apiVersion": "v1", "kind": "List", "items": [
@@ -212,14 +226,14 @@ def openshift(app, engine, version_path, git_url=None, release=None):
                   "template": {"metadata": {"labels": labels}, "spec": pod}}},
         {"apiVersion": "v1", "kind": "Service", "metadata": {"name": name, "labels": labels},
          "spec": {"selector": {"app.kubernetes.io/name": name},
-                  "ports": [{"name": "http", "port": PORT, "targetPort": "http"}]}},
+                  "ports": service_ports}},
         {"apiVersion": "route.openshift.io/v1", "kind": "Route", "metadata": {"name": name, "labels": labels},
          "spec": {"to": {"kind": "Service", "name": name}, "port": {"targetPort": "http"},
                   "tls": {"termination": "edge", "insecureEdgeTerminationPolicy": "Redirect"}}},
     ]}
 
 
-def _release_resources(name, labels, repo, release, pod):
+def _release_resources(name, labels, repo, release, pod, service_ports):
     commit = release["commit"]
     tag = f"{name}:{commit}"
     notes = {MANIFEST: "release", "twinlab2.io/commit": commit, "twinlab2.io/version": str(release.get("version") or "")}
@@ -240,16 +254,16 @@ def _release_resources(name, labels, repo, release, pod):
                   "template": {"metadata": {"labels": labels, "annotations": notes}, "spec": pod}}},
         {"apiVersion": "v1", "kind": "Service", "metadata": {"name": name, "labels": labels},
          "spec": {"selector": {"app.kubernetes.io/name": name},
-                  "ports": [{"name": "http", "port": PORT, "targetPort": "http"}]}},
+                  "ports": service_ports}},
         {"apiVersion": "route.openshift.io/v1", "kind": "Route", "metadata": {"name": name, "labels": labels},
          "spec": {"to": {"kind": "Service", "name": name}, "port": {"targetPort": "http"},
                   "tls": {"termination": "edge", "insecureEdgeTerminationPolicy": "Redirect"}}},
     ]}
 
 
-def release_manifest(app, engine, version_path, release, git_url=None):
+def release_manifest(app, engine, version_path, release, git_url=None, surface="web"):
     """The release manifest as YAML text, headed by what it is pinned to."""
-    resources = openshift(app, engine, version_path, git_url, release)
+    resources = openshift(app, engine, version_path, git_url, release, surface)
     name, commit, digest = resource_name(app), release["commit"], release.get("image_digest")
     head = [f"# Release manifest of {name} {release.get('version') or ''}".rstrip(),
             f"# Pinned to the verified commit {commit}: the BuildConfig {name}-release builds exactly",
@@ -266,7 +280,7 @@ def release_manifest(app, engine, version_path, release, git_url=None):
     return "\n".join(head) + "\n" + yaml.dump(resources, Dumper=_Plain, sort_keys=False, allow_unicode=True)
 
 
-def openshift_readme(app, engine, repo):
+def openshift_readme(app, engine, repo, surface="web"):
     name = resource_name(app)
     lines = [f"# Deploying {name} on OpenShift", "",
              "Pods are set up by hand from what is checked in. From a checkout of this repository, logged in "
@@ -275,11 +289,17 @@ def openshift_readme(app, engine, repo):
              f"oc rollout status deployment/{name}", f"oc get route {name}", "```", "",
              f"The BuildConfig builds `Dockerfile` at the root of {('`' + repo + '`') if repo else 'the demo repository'}"
              " (branch `main`) inside the cluster; the Deployment follows the image it builds. The container listens "
-             f"on port {PORT} (`PORT`) and answers the readiness probe at the version endpoint.", "",
-             "**This is the development manifest**: it builds `main` and follows `:latest`, so the pod can run "
-             "newer code than any verified commit. For a release, use the release manifest on the portal's "
-             "release page (`GET /api/v1/releases/<id>/openshift.yaml`): it builds exactly the verified commit "
-             "and runs the built image by digest.", ""]
+             f"on `HOST` {CONTAINER_HOST} (set in the Deployment), port {PORT} (`PORT`), and answers the readiness probe "
+             "at the version endpoint.", ""]
+    if surface == "mainframe":
+        lines += [f"TN3270 is served on its own port {TN3270_PORT} (`TN3270_PORT`), separate from HTTP: the Service "
+                  f"exposes both ports, the Route only HTTP. Reach the terminal port from inside the cluster at "
+                  f"`{name}:{TN3270_PORT}`, or from your machine with `oc port-forward service/{name} "
+                  f"{TN3270_PORT}:{TN3270_PORT}`.", ""]
+    lines += ["**This is the development manifest**: it builds `main` and follows `:latest`, so the pod can run "
+              "newer code than any verified commit. For a release, use the release manifest on the portal's "
+              "release page (`GET /api/v1/releases/<id>/openshift.yaml`): it builds exactly the verified commit "
+              "and runs the built image by digest.", ""]
     if engine == "sqlite":
         lines += ["Data: SQLite at `/data/demo.sqlite` on the pod's own disk, created and seeded at start: "
                   "restarting the pod resets the demo.", ""]
@@ -307,16 +327,21 @@ def plan(db, app, version_path, included=None):
     if surface == "desktop":
         deploy = {"kind": "local", "notes": "Build an installer or a portable folder and install it on a local "
                                             "machine or VM; no OpenShift resources."}
+        if chosen["source"] == "predicted" and not model_files:
+            # nothing says the desktop app keeps a database: the owner's notes usually say in memory
+            chosen["storage"] = IN_MEMORY
     else:
         name = resource_name(app)
         repo = public_git_url(app["git_url"])
         base = f"deploy/ocp/{name}"
-        manifest = yaml.dump(openshift(app, chosen["engine"], version_path), Dumper=_Plain, sort_keys=False,
-                             allow_unicode=True)
+        manifest = yaml.dump(openshift(app, chosen["engine"], version_path, surface=surface), Dumper=_Plain,
+                             sort_keys=False, allow_unicode=True)
         files[f"{base}/openshift.yaml"] = manifest.encode("utf-8")
-        files[f"{base}/README.md"] = openshift_readme(app, chosen["engine"], repo).encode("utf-8")
+        files[f"{base}/README.md"] = openshift_readme(app, chosen["engine"], repo, surface).encode("utf-8")
         deploy = {"kind": "openshift", "name": name, "files": sorted(files), "repository": repo or None,
-                  "port": PORT}
+                  "port": PORT, "host": CONTAINER_HOST}
+        if surface == "mainframe":
+            deploy["tn3270_port"] = TN3270_PORT
     out = {"kind": surface, "data_backend": chosen, "data_model": data_model, "deploy": deploy}
     if surface != "desktop":  # what the release checks read the deployed commit from
         out["version_endpoint"] = "/" + version_path.lstrip("/")
@@ -326,10 +351,18 @@ def plan(db, app, version_path, included=None):
 def markdown(target):
     """The BUILD_TASK.md sections for the pack's `target`."""
     b, model, deploy = target["data_backend"], target["data_model"], target["deploy"]
-    out = ["## Data", "",
-           f"Backend: **{BACKENDS[b['engine']]}** ({b['source']}: {b['reason']}). The demo reads its connection "
-           "from `DATABASE_URL` and creates its tables and synthetic seed data at start when they are missing; "
-           "a reset brings back exactly that seed.", ""]
+    if b.get("storage") == IN_MEMORY:
+        out = ["## Data", "",
+               "Backend: the demo keeps its data **in memory unless `DATABASE_URL` is set** (predicted: nothing "
+               f"names a database for this desktop application). When `DATABASE_URL` is set, use "
+               f"{BACKENDS[b['engine']]} at that address. Either way it starts from synthetic seed data, and a "
+               "reset (or a restart, in memory) brings back exactly that seed. If the owner's notes name a "
+               "database, follow them and say so in BUILD-NOTES.md.", ""]
+    else:
+        out = ["## Data", "",
+               f"Backend: **{BACKENDS[b['engine']]}** ({b['source']}: {b['reason']}). The demo reads its connection "
+               "from `DATABASE_URL` and creates its tables and synthetic seed data at start when they are missing; "
+               "a reset brings back exactly that seed.", ""]
     if model["files"] or model["tables"]:
         if model["files"]:
             out += ["Data model: " + ", ".join(f"`{p}`" for p in model["files"]) + "."]
@@ -342,12 +375,38 @@ def markdown(target):
                 "and list them in BUILD-NOTES.md.", ""]
     out += ["## Deployment", ""]
     if deploy["kind"] == "openshift":
+        ports = f"the demo on port {deploy['port']} (`PORT`)"
+        if deploy.get("tn3270_port"):
+            ports = (f"TN3270 on port {deploy['tn3270_port']} (`TN3270_PORT`) and the version endpoint over HTTP on "
+                     f"port {deploy['port']} (`PORT`)")
         out += [f"OpenShift, set up by hand from what is checked in. Commit `deploy/ocp/{deploy['name']}/` as it "
-                "is in this pack, and a `Dockerfile` at the repository root that serves the demo on port "
-                f"{deploy['port']} (`PORT`). See `deploy/ocp/{deploy['name']}/README.md`.", ""]
+                f"is in this pack, and a `Dockerfile` at the repository root that serves {ports}. "
+                f"See `deploy/ocp/{deploy['name']}/README.md`.", ""]
         if not deploy["repository"]:
             out += ["The demo repository is not set yet: replace `REPLACE-WITH-THE-DEMO-REPOSITORY` in "
                     "`openshift.yaml` with its Git address.", ""]
     else:
         out += [deploy["notes"], ""]
+    return out + run_settings(target)
+
+
+def run_settings(target):
+    """The "Run settings" section: where the demo listens, locally and in the container."""
+    deploy = target["deploy"]
+    out = ["## Run settings", ""]
+    if deploy["kind"] != "openshift":
+        return out + ["A desktop application: it opens no network port. `DATABASE_URL` is its only setting "
+                      "(see Data); give the seed and reset steps in the README.", ""]
+    port = deploy.get("port", PORT)
+    out += [f"- Listen on `HOST` and `PORT`. Locally (`python run.py` or the launcher) bind {LOCAL_HOST} by "
+            f"default, never all interfaces; in the container `HOST` is {CONTAINER_HOST} (set by "
+            f"`openshift.yaml`, and as the Dockerfile's default) so the Service can reach the pod.",
+            f"- `PORT` (default {port}): HTTP."]
+    if deploy.get("tn3270_port"):
+        tn = deploy["tn3270_port"]
+        out += [f"- `TN3270_PORT` (default {tn}): the TN3270 terminal, a separate port from HTTP. Do not serve "
+                "TN3270 and HTTP on one port. HTTP on `PORT` serves only the version endpoint "
+                f"(`GET {target.get('version_endpoint') or '/.twinlab/version'}`), which the readiness probe "
+                "and the release checks read; the terminal never sees it."]
+    out += ["- `DATABASE_URL`: see Data.", ""]
     return out
