@@ -2,7 +2,8 @@
 
 HTTPS only (plain HTTP only for this machine: localhost, 127.0.0.1, [::1]); the system's
 certificate store, and `ca_bundle` for a private CA; the system's proxy settings. There is no
-switch that ignores certificates. Every answer is read as data in a fixed shape: targets are
+switch that ignores certificates. No call runs on the window's thread
+(twinlab2_recorder.uithread: each one asserts it). Every answer is read as data in a fixed shape: targets are
 catalog ids and identities, never paths or commands.
 """
 
@@ -15,6 +16,7 @@ import urllib.request
 from urllib.parse import quote, urlsplit
 
 from twinlab2_recorder.settings import APP, VERSION
+from twinlab2_recorder.uithread import assert_off_ui_thread
 from twinlab2_contract.recorder_contract import CONTRACT_VERSION
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -53,6 +55,7 @@ class Portal:
 
     def _call(self, method: str, path: str, body: dict | None = None, *, raw: bytes | None = None,
               token: str | None = None) -> dict:  # fmt: skip
+        assert_off_ui_thread(f"portal call {method} {path.split('?')[0]}")
         data = json.dumps(body).encode("utf-8") if body is not None else raw
         req = urllib.request.Request(self.url + path, data=data, method=method)
         req.add_header("Accept", "application/json")
@@ -137,6 +140,7 @@ class Portal:
 
     def put_part(self, url: str, data: bytes) -> str:
         """PUT one part to a presigned storage URL (HTTPS, or HTTP on this machine); its ETag."""
+        assert_off_ui_thread("upload part")
         parts = urlsplit(url)
         if parts.scheme not in ("http", "https") or not parts.hostname or parts.username:
             raise PortalError("the portal gave an invalid upload URL", 0)
