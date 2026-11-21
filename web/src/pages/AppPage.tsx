@@ -242,9 +242,11 @@ function Examples({ item, evidence }: { item: Schemas["AppDetail"]; evidence: Sc
           {evidence.recorded_flows.length ? evidence.recorded_flows.map((rec, i) => (
             <details key={`${rec.recording_id}/${rec.key}`} open={i === 0}>
               <summary>
-                <Link to={`/recordings/${encodeURIComponent(rec.recording_id)}`}>{rec.recording_name}</Link>{" "}
+                {rec.recording_name}{" "}
                 <span className="muted">{rec.level} · {plural(rec.steps.length, "step")}{rec.machine ? ` · ${rec.machine}` : ""}{rec.received_at ? ` · ${when(rec.received_at)}` : ""}</span>
               </summary>
+              {/* a link inside <summary> is a control inside a control: keyboard and screen readers reach only one */}
+              <p className="package-line"><Link to={`/recordings/${encodeURIComponent(rec.recording_id)}`}>Open the recording {rec.recording_name}</Link></p>
               <FlowTable steps={rec.steps} caption={`Steps of ${item.name} in ${rec.recording_name}`} />
             </details>
           )) : <p>No recording of this application yet.</p>}
