@@ -22,9 +22,11 @@ import traceback
 from twinlab2 import builds
 from twinlab2 import db as database
 from twinlab2 import jobqueue
+from twinlab2 import lifecycle
+from twinlab2 import observability
 from twinlab2 import verifications
 
-TYPES = ("build", "build.cancel", "build.message", "build.interrupt", verifications.JOB)
+TYPES = ("build", "build.cancel", "build.message", "build.interrupt", verifications.JOB, lifecycle.JOB)
 log = logging.getLogger("twinlab2.worker")
 
 
@@ -54,19 +56,30 @@ def work_one(db, database, job, owner, lease, ctx):
         error = job.get("error") or "its lease kept running out"
         if job["type"] == verifications.JOB:
             verifications.give_up(db, job, error)
-        else:
+        elif job["type"] != lifecycle.JOB:  # a retention run records its own failure
             builds.give_up(db, job, error)
         jobqueue.fail(db, job["id"], owner, f"gave up after {job['attempts'] - 1} attempts: {error}")
         return
     beat = Heartbeat(database, job["id"], owner, lease)
     beat.start()
+    tracer = observability.tracer("twinlab2-worker")  # None unless tracing is on (TWINLAB2_OTEL)
+    span = tracer.start_span(f"job {job['type']}") if tracer is not None else None
+    if span is not None:
+        span.set_attribute("twinlab2.job_id", job["id"])
+        span.set_attribute("twinlab2.job_attempt", job["attempts"])
     try:
         if job["type"] == verifications.JOB:
             outcome = verifications.handle(db, job, ctx)
+        elif job["type"] == lifecycle.JOB:
+            outcome = lifecycle.handle(db, job, ctx)
         else:
             outcome = builds.handle(db, job, ctx)
     except Exception as exc:  # a bug or an unexpected failure: try later, counted
-        log.error("job %s (%s) failed:\n%s", job["id"], job["type"], traceback.format_exc())
+        log.error("job %s (%s) failed:\n%s", job["id"], job["type"], traceback.format_exc(),
+                  extra={"job_id": job["id"], "job_type": job["type"], "outcome": "error"})
+        if span is not None:
+            span.record_exception(exc)
+            span.end()
         db.rollback()
         jobqueue.reschedule(db, job["id"], owner, min(300, 5 * 2 ** job["attempts"]),
                             error=f"{type(exc).__name__}: {exc}", keep_attempts=True)
@@ -74,6 +87,12 @@ def work_one(db, database, job, owner, lease, ctx):
     finally:
         beat.halt.set()
         beat.join()
+    result = "failed" if outcome.done and outcome.error else "done" if outcome.done else "rescheduled"
+    if span is not None:
+        span.set_attribute("twinlab2.job_outcome", result)
+        span.end()
+    log.info("job %s (%s): %s", job["id"], job["type"], result,
+             extra={"job_id": job["id"], "job_type": job["type"], "outcome": result})
     if beat.lost:
         log.warning("job %s was taken over by another worker while it ran", job["id"])
         return
@@ -127,7 +146,7 @@ def main(argv=None):
     parser.add_argument("--types", default=",".join(TYPES),
                         help="job types to take, comma-separated (e.g. verify: a worker for Verify only)")
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    observability.configure_logging()  # TWINLAB2_LOG_FORMAT=json|text, TWINLAB2_LOG_LEVEL
     log.info("worker on %s", database.redacted(args.database))
     try:
         types = tuple(t.strip() for t in args.types.split(",") if t.strip()) or TYPES

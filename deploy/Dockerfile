@@ -27,7 +27,7 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     TWINLAB2_DATABASE=/data/catalog.db TWINLAB2_STATE=/data TWINLAB2_AUTH_MODE=trusted-proxy TWINLAB2_SECURE_COOKIES=1 \
-    TWINLAB2_WEB_DIST=/app/web/dist \
+    TWINLAB2_WEB_DIST=/app/web/dist TWINLAB2_LOG_FORMAT=json PROMETHEUS_MULTIPROC_DIR=/tmp/twinlab2-metrics \
     GUNICORN_CMD_ARGS="--workers 2 --worker-class uvicorn_worker.UvicornWorker --timeout 120 --forwarded-allow-ips=0.0.0.0"
 # trusted-proxy: the user comes only from the OAuth proxy's headers, and only on requests whose peer
 # is in TWINLAB2_TRUSTED_PROXIES (default loopback: the sidecar). `--forwarded-allow-ips=0.0.0.0`
@@ -38,17 +38,21 @@ WORKDIR /app
 # the two packages the portal is made of: what it shares with the recorder, and the portal itself
 COPY contract contract
 COPY server server
-RUN pip install --no-cache-dir ./contract "./server[serve]" && rm -rf contract server
+RUN pip install --no-cache-dir ./contract "./server[serve,otel]" && rm -rf contract server
 COPY --from=web /src/web/dist /app/web/dist
+# gunicorn's default config file (cwd): multiprocess Prometheus metrics across its workers
+COPY deploy/gunicorn.conf.py /app/gunicorn.conf.py
 # any UID in group 0 (OpenShift runs the container as an arbitrary UID with GID 0) may write here
 RUN mkdir -p /data /artifacts && chgrp -R 0 /data /artifacts /app && chmod -R g=u /data /artifacts /app
 
 USER 1001
-EXPOSE 8080
+EXPOSE 8080 9090
 # Bound to the pod's loopback: only the OAuth proxy in the same pod reaches it, so the user it
 # names (X-Forwarded-User) can be trusted. The agent API has its own machine token.
 # Probes: /livez (the process), /readyz (database at the current migration, artifact store), both
 # answered whatever the Host; inside the container `python -m twinlab2.probe http <url>`.
 # The build worker is its own Deployment from this image: ["python", "-m", "twinlab2.worker"], with
 # the same DATABASE_URL and TWINLAB2_SECRET_KEY (probe: `python -m twinlab2.probe worker`).
-CMD ["gunicorn", "--bind", "127.0.0.1:8080", "twinlab2.app:asgi()"]
+# 9090 answers GET /metrics only (observability.py): Prometheus scrapes it on the pod's IP; the
+# Route never reaches it. Logs are JSON lines (TWINLAB2_LOG_FORMAT); tracing is opt-in (TWINLAB2_OTEL=1).
+CMD ["gunicorn", "--bind", "127.0.0.1:8080", "--bind", "0.0.0.0:9090", "twinlab2.app:asgi()"]

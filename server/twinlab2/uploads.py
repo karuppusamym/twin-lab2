@@ -271,6 +271,9 @@ def upload_chunk(upload_id: str, offset: str | None = None, data: bytes = Depend
     else:
         store().upload_part(row["object_key"], row["multipart_id"], offset // row["chunk_size"] + 1, data)
     update(row["id"], received_bytes=end, last_error=None)
+    from twinlab2 import observability
+
+    observability.count_upload_bytes(len(data))
     return JSONResponse({"received_bytes": end, "total_bytes": row["total_bytes"]},
                         headers={"Upload-Offset": str(end)})
 
