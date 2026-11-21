@@ -89,7 +89,7 @@ function RecordingView({ rec }: { rec: Schemas["RecordingDetail"] }) {
           </div>
         )) : <p className="muted">No application has evidence from this recording yet.</p>}
       </section>
-      {refs && <RecordedApps refs={refs} />}
+      {refs && <RecordedApps refs={refs} recordingId={rec.id} />}
       <Assignment rec={rec} />
     </>
   );
@@ -112,7 +112,7 @@ function EventTable({ events }: { events: Schemas["Event"][] }) {
 }
 
 /** The applications this recording holds, each with its own steps and its own package. */
-function RecordedApps({ refs }: { refs: Schemas["RecordingRefs"] }) {
+function RecordedApps({ refs, recordingId }: { refs: Schemas["RecordingRefs"]; recordingId: string }) {
   const can = useCan();
   return (
     <section aria-labelledby="recorded-h" id="recorded-apps">
@@ -143,6 +143,12 @@ function RecordedApps({ refs }: { refs: Schemas["RecordingRefs"] }) {
           </p>
         </details>
       ))}
+      {refs.apps.some((a) => a.latest_package && can("builder", a.app_id)) && (
+        <p className="package-line">
+          <a href={`/api/v1/recordings/${encodeURIComponent(recordingId)}/packages/download`}>Download the packages of this recording</a>{" "}
+          <span className="muted">one ZIP: the latest approved package of each application here that you build, and a manifest of all of them</span>
+        </p>
+      )}
     </section>
   );
 }

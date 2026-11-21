@@ -792,6 +792,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/recordings/{recording_id}/packages/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                recording_id: components["parameters"]["RecordingId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Download the packages of every application a recording holds
+         * @description A reviewer of the recording (restricted evidence: else 403 `restricted`). One ZIP: `manifest.json`
+         *     (format `twinlab2-recording-export/1`) and, per application of the recording the caller is a
+         *     builder or owner of, its latest builder-approved package as `<app slug>/<app slug>-rev<N>-<revision12>.zip`.
+         *     The other applications are listed in the manifest only (`not_available` or `no_package`): an admin
+         *     flag gives nothing extra. Each included package is checked against its approved SHA-256 (500 if
+         *     the stored bytes differ) and audited as `package.download`.
+         */
+        get: operations["downloadRecordingPackages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/recordings/{recording_id}/assignments/{app_id}": {
         parameters: {
             query?: never;
@@ -3908,6 +3935,22 @@ export interface operations {
                     "application/json": components["schemas"]["RecordingDetail"];
                 };
             };
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    downloadRecordingPackages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                recording_id: components["parameters"]["RecordingId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["Zip"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };

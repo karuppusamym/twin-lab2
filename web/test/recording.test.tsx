@@ -28,6 +28,9 @@ describe("a recording that holds several applications", () => {
     expect(within(billing).getByRole("link", { name: "Download" })).toHaveAttribute("href", "/api/v1/apps/1/packages/2/download");
     expect(within(casedesk).getByRole("link", { name: "revision 1" })).toHaveAttribute("href", "/apps/2/packages/1");
     expect(within(casedesk).getByRole("link", { name: "Download" })).toHaveAttribute("href", "/api/v1/apps/2/packages/1/download");
+    // all of them at once: the per-recording export
+    expect(within(section).getByRole("link", { name: "Download the packages of this recording" }))
+      .toHaveAttribute("href", "/api/v1/recordings/9f2c4e1a7b3d5f60/packages/download");
   });
 
   it("says so when an application of the recording has no package yet", async () => {
