@@ -341,6 +341,11 @@ class ApiTest(unittest.TestCase):
         imported = self.ok(alice.post("/api/v1/recordings", data={"name": "Invoice"},
                                       files={"log": ("steps.jsonl", IMPORTED_LOG, "application/x-ndjson")}), 201)
         self.assertEqual(self.ok(alice.get(f"/api/v1/recordings/{imported['id']}"))["name"], "Invoice")
+        events = self.ok(alice.get(f"/api/v1/recordings/{imported['id']}/events?limit=1&ids=true"))
+        self.assertEqual((len(events["events"]), events["page"]["total"], len(events["ids"])), (1, 2, 2))
+        # removing an application's assignment from a recording (none saved: still recorded as removed)
+        removed = self.ok(alice.delete(f"/api/v1/recordings/{imported['id']}/assignments/{self.casedesk}"))
+        self.assertEqual((removed["removed"], removed["selected"]), (True, []))
         bad = alice.post("/api/v1/recordings", data={"name": "Broken"}, files={"log": ("s.jsonl", b"{", "text/plain")})
         self.assertEqual(bad.status_code, 400)
         self.assertEqual(self.as_("carol").get(f"/api/v1/recordings/{RECORDING}").json()["code"], "restricted")

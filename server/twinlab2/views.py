@@ -40,7 +40,8 @@ def get_recording(recording_id):
 
 def reviewer_of_recording(recording_id):
     """Restricted evidence: who added the recording (imported it, or paired the machine that
-    sent or uploaded it), and the owners of the applications it is linked to."""
+    sent or uploaded it), and the owners of the applications it is linked to (an owner who
+    removed the application's assignment keeps access, to assign it again)."""
     return db().execute("""
         SELECT 1 FROM recording_uploads WHERE recording_id = ? AND added_by = ?
         UNION SELECT 1 FROM app_roles JOIN evidence ON evidence.app_id = app_roles.app_id
@@ -49,7 +50,9 @@ def reviewer_of_recording(recording_id):
               WHERE recording_apps.recording_id = ? AND app_roles.user_name = ? AND app_roles.role = 'owner'
         UNION SELECT 1 FROM uploads JOIN machines ON machines.id = uploads.machine_id
               WHERE uploads.recording_id = ? AND machines.paired_by = ?
-    """, (recording_id, g.user) * 4).fetchone() is not None
+        UNION SELECT 1 FROM app_roles JOIN evidence_removals ON evidence_removals.app_id = app_roles.app_id
+              WHERE evidence_removals.recording_id = ? AND app_roles.user_name = ? AND app_roles.role = 'owner'
+    """, (recording_id, g.user) * 5).fetchone() is not None
 
 
 RESTRICTED = ("Recordings are restricted evidence: only their uploader and the owners of the applications "

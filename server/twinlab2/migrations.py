@@ -399,7 +399,23 @@ SCREEN_STRUCTURE = [
 ]
 
 
-# -- 10: server-side sign-in sessions; what a Tested release's verification covered ------------------
+EDIT_REVISIONS = [
+    # conditional updates of owner-edited rows (revisions.py): 1 when created, +1 on every change
+    add_columns([("apps", "revision", "INTEGER NOT NULL DEFAULT 1"),
+                 ("evidence", "revision", "INTEGER NOT NULL DEFAULT 1"),
+                 ("scenarios", "revision", "INTEGER NOT NULL DEFAULT 1")]),
+    # an owner removed this application's assignment from the recording: a resend of the
+    # recording does not select its events again (registry.link_evidence); saving one again
+    # deletes the row. `revision` continues the removed assignment's revisions.
+    """CREATE TABLE IF NOT EXISTS evidence_removals (
+        app_id INTEGER NOT NULL, recording_id TEXT NOT NULL, revision INTEGER NOT NULL,
+        removed_by TEXT NOT NULL, removed_at TEXT NOT NULL,
+        PRIMARY KEY (app_id, recording_id)
+    )""",
+]
+
+
+# -- 11: server-side sign-in sessions; what a Tested release's verification covered ------------------
 
 AUTH_SESSIONS = [
     # one row per sign-in (auth.start_session): expiry and revocation (sign-out, password change)
@@ -427,7 +443,9 @@ MIGRATIONS = [
     (8, "screen structure", SCREEN_STRUCTURE),
     # the demo's data backend chosen at onboarding: '' = predicted from its data model (demo_target)
     (9, "demo data backend", [add_columns([("apps", "data_backend", "TEXT NOT NULL DEFAULT ''")])]),
-    (10, "sessions and verified scope", AUTH_SESSIONS),
+    # conditional updates of owner-edited rows (revisions.py): +1 on every change
+    (10, "edit revisions", EDIT_REVISIONS),
+    (11, "sessions and verified scope", AUTH_SESSIONS),
 ]
 
 
