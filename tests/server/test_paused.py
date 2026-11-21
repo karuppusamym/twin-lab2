@@ -31,12 +31,19 @@ class CleanTest(unittest.TestCase):
             "titles": ["Budget"]}))["paused"]  # fmt: skip
         self.assertEqual(got["count"], 3)
         self.assertEqual(got["seconds"], 210.0)
-        self.assertEqual([p["seconds"] for p in got["periods"]], [148.0, 9.0])  # the unreadable one is left out
+        self.assertEqual(
+            [p["seconds"] for p in got["periods"]], [148.0, 9.0]
+        )  # the unreadable one is left out
         self.assertNotIn("titles", got)
 
     def test_a_recording_without_a_pause_has_no_block(self):
         self.assertNotIn("paused", completeness.clean(completeness_report()))
-        self.assertNotIn("paused", completeness.clean(dict(completeness_report(), paused={"count": 0, "periods": []})))
+        self.assertNotIn(
+            "paused",
+            completeness.clean(
+                dict(completeness_report(), paused={"count": 0, "periods": []})
+            ),
+        )
 
     def test_the_summary_says_paused_and_the_recording_stays_complete(self):
         data = completeness.clean(dict(completeness_report(), paused=PAUSED))

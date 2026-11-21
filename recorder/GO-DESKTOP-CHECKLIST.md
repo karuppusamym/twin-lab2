@@ -55,6 +55,26 @@ Each check: what to do → what you should see. Mark ✅ or ❌, and note anythi
    → The pill reads **FINISHING** with the seconds waited, then **Recordings** opens with
      *Recording saved on this PC* and the session chosen.
 
+## 3b. Pause
+
+1. During a recording with a web, a desktop and (if there is one) a mainframe target, press **Pause**.
+   The pill reads **PAUSED** in amber, the panel *Paused · nothing is being recorded* with
+   **Resume**. Work in every target for half a minute: click, type, open pages, switch to
+   Notepad.
+2. **Resume**, do one more step in each target, **Stop and save**.
+   → In the session folder nothing from the paused half minute: no desktop step or picture, no
+     web step or HAR entry, no mainframe screen, no `presence` row for Notepad; `journal.jsonl`
+     has a `pause` and a `resume` row; the review and, after sending, the portal's recording page
+     say *Paused once, for 30 s*, and the recording is not marked partial for it.
+3. Pause, then **Stop and save** while paused.
+   → The recording ends normally; the pause ends at the stop.
+
+## 3c. Without WebView2
+
+On a PC (or VM) where the Edge WebView2 Runtime is removed, start the recorder.
+→ An Edge window without tabs or address bar opens with *Shown in Microsoft Edge*; everything
+  works the same. Close it during a recording → it opens again and asks whether to stop.
+
 ## 4. Close during recording
 
 1. Start a recording, then close the window (X).

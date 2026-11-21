@@ -216,8 +216,8 @@ class RecorderApp:
     def snapshot(self) -> dict:
         s, now = self.state, time.monotonic()
         rec = s["recording"]
-        mode = ("stopping" if s.get("stop_asked") is not None else "recording") if rec else \
-            "checking" if s.get("checking") else "idle"  # fmt: skip
+        mode = ("stopping" if s.get("stop_asked") is not None else "paused" if s.get("paused") else "recording") \
+            if rec else "checking" if s.get("checking") else "idle"  # fmt: skip
         selected = self.selected_done()
         has_box = selected is not None and s.get("box") is not None
         busy_send = bool(s.get("sending")) or s["closing"]
@@ -291,6 +291,12 @@ class RecorderApp:
                 "start_offered": self.idle() and self.offered_selected is not None,
                 "start_own": self.idle(),
                 "stop": bool(rec) and s.get("stop_asked") is None,
+                "pause": bool(rec)
+                and s.get("stop_asked") is None
+                and not s.get("paused"),
+                "resume": bool(rec)
+                and s.get("stop_asked") is None
+                and bool(s.get("paused")),
                 "send": has_box and self.paired() and not busy_send,
                 "details": has_box,
                 "upload": selected is not None and self.paired() and not s["closing"],
@@ -304,11 +310,13 @@ class RecorderApp:
     def _recording_view(self, rec, mode: str, now: float) -> dict:
         s = self.state
         out = {"mode": mode, "name": None, "elapsed": None, "health": None, "apps": [], "lines": [],
-               "browser_ready": False, "stop_waited": None, "stop_limit": STOP_WAIT_S if s["closing"] else None}  # fmt: skip
+               "browser_ready": False, "stop_waited": None, "stop_limit": STOP_WAIT_S if s["closing"] else None,
+               "paused": bool(s.get("paused")), "pauses": 0, "paused_confirmed": False}  # fmt: skip
         if rec is None:
             return out
         out.update(name=rec.name, elapsed=ui.elapsed(now - rec.started), health=rec.health(),
-                   browser_ready=rec.browser_ready, lines=list(s.get("extra_lines") or []))  # fmt: skip
+                   browser_ready=rec.browser_ready, lines=list(s.get("extra_lines") or []),
+                   pauses=rec.pauses, paused_confirmed=rec.paused)  # fmt: skip
         if s.get("stop_asked") is not None:
             out["stop_waited"] = int(now - s["stop_asked"])
         for t in s.get("targets") or []:
@@ -316,6 +324,8 @@ class RecorderApp:
             ch = rec.channels.get(surface)
             if self.m._target_excluded(self.cfg, t):
                 label, tone = "Excluded on this PC", "off"
+            elif s.get("paused") and s.get("stop_asked") is None:
+                label, tone = "Paused", "off"
             elif ch is None:
                 label, tone = "Starting", "active"
             else:
@@ -688,7 +698,7 @@ class RecorderApp:
         s["proc"] = None
         if s["watcher"]:
             s["watcher"].stop()
-        s["recording"], s["stop_asked"] = None, None
+        s["recording"], s["stop_asked"], s["paused"] = None, None, False
         self._changed()
         if s["closing"]:
             return
@@ -715,6 +725,29 @@ class RecorderApp:
             if s["recording"]:
                 s["recording"].stopping = True
             self._changed()
+
+    def on_pause(self) -> None:
+        """Pause the recording: nothing is captured until `on_resume` (twinlab2_recorder.workstation.pause)."""
+        from twinlab2_recorder.workstation import pause
+
+        s = self.state
+        if s["proc"] is None or s["stop_asked"] is not None or s.get("paused"):
+            return
+        folder = self.cfg.recordings / s["session"]
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / pause.FILE).touch()
+        s["paused"] = True
+        self._changed()
+
+    def on_resume(self) -> None:
+        from twinlab2_recorder.workstation import pause
+
+        s = self.state
+        if s["proc"] is None or not s.get("paused"):
+            return
+        (self.cfg.recordings / s["session"] / pause.FILE).unlink(missing_ok=True)
+        s["paused"] = False
+        self._changed()
 
     def on_start_offered(self) -> None:
         o = next((x for x in self.offered if x["id"] == self.offered_selected), None)

@@ -291,7 +291,9 @@ class WindowPageTest(unittest.TestCase):
         self.assertIn("Recording", page.inner_text("tbody tr:nth-child(1)"))
         self.check_a11y("recording")
         box = page.locator("button[data-act=stop]").bounding_box()
-        self.assertGreater(box["width"], box["height"] * 2)  # a button on one line, not an icon
+        self.assertGreater(
+            box["width"], box["height"] * 2
+        )  # a button on one line, not an icon
         self.shot("05-recording")
         for w, h, dark in ((600, 460, False), (1040, 700, True)):
             page.set_viewport_size({"width": w, "height": h})
@@ -308,6 +310,21 @@ class WindowPageTest(unittest.TestCase):
             )
         page.wait_for_selector("text=An application's recorder had trouble")
         self.shot("06-trouble-dark")
+        page.wait_for_selector("button[data-act=pause]")
+        page.click("button[data-act=pause]")
+        page.wait_for_selector(".pill.paused")
+        self.assertTrue((folder / "paused").is_file())
+        page.wait_for_selector("button[data-act=resume]")
+        self.assertIn("Paused", page.inner_text("tbody tr:nth-child(1)"))
+        self.check_a11y("paused, dark")
+        self.shot("06-paused-dark")
+        page.emulate_media(color_scheme="light")
+        page.wait_for_timeout(100)
+        self.check_a11y("paused")
+        self.shot("06-paused")
+        page.click("button[data-act=resume]")
+        page.wait_for_selector(".pill.recording")
+        self.assertFalse((folder / "paused").exists())
         page.click("button[data-act=stop]")
         page.wait_for_selector(".pill.stopping")
         self.assertTrue((folder / "stop").is_file())
@@ -436,6 +453,120 @@ class WindowPageTest(unittest.TestCase):
             self.shot(f"12-min-{name}")
         self.check_a11y("settings at 600x460")
         self.assertEqual(self.errors, [])
+
+
+class EdgeFallbackTest(unittest.TestCase):
+    """Without WebView2 the page is served on 127.0.0.1 for an Edge app window (webwindow.PageServer):
+    driven here by headless Chromium instead; no Edge is started."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        policy = mock.patch.dict(
+            os.environ, {"TWINLAB_RECORDER_POLICY": str(self.tmp / "policy.json")}
+        )
+        policy.start()
+        self.addCleanup(policy.stop)
+        self.cfg = st.Settings(self.tmp)
+        self.cfg.portable = False
+
+    def server(self):
+        from twinlab2_recorder.webwindow import PageServer
+
+        loop = Loop().start()
+        self.addCleanup(loop.stop)
+        with mock.patch.object(RecorderApp, "_poll_loop", lambda _self: None):
+            app = loop.call(
+                lambda: RecorderApp(self.cfg, None, loop, FakeHost()).start()
+            )
+        self.addCleanup(lambda: app.state.get("destroyed") or loop.call(app.destroy))
+        server = PageServer(Bridge(app, loop, FakeHost())).start()
+        self.addCleanup(server.stop)
+        return app, server
+
+    def post(self, server, name, args, token=None, host=None):
+        import http.client
+
+        conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        body = json.dumps(args)
+        headers = {
+            "Content-Type": "application/json",
+            "X-TL-Token": server.token if token is None else token,
+        }
+        if host is not None:
+            headers["Host"] = host
+        conn.request("POST", f"/api/{name}", body, headers)
+        r = conn.getresponse()
+        return r.status, r.read()
+
+    def test_only_the_window_with_the_token_reaches_the_bridge(self):
+        app, server = self.server()
+        self.assertEqual(self.post(server, "nav", ["privacy"])[0], 200)
+        self.assertEqual(app.page, "privacy")
+        self.assertEqual(self.post(server, "nav", ["record"], token="guess")[0], 403)
+        self.assertEqual(
+            self.post(server, "nav", ["record"], host="evil.example:80")[0], 403
+        )  # DNS rebinding
+        self.assertEqual(self.post(server, "_do", [])[0], 404)
+        self.assertEqual(self.post(server, "nowhere", [])[0], 404)
+        self.assertEqual(app.page, "privacy")
+        import http.client
+
+        for path in ("/../app.py", "/..%2Fapp.py", "/tokens.css/../../main.py"):
+            conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+            conn.request("GET", path)
+            self.assertEqual(conn.getresponse().status, 404, path)
+        self.assertNotIn(
+            server.token, server.url.split("#")[0]
+        )  # never sent with a request
+
+    def test_the_page_works_the_same_over_http(self):
+        if sync_playwright is None:
+            self.skipTest("playwright is not installed")
+        app, server = self.server()
+        with sync_playwright() as pw:
+            browser = _chromium(pw)
+            page = browser.new_page(viewport={"width": 1040, "height": 700})
+            errors = []
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.goto(server.url)
+            page.wait_for_selector(".pill")
+            page.click("nav >> text=Privacy")
+            page.wait_for_selector("#ex-pattern")
+            self.assertEqual(app.page, "privacy")
+            browser.close()
+        self.assertEqual(errors, [])
+
+    def test_the_edge_command_and_closing_the_window(self):
+        import subprocess
+        import sys
+
+        from twinlab2_recorder import webwindow
+
+        cmd = webwindow.edge_app_command(
+            "msedge.exe", "http://127.0.0.1:5/index.html#t=x", self.tmp / "p"
+        )
+        self.assertEqual(cmd[1], "--app=http://127.0.0.1:5/index.html#t=x")
+        self.assertIn(f"--user-data-dir={self.tmp / 'p'}", cmd)
+        opened = []
+
+        def fake_open(
+            host,
+        ):  # a stand-in for Edge's window: a process that ends at once
+            opened.append(1)
+            host.proc = subprocess.Popen([sys.executable, "-c", "pass"])
+
+        with mock.patch("twinlab2_recorder.workstation.session.find_browser", lambda _b: "msedge.exe"), \
+                mock.patch.object(webwindow.EdgeAppHost, "open", fake_open), \
+                mock.patch.object(RecorderApp, "_poll_loop", lambda _self: None):  # fmt: skip
+            self.assertTrue(webwindow.run_edge_app(self.cfg, None, "test"))
+        self.assertEqual(
+            opened, [1]
+        )  # nothing recording: closing the window ends the program
+        with mock.patch(
+            "twinlab2_recorder.workstation.session.find_browser", lambda _b: None
+        ):
+            self.assertFalse(webwindow.run_edge_app(self.cfg, None, "test"))
 
 
 if __name__ == "__main__":

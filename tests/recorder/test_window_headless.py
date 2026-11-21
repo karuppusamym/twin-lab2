@@ -294,6 +294,42 @@ class WindowLogicTest(unittest.TestCase):
         self.assertEqual(s["page"], "recordings")
         self.assertEqual(s["note"]["title"], "Recording saved on this PC")
 
+    def test_pause_and_resume(self):
+        from twinlab2_recorder.workstation import pause
+
+        w = self.window()
+        self._recording(w, 5, [{"name": "CaseDesk", "exe": "CaseDesk.exe"}])
+        flag = self.cfg.recordings / SESSION / pause.FILE
+        can = self.snap()["can"]
+        self.assertTrue(can["pause"])
+        self.assertFalse(can["resume"])
+        self.do(w.on_pause)
+        self.assertTrue(
+            flag.is_file()
+        )  # the collectors read it (workstation.pause.PauseFlag)
+        rec = self.snap()["recording"]
+        self.assertEqual(rec["mode"], "paused")
+        self.assertEqual(rec["apps"][0]["status"], "Paused")
+        self.assertEqual(
+            (self.snap()["can"]["pause"], self.snap()["can"]["resume"]), (False, True)
+        )
+        journal = self.cfg.recordings / SESSION / "journal.jsonl"
+        journal.write_text(
+            json.dumps({"kind": "pause", "ts": "2026-11-21T10:00:00Z"}) + "\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(
+            self.pump(lambda: w.snapshot()["recording"]["paused_confirmed"])
+        )
+        self.assertEqual(self.snap()["recording"]["pauses"], 1)
+        self.do(w.on_resume)
+        self.assertFalse(flag.exists())
+        self.assertEqual(self.snap()["recording"]["mode"], "recording")
+        self.do(w.on_pause)
+        self.do(w.on_stop)  # stopping while paused: the session ends the pause itself
+        self.assertEqual(self.snap()["recording"]["mode"], "stopping")
+        self.assertFalse(self.snap()["can"]["resume"])
+
     def test_failed_checks_ask_before_recording(self):
         w = self.window()
         block = {

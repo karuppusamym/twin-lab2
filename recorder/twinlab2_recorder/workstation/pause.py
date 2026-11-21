@@ -34,7 +34,9 @@ class PauseFlag:
     """Whether the session folder says "paused", read on a thread of its own every `interval`
     seconds: calling the flag costs nothing (an input hook asks it on every key)."""
 
-    def __init__(self, folder: Path, interval: float = POLL_S, start: bool = True) -> None:
+    def __init__(
+        self, folder: Path, interval: float = POLL_S, start: bool = True
+    ) -> None:
         self.path = Path(folder) / FILE
         self.interval = interval
         self.paused = self.path.exists()

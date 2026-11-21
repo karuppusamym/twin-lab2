@@ -29,7 +29,7 @@ svg.i { width: 1em; height: 1em; vertical-align: -.15em; flex: none; }
 .pill .led { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
 .pill.recording { background: #c53030; color: #fff; }
 .pill.recording .led { animation: pulse 1.4s ease-in-out infinite; }
-.pill.checking, .pill.stopping { background: #d99a1c; color: #1b1300; }
+.pill.checking, .pill.stopping, .pill.paused { background: #d99a1c; color: #1b1300; }
 .pill .time { font-variant-numeric: tabular-nums; font-weight: 600; }
 @keyframes pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .pill.recording .led, .spin { animation: none !important; } }
@@ -124,9 +124,9 @@ textarea { resize: vertical; min-height: 4.5rem; font-family: var(--font-mono); 
 .hero .timer { font-size: 2.1rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .hero.recording { border-color: var(--rec); box-shadow: inset 0 0 0 1px var(--rec); }
 .hero.recording .badge { background: var(--rec-bg); color: var(--rec); } .hero.recording .kicker { color: var(--rec-text); }
-.hero.checking, .hero.stopping { border-color: var(--review-strong); box-shadow: inset 0 0 0 1px var(--review-strong); }
-.hero.checking .badge, .hero.stopping .badge { background: var(--review-bg); color: var(--review-strong); }
-.hero.checking .kicker, .hero.stopping .kicker { color: var(--review-text); }
+.hero.checking, .hero.stopping, .hero.paused { border-color: var(--review-strong); box-shadow: inset 0 0 0 1px var(--review-strong); }
+.hero.checking .badge, .hero.stopping .badge, .hero.paused .badge { background: var(--review-bg); color: var(--review-strong); }
+.hero.checking .kicker, .hero.stopping .kicker, .hero.paused .kicker { color: var(--review-text); }
 .hero .acts { margin-left: auto; display: flex; gap: var(--space-3); }
 
 table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }

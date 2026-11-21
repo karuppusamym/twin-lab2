@@ -3,7 +3,15 @@
    redrawn only when its HTML changes, keeping the focus and what is typed in a field. */
 "use strict";
 
-const api = () => window.pywebview.api;
+/* In WebView2 the bridge is window.pywebview.api; in an Edge app window (no WebView2 on the PC)
+   the same calls go to webwindow.PageServer, with the token from the address's #fragment. */
+const TOKEN = (location.hash.match(/[#&]t=([\w-]+)/) || [])[1];
+const httpApi = new Proxy({}, {get: (_, name) => async (...args) => {
+  const r = await fetch(`/api/${name}`, {method: "POST", headers: {"Content-Type": "application/json", "X-TL-Token": TOKEN}, body: JSON.stringify(args)});
+  if (!r.ok) throw new Error(`${name}: ${r.status}`);
+  return r.json();
+}});
+const api = () => (window.pywebview && window.pywebview.api) || httpApi;
 let snap = null;
 let version = -1;
 let started = false;
@@ -48,6 +56,7 @@ function pairingHtml(p) {
 
 function stateHtml(r) {
   if (r.mode === "recording") return `<span class="pill recording"><span class="led"></span>RECORDING <span class="time">${esc(r.elapsed)}</span></span>`;
+  if (r.mode === "paused") return `<span class="pill paused"><span class="led"></span>PAUSED <span class="time">${esc(r.elapsed)}</span></span>`;
   if (r.mode === "stopping") return `<span class="pill stopping"><span class="led"></span>FINISHING <span class="time">${esc(r.elapsed)}</span></span>`;
   if (r.mode === "checking") return `<span class="pill checking"><span class="led"></span>CHECKING</span>`;
   return `<span class="pill"><span class="led"></span>Not recording</span>`;
@@ -56,7 +65,7 @@ function stateHtml(r) {
 function navHtml(s) {
   const unsent = s.recordings.rows.filter((r) => !r.sent).length;
   const busy = s.uploads.rows.filter((r) => ["sending", "queued", "retrying"].includes(r.state)).length;
-  const items = [["record", "rec", "Record", s.recording.mode !== "idle" ? "●" : ""], ["recordings", "list", "Recordings", unsent || ""],
+  const items = [["record", "rec", "Record", s.recording.mode === "paused" ? "‖" : s.recording.mode !== "idle" ? "●" : ""], ["recordings", "list", "Recordings", unsent || ""],
     ["uploads", "up", "Uploads", busy || ""], ["privacy", "shield", "Privacy", ""], ["settings", "gear", "Settings", ""]];
   return items.map(([k, i, t, c]) => `<button data-act="nav" data-arg="${k}"${s.page === k ? ' aria-current="page"' : ""}>${ICON(i)}<span class="label">${t}</span>${c !== "" ? `<span class="count">${esc(c)}<span class="sr-only"> ${k === "record" ? "recording" : "waiting"}</span></span>` : ""}</button>`).join("")
     + `<div class="foot">Version ${esc(s.app.version)}</div>`;
@@ -136,14 +145,19 @@ function ownTab(s) {
 
 function recordingView(s) {
   const r = s.recording;
-  const kicker = {recording: "Recording", checking: "Checking", stopping: "Finishing the recording"}[r.mode];
+  const kicker = {recording: "Recording", paused: "Paused · nothing is being recorded", checking: "Checking", stopping: "Finishing the recording"}[r.mode];
   let sub = r.name ? esc(r.name) : "";
   if (r.mode === "checking") sub = "Checking that each application can be recorded…";
+  if (r.mode === "paused") sub = `${esc(r.name)} · resume when you are ready; the time keeps counting`;
   if (r.mode === "stopping") sub = `${esc(r.name)} · finishing… ${r.stop_waited || 0} s${r.stop_limit ? ` of ${r.stop_limit} s before the window closes` : ""}`;
-  const icon = r.mode === "recording" ? ICON("rec", "") : r.mode === "stopping" ? ICON("stop", "") : '<span class="spin" style="width:26px;height:26px;border-width:3px" aria-hidden="true"></span>';
+  const icon = r.mode === "recording" ? ICON("rec", "") : r.mode === "paused" ? ICON("pause", "") : r.mode === "stopping" ? ICON("stop", "") : '<span class="spin" style="width:26px;height:26px;border-width:3px" aria-hidden="true"></span>';
   let html = `<div class="page"><div class="hero ${r.mode}"><div class="badge">${icon}</div>
     <div><h1 class="kicker">${kicker}</h1>${r.elapsed ? `<div class="timer" aria-label="Elapsed ${esc(r.elapsed)}">${esc(r.elapsed)}</div>` : ""}<div class="small muted">${sub}</div></div>
-    <div class="acts">${r.mode === "recording" ? `<button class="btn stop big" data-act="stop"${dis(s.can.stop)}>${ICON("stop")}Stop and save</button>` : ""}</div></div>`;
+    <div class="acts">${r.mode === "recording" ? `<button class="btn secondary" data-act="pause"${dis(s.can.pause)}>${ICON("pause")}Pause</button><button class="btn stop big" data-act="stop"${dis(s.can.stop)}>${ICON("stop")}Stop and save</button>`
+      : r.mode === "paused" ? `<button class="btn primary big" data-act="resume"${dis(s.can.resume)}>${ICON("play")}Resume</button><button class="btn ghost" data-act="stop"${dis(s.can.stop)}>${ICON("stop")}Stop and save</button>` : ""}</div></div>`;
+  if (r.mode === "paused") {
+    html += `<div class="mt"></div>` + callout("warn", "Paused", "Nothing is recorded while paused: no steps, no pictures, no network traffic, not even which applications you use. Press Resume to go on." + (r.pauses > 1 ? ` Paused ${r.pauses} times so far.` : ""));
+  }
   if (r.mode === "recording") {
     if (r.health === "trouble") {
       const bad = r.apps.filter((a) => a.tone === "warn" || a.tone === "bad").map((a) => `${a.name}: ${a.status}`);
@@ -395,6 +409,8 @@ const ACTIONS = {
   "start-own": () => call("start_own", val("own-name", "My session"), [...ownChecked], val("own-extra", "")),
   propose: () => call("propose"),
   stop: () => call("stop"),
+  pause: () => call("pause"),
+  resume: () => call("resume"),
   details: () => call("details"),
   send: () => call("send"),
   upload: () => call("upload"),
@@ -417,7 +433,7 @@ document.addEventListener("click", (e) => {
 });
 
 function begin() {
-  if (started || !window.pywebview || !window.pywebview.api) return;
+  if (started || !((window.pywebview && window.pywebview.api) || (TOKEN && location.protocol === "http:"))) return;
   started = true;
   loop();
 }
