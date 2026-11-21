@@ -181,6 +181,7 @@ DESKTOP_REGIONS = {"Pane", "Group", "Window", "Tab", "ToolBar", "StatusBar", "Te
 DESKTOP_NAMED = {"Button", "CheckBox", "RadioButton", "MenuItem", "ComboBox", "Edit", "SplitButton",
                  "TabItem"}  # fmt: skip
 DATA_ITEMS = {"DataItem", "ListItem", "TreeItem"}
+NAMED_REGIONS = {"Group", "Pane", "Custom"}  # containers a label alone can name (contract 1.6)
 # An item outside any grid or list with an identifier that is a plain word (Windows Calculator's
 # navigation: `Standard`, `Scientific` in a Group) is a place of the application, not a record.
 NAV_ID = re.compile(r"[A-Za-z][A-Za-z_]{1,39}")
@@ -263,11 +264,18 @@ def desktop_state(tree: dict, combos: dict | None = None) -> dict:
             if t in ("Edit", "Document", "ComboBox", "Spinner") and not n.get("password"):
                 c["value"] = "filled" if str(n.get("value") or "").strip() else "empty"
             controls.append(c)
+            if t == "TabItem" and aid:
+                region = aid  # a tab holds its page: what is on it is in the tab (1.6 `in`)
         elif aid and t in DESKTOP_REGIONS:
             if t != "Text" or n.get("name_is") in ("structure", "message"):
                 regions.append({"kind": t, "id": aid, "visible": bool(n.get("visible", True)), **where})
                 if t != "Text" and n is not tree:  # the window itself is the screen
                     region = aid  # what it holds is in it (contract 1.6 `in`)
+        elif (t in NAMED_REGIONS and n is not tree and n.get("name_is") == "structure"
+              and st.words(n.get("name"), 4) == n.get("name")):  # fmt: skip
+            # a container named only by its caption ("Scientific functions"): a region by label
+            regions.append({"kind": t, "label": n["name"], "visible": bool(n.get("visible", True)), **where})
+            region = n["name"]
         if t == "Text" and n.get("name_is") == "message" and n.get("name") and not in_data:
             # A message box's (#32770) message is the application's own text (privacy.clean
             # keeps it, digit tokens masked); its Win32 id (65535) is no identifier.

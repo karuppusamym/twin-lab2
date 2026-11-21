@@ -129,3 +129,17 @@ class PackageBytesPerRevision(unittest.TestCase):
         self.assertNotEqual(first, other)
         self.assertEqual(packages.open_package(db, first), b"old bytes")
         self.assertEqual(packages.open_package(db, other), b"new bytes")
+
+
+class ClasslessFramedTrees(unittest.TestCase):
+    def test_an_unnamed_list_is_matched_without_its_xaml_class(self):
+        from test_verify_modern_window import FRAMED, WPF, copy as cp
+
+        framed = cp(FRAMED)
+        framed["children"][1]["children"].append({"type": "List", "cls": "ListView", "fw": "XAML"})
+        live = cp(WPF)
+        live["children"].append({"type": "List", "cls": "ListBox", "fw": "WPF"})
+        self.assertEqual(desktop.compare_trees(desktop.unframe(framed), live), [])
+
+    def test_a_caption_differs_only_in_case(self):
+        self.assertTrue(desktop.caption({"type": "Text", "name": "log"}, {"type": "Button", "name": "Log"}))

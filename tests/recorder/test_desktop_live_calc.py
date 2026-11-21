@@ -248,3 +248,35 @@ class BuiltProgramSchema(unittest.TestCase):
             (folder / "recorder-contract.schema.json").write_text(json.dumps({"x-contract-version": "1.4.0"}),
                                                                    encoding="utf-8")
             self.assertEqual(build.bundled_schema_version(Path(tmp)), "1.4.0")
+
+
+class PagesAndLabelledRegions(unittest.TestCase):
+    """Contract 1.6, from the rerun's Verify: a tab holds its page, and a container named only by
+    its caption ("Scientific functions") is a region by label."""
+
+    def test_a_tab_page_and_a_caption_named_group(self):
+        from twinlab2_recorder.workstation import structure
+
+        tree = {"type": "Window", "aid": "Main", "children": [
+            {"type": "Tab", "aid": "DockPivot", "children": [
+                {"type": "TabItem", "aid": "HistoryLabel", "name": "History", "name_is": "structure", "children": [
+                    {"type": "Button", "aid": "ClearHistory", "name": "Clear all history", "name_is": "structure"}]}]},
+            {"type": "Group", "name": "Scientific functions", "name_is": "structure", "children": [
+                {"type": "Button", "aid": "logBase10Button", "name": "Log", "name_is": "structure"}]},
+            {"type": "Group", "name": "C-1001 Ada Example", "name_is": "data", "children": []}]}
+        state = structure.desktop_state(tree)
+        where = {c["id"]: c.get("in") for c in state["controls"]}
+        self.assertEqual(where["ClearHistory"], "HistoryLabel")
+        self.assertEqual(where["logBase10Button"], "Scientific functions")
+        labelled = [r for r in state["regions"] if r.get("label")]
+        self.assertEqual(labelled, [{"kind": "Group", "label": "Scientific functions", "visible": True}])
+
+    def test_the_contract_keeps_a_labelled_region_and_a_label_in(self):
+        from twinlab2_contract import structure as st
+
+        state = st.clean_state({"controls": [{"kind": "Button", "id": "logBase10Button", "in": "Scientific functions"}],
+                                "regions": [{"kind": "Group", "label": "Scientific functions"},
+                                            {"kind": "Group", "label": "a sentence that is far too long here"}]})
+        self.assertEqual(state["controls"][0]["in"], "Scientific functions")
+        self.assertEqual(state["regions"], [{"kind": "Group", "label": "Scientific functions"}])
+        self.assertEqual(state["withheld"], 1)

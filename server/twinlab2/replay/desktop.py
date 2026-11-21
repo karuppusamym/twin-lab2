@@ -143,8 +143,18 @@ def unframe(tree: dict) -> dict:
         else:
             kids.append(child)
     out = {k: v for k, v in tree.items() if k not in ("cls", "fw")}
-    out["children"] = kids
+    out["children"] = [classless(k) for k in kids]
     out["framed"] = True
+    return out
+
+
+def classless(node: dict) -> dict:
+    """A tree without toolkit classes (ClassName, FrameworkId), all the way down: a modern app's
+    are XAML peers (ListView, LandmarkTarget), which a rebuild in another toolkit cannot have, so
+    no locator of a framed window may lean on them (an unnamed list is found by type and place)."""
+    out = {k: v for k, v in node.items() if k not in ("cls", "fw")}
+    if node.get("children"):
+        out["children"] = [classless(c) for c in node["children"]]
     return out
 
 
@@ -201,7 +211,7 @@ def caption(node: dict, parent: dict) -> bool:
     if node.get("type") != "Text" or parent.get("type") not in CAPTIONED:
         return False
     text, own = str(node.get("name") or "").strip(), str(parent.get("name") or "")
-    return bool(text) and text in own
+    return bool(text) and text.casefold() in own.casefold()  # "log" on the key named "Log"
 
 
 def _named(path: list[str]) -> list[str]:
@@ -325,7 +335,7 @@ def compare_trees(recorded: dict, live: dict, step: int = 0,
     # message box itself is compared as its own window.
     modal = bool(recorded.get("enabled")) != bool(live.get("enabled"))
     if recorded.get("framed"):  # the window's own class is the frame host's: on neither side
-        live = {**{k: v for k, v in live.items() if k not in ("cls", "fw")}, "framed": True}
+        live = {**classless(live), "framed": True}
     for node, ancestors, idx in _controls(recorded):
         loc = locator.build(recorded, node, ancestors, idx)
         expected.append((loc, node, ancestors))

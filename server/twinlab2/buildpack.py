@@ -450,8 +450,10 @@ def _control_line(c):
 
 
 def _region(r):
-    name = f"{r['kind']}#{r['id']}" if r.get("id") else f"{r['kind']}[name={r['name']}]"
     inside = f" (in `{r['in']}`)" if r.get("in") else ""
+    if not r.get("id") and not r.get("name") and r.get("label"):  # 1.6: named only by its caption
+        return f'`{r["kind"]}` named "{r["label"]}" (no AutomationId)' + inside
+    name = f"{r['kind']}#{r['id']}" if r.get("id") else f"{r['kind']}[name={r['name']}]"
     return "`" + name + "".join(f".{x}" for x in r.get("classes") or []) + "`" + inside
 
 

@@ -272,7 +272,11 @@ what each held, and every control of the live Calculator recording differed in i
 ```
 
 A navigation item (a ListItem outside any grid or list, with a plain-word identifier: `Standard`,
-`Scientific`) is a control of kind `ListItem`, not a record row.
+`Scientific`) is a control of kind `ListItem`, not a record row. A tab (`TabItem` with an identifier)
+holds its page: what is on it says `"in": "<the tab's id>"`. A container named only by its caption
+(a Group, Pane or Custom whose name is structure, at most four plain words: Calculator's
+`Scientific functions`) is a region with `label` instead of `id`, and what it holds says
+`"in": "<that label>"`; so `in` is an identifier or such a label.
 
 #### Contract 1.5: applications excluded on this PC
 

@@ -699,7 +699,9 @@
           "type": "boolean"
         },
         "in": {
-          "$ref": "#/$defs/structure_ident"
+          "type": "string",
+          "maxLength": 120,
+          "description": "1.6: the region this is inside, by its identifier or, for a region named only by its caption, by that label"
         }
       }
     },
@@ -751,7 +753,14 @@
                 "type": "boolean"
               },
               "in": {
-                "$ref": "#/$defs/structure_ident"
+                "type": "string",
+                "maxLength": 120,
+                "description": "1.6: the region this is inside, by its identifier or, for a region named only by its caption, by that label"
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 120,
+                "description": "1.6: the caption of a region that has no identifier"
               }
             }
           }
@@ -788,7 +797,9 @@
                 "type": "boolean"
               },
               "in": {
-                "$ref": "#/$defs/structure_ident"
+                "type": "string",
+                "maxLength": 120,
+                "description": "1.6: the region this is inside, by its identifier or, for a region named only by its caption, by that label"
               }
             }
           }
