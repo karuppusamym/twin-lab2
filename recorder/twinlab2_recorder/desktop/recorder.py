@@ -116,6 +116,24 @@ def self_made_selection(sel: dict, last: dict | None, popup: bool = False) -> bo
     return not (containers & {a_rid, *a_ancestors})
 
 
+SCRIPT_SELECT_S = 1.0  # a selection this long after a scripted action is the script's own step
+
+
+def scripted_selection(t: float, last: dict | None) -> bool:
+    """Whether a selection that `self_made_selection` would give to the application is a step of
+    a script (an accessibility tool, a robot or a test driving the application through UI
+    Automation patterns): the user's last action came from a pattern event with no mouse or key
+    behind it (`via` uia-..., not `mouse`), and the selection came at least SCRIPT_SELECT_S after
+    it. An application selects by itself at once, while it handles the action (a grid selecting
+    its row again after Save); a script that opens a navigation pane, waits, then selects one of
+    its items (Windows Calculator's modes) acts a moment later, with no input in between."""
+    action = (last or {}).get("action")
+    if not isinstance(action, dict) or action.get("mouse"):
+        return False
+    via = str(action.get("via") or "")
+    return via.startswith("uia-") and t - float(last.get("t") or 0) >= SCRIPT_SELECT_S
+
+
 def order_batch(batch: list[dict]) -> list[dict]:
     """The actions of one batch in the order they happened: by time, where the time of an
     action is the user's input (the mouse press, the key press) when there was one.
@@ -609,15 +627,15 @@ class Recorder:
                         self._take_added()
                         if not self.session and not any(win.alive(p) for p in self.pids):
                             break
-                        self._poll_windows()
-                    self._drain()
-                    self._finish(force=False)
+                        self._guarded("reading the windows", self._poll_windows)
+                    self._guarded("handling an event", self._drain)
+                    self._guarded("writing a step", lambda: self._finish(force=False))
                     time.sleep(0.02)
             except KeyboardInterrupt:
                 self.notes.append("stopped with Ctrl+C")
             time.sleep(0.2)
-            self._drain()
-            self._finish(force=True)
+            self._guarded("handling an event", self._drain)
+            self._guarded("writing a step", lambda: self._finish(force=True))
         finally:
             if hooks is not None:
                 hooks.stop()
@@ -628,6 +646,23 @@ class Recorder:
             self.file.close()
             self._write_session()
         return self.out
+
+    def _guarded(self, what: str, fn: Callable[[], None]) -> bool:
+        """One part of the recording loop. A call into UI Automation or a window that fails
+        (the application closed while it was read) loses at most what that call was handling:
+        it is counted, each kind of failure noted once in `desktop.json`, and the recording goes
+        on, instead of the whole channel ending on the error. -> whether it ran cleanly."""
+        try:
+            fn()
+            return True
+        except Exception as exc:  # noqa: BLE001 - noted; the recording goes on
+            failures = self.__dict__.setdefault("loop_failures", {})
+            key = f"{what}: {type(exc).__name__}"
+            failures[key] = failures.get(key, 0) + 1
+            if failures[key] == 1:
+                self.notes.append(f"a call failed while {key} ({str(exc)[:160]}); what it was "
+                                  "handling is not recorded, the recording went on")  # fmt: skip
+            return False
 
     @staticmethod
     def _system() -> dict:
@@ -856,6 +891,8 @@ class Recorder:
         types = desc.get("ancestor_types") or []
         popup = desc.get("window") in getattr(self, "popup_owner", {}) or not types
         if last is None or not self_made_selection(desc, last["desc"], popup):
+            return False
+        if scripted_selection(ev["t"], last):
             return False
         cause = last.get("action")
         if cause is None or not any(a is cause for a in self.pending):
@@ -1437,6 +1474,10 @@ class Recorder:
         if self.effects_unplaced:
             self.notes.append(f"{self.effects_unplaced} selection(s) the application made by "
                               "itself, after the step before them was written: not recorded")  # fmt: skip
+        again = {k: n for k, n in self.__dict__.get("loop_failures", {}).items() if n > 1}
+        if again:
+            self.notes.append("calls that failed more than once: " +
+                              "; ".join(f"{k} ({n} times)" for k, n in sorted(again.items())))  # fmt: skip
         doc = {
             "format": FORMAT,
             "surface": SURFACE,

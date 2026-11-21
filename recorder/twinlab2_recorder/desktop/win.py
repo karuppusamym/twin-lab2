@@ -610,13 +610,15 @@ def _node(el, cached: bool, origin: tuple[float, float]) -> dict:
 def capture(hwnd_or_element) -> dict | None:
     """The raw control tree of a window (UI Automation control view), in one cross-process call.
     Raw: names and values as the application shows them; pass it to `privacy.clean` at once.
-    Data rows beyond MAX_ROWS per grid or list are left out and counted in `truncated`."""
-    el = (
-        element_from_handle(hwnd_or_element)
-        if isinstance(hwnd_or_element, int)
-        else hwnd_or_element
-    )
+    Data rows beyond MAX_ROWS per grid or list are left out and counted in `truncated`.
+    None when the window is gone: a modern application's frame window that closed with its
+    application answers ElementFromHandle with a COM error (EVENT_E_ALL_SUBSCRIBERS_FAILED)."""
     try:
+        el = (
+            element_from_handle(hwnd_or_element)
+            if isinstance(hwnd_or_element, int)
+            else hwnd_or_element
+        )
         el = el.BuildUpdatedCache(_cache_request())
     except (comtypes.COMError, OSError):
         return None
