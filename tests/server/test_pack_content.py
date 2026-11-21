@@ -45,12 +45,8 @@ def protected(row, col, length, text=None, shape=None, **attrs):
 def with_layout(data):
     """The mainframe pack with the protected fields a recorder at contract 1.4 sends."""
     inquiry = data["screens"][0]["states"][0]
-    inquiry["controls"] = [protected(1, 30, 15, "ACCOUNT INQUIRY", intensified=True),
-                           protected(4, 2, 16, "ACCOUNT NUMBER"), *inquiry["controls"],
-                           protected(22, 2, 40, shape="XXXXXXX XXXX"),
+    inquiry["controls"] = [*inquiry["controls"], protected(22, 2, 40, shape="XXXXXXX XXXX"),
                            protected(24, 2, 30, "PF3 EXIT ENTER INQUIRE")]
-    detail = data["screens"][1]["states"][0]
-    detail["controls"] = [protected(1, 30, 14, "ACCOUNT DETAIL"), *detail["controls"]]
     return data
 
 
@@ -131,6 +127,7 @@ class HostLayoutTest(unittest.TestCase):
         gap = next(g for g in result["gaps"] if g["item"] == "mainframe.protected")
         self.assertEqual(gap["severity"], "important")
         self.assertTrue(result["passed"])
+        self.assertEqual(len(gap["details"]), 1)
         self.assertIn("ACCOUNT INQUIRY", gap["details"][0])
 
 
@@ -170,6 +167,10 @@ class RedactionTest(unittest.TestCase):
                 else:
                     self.assertNotIn(secret, out)
                     self.assertIn("[REDACTED:", out)
+
+
+def openshift_yaml(data):
+    return next(p for p in data["target"]["deploy"]["files"] if p.endswith("openshift.yaml"))
 
 
 class TargetTest(unittest.TestCase):
@@ -214,7 +215,7 @@ class TargetTest(unittest.TestCase):
         self.assertIn("127.0.0.1", run)
         self.assertIn("`HOST`", run)
         self.assertIn("0.0.0.0", run)
-        manifest = yaml.safe_load(draft.files[data["target"]["deploy"]["files"][0]])
+        manifest = yaml.safe_load(draft.files[openshift_yaml(data)])
         pod = next(i for i in manifest["items"] if i["kind"] == "Deployment")["spec"]["template"]["spec"]
         self.assertIn({"name": "HOST", "value": "0.0.0.0"}, pod["containers"][0]["env"])
 
@@ -244,7 +245,7 @@ class TargetTest(unittest.TestCase):
     def test_a_web_target_has_one_port(self):  # gap 14: only mainframe gets a second port
         draft, data, _text = self.draft(self.app("Orders", "web"))
         self.assertNotIn("tn3270_port", data["target"]["deploy"])
-        manifest = yaml.safe_load(draft.files[data["target"]["deploy"]["files"][0]])
+        manifest = yaml.safe_load(draft.files[openshift_yaml(data)])
         service = next(i for i in manifest["items"] if i["kind"] == "Service")
         self.assertEqual([p["name"] for p in service["spec"]["ports"]], ["http"])
 
@@ -274,6 +275,15 @@ class UnrecordedBehaviourTest(unittest.TestCase):
         self.assertIn("`ACCOUNT INQUIRY`: Enter", section)
         self.assertIn("`ACCOUNT DETAIL`: PF3", section)
         self.assertNotIn("direct URL", section)
+
+    def test_an_aid_step_named_only_by_its_label_keeps_its_key(self):
+        # the rebuild proof's PF3 step: the recorder's flow kept `label: PF3` and dropped `key`
+        event = {"event_id": "e", "seq": 20, "action": "aid"}
+        step = {"action": "aid", "control": "key", "label": "PF3", "key": None, "screen": "ACCOUNT INQUIRY"}
+        self.assertEqual(buildpack.event_entry(event, step)["key"], "PF3")
+        self.assertNotIn("key", buildpack.event_entry(event, dict(step, label="Hello")))
+        self.assertNotIn("key", buildpack.event_entry({**event, "action": "click"},
+                                                      dict(step, action="click", control="button")))
 
     def test_the_builder_follows_the_owners_failure_cases(self):
         for make in (web_pack, desktop_pack, mainframe_pack):

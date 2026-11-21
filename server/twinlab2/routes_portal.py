@@ -1366,13 +1366,14 @@ def release_openshift(release_id: int, image_digest: str = ""):
     if item["state"] != "published":
         auth.ensure("builder", app_id=item["app_id"])
     app = get_app(item["app_id"])
-    if demo_target.kind(db(), app) == "desktop":
+    surface = demo_target.kind(db(), app)
+    if surface == "desktop":
         fail(404, "A desktop demo has no OpenShift deployment.")
     git_url = app["git_url"] or (f"https://github.com/{item['repository']}.git" if item["repository"] else "")
     try:
         text_ = demo_target.release_manifest(app, demo_target.backend(db(), app)["engine"], VERSION_PATH,
                                              {"commit": item["commit_sha"], "version": item["version"],
-                                              "image_digest": image_digest.strip()}, git_url)
+                                              "image_digest": image_digest.strip()}, git_url, surface)
     except ValueError as error:
         fail(400, str(error))
     return download(text_.encode("utf-8"), "application/yaml",
