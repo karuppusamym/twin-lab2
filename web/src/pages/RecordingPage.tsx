@@ -7,7 +7,7 @@ import { EventChooser, NO_SCREEN, type ChooserEvent } from "../components/EventC
 import { FlowTable } from "../components/shared";
 import { ActionButton, Badge, ConflictView, Crumbs, DirtyNote, ErrorText, QueryView, conflictOf, useAction, useDraft, useLeaveWarning, useTitle } from "../components/ui";
 import { Workboard } from "../components/Workboard";
-import { capitalize, plural, short, when, words } from "../lib/format";
+import { capitalize, duration, plural, short, when, words } from "../lib/format";
 import { useCan } from "../session";
 
 export function RecordingPage() {
@@ -36,6 +36,10 @@ function RecordingView({ rec }: { rec: Schemas["RecordingDetail"] }) {
         <p className="muted" id="excluded-on-pc"><b>Excluded on this PC:</b> {plural(c.local_exclusions.count, "application")}
           {c.local_exclusions.names.length > 0 && ` (${c.local_exclusions.names.join(", ")})`}
           {c.local_exclusions.managed ? ", by the office's policy" : ", by the person's own exclude list"}. Nothing about {c.local_exclusions.count === 1 ? "it was" : "them was"} recorded, by design: this is not a gap in the recording.</p>
+      )}
+      {c?.paused && c.paused.count > 0 && (
+        <p className="muted" id="paused"><b>Paused by the person recording:</b> {c.paused.count === 1 ? "once" : c.paused.count === 2 ? "twice" : `${c.paused.count} times`}, for {duration(c.paused.seconds)}{c.paused.count > 1 && " in all"}
+          {c.paused.periods.length > 0 && ` (${c.paused.periods.slice(0, 5).map((p) => `${when(p.from, 19).slice(11)}–${when(p.to, 19).slice(11)}`).join(", ")}${c.paused.periods.length > 5 ? ", …" : ""})`}. Nothing was recorded meanwhile, by their choice: this is not a gap in the recording.</p>
       )}
       {c?.recovered && (
         <p className="warning" id="recovered"><b>Recovered after the recorder stopped unexpectedly.</b> The recording was rebuilt from its journal

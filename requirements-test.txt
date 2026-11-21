@@ -3,3 +3,5 @@
 -e ./contract
 -e ./server[test,replay]
 -e ./recorder
+# axe-core for the recorder window's page (tests/recorder/test_window_page.py)
+axe-playwright-python==0.1.8

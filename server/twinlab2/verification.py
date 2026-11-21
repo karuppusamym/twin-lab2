@@ -9,7 +9,8 @@ A release is Packaged from one Git commit. It becomes Tested only when, for that
 - when the application targets **Windows desktop** (`apps.target_platform`), a green check from a
   Windows validation environment: a check whose name matches `apps.windows_check_pattern`
   (default `*windows*`, which matches a `windows-latest` matrix job). Without one the page says
-  "Windows validation missing";
+  "Windows validation missing", unless a registered Windows verifier's passing desktop Verify of
+  this exact commit stands in for it (`accept_verifier`; the report and the audit say which);
 - the commit is still the head the release was built from: a release made from a pull request
   (or a branch) is refused, and a Tested one goes back to Packaged, once that head has moved
   (a new push or a force-push);
@@ -242,12 +243,46 @@ def evaluate(app, checks, head_ok=True, head_reason=None, repo=""):
                            f"(name matching “{windows['pattern']}”) on this commit.")
         elif all(c["conclusion"] == GREEN for c in matching):
             windows["state"] = GREEN
+            windows["satisfied_by"] = "ci"
         else:
             windows["state"] = "failure"
             reasons.append("Windows validation is not green: " + ", ".join(
                 f"{c['name']} {c['conclusion']}" for c in matching if c["conclusion"] != GREEN) + ".")
     return {"ok": not reasons, "reasons": reasons, "required": required, "windows": windows,
             "repository": repo}
+
+
+def accept_verifier(gate, *, platform, opted_in, release_commit, built_commit, desktop, twin):
+    """A Windows-desktop release whose only missing Windows validation is a CI check may take a
+    passing desktop Verify by a Windows verifier in its place. Fail-closed: all of these must
+    hold, else the gate is returned as it was:
+
+    - the gate's Windows part is `missing` (a failing `*windows*` check still refuses it);
+    - the verifier is Windows (`platform`) and registered (`opted_in`: TWINLAB2_DESKTOP_VERIFY);
+    - the executable replayed reports exactly the release's commit;
+    - this verification replayed the desktop surface (`desktop` is the executable) and `twin`
+      (independent.run's result) has no problems, every scenario passed, the desktop structural
+      comparison passed and the behavioural dimension passed.
+
+    Returns a new gate with `windows.state` "verifier", `windows.satisfied_by` "verifier" and the
+    Windows reason removed; `ok` is recomputed from the remaining reasons."""
+    win = gate.get("windows") or {}
+    if not win.get("required") or win.get("state") != "missing":
+        return gate
+    dims = (twin or {}).get("dimensions") or {}
+    scenarios = (twin or {}).get("scenarios") or []
+    structural = ((dims.get("structural") or {}).get("surfaces") or {}).get("desktop") or {}
+    proven = (
+        platform == "win32" and opted_in and desktop and release_commit and built_commit == release_commit
+        and twin is not None and not twin.get("problems") and scenarios
+        and all(s.get("result") == "pass" for s in scenarios)
+        and structural.get("status") == "pass" and (dims.get("behavioural") or {}).get("status") == "pass"
+    )  # fmt: skip
+    if not proven:
+        return gate
+    reasons = [r for r in gate["reasons"] if not r.startswith("Windows validation")]
+    return {**gate, "ok": not reasons, "reasons": reasons,
+            "windows": {**win, "state": "verifier", "satisfied_by": "verifier"}}
 
 
 def _load(connection, release_id):

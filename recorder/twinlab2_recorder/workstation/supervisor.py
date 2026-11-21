@@ -786,6 +786,9 @@ def channel_session(ctx: ChildContext, spec: dict):
             self.web_part = int(spec.get("web_part") or 0)
             self.resume = bool(spec.get("resume"))
             self.isolated = False
+            from twinlab2_recorder.workstation import pause
+
+            self.pause_flag = pause.PauseFlag(self.folder)
             self._main = threading.get_ident()
             self._seen_remote: set[str] = set()
             # This collector's capture journals (twinlab2_recorder.workstation.journal), on the session's
