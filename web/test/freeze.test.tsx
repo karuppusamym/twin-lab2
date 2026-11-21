@@ -62,7 +62,7 @@ describe("freezing an application's builder package", () => {
   it("hides the pre-freeze report of a frozen revision from builders", async () => {
     renderApp("/apps/1/packages/2", "builder");
     expect(await screen.findByRole("heading", { name: "Builder package revision 2" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Download revision 2" })).toHaveAttribute("href", "/api/v1/apps/1/packages/2/download");
+    expect(screen.getByRole("link", { name: "Download revision 2 of Billing Desk" })).toHaveAttribute("href", "/api/v1/apps/1/packages/2/download");
     expect(screen.queryByRole("heading", { name: "Pre-freeze report" })).not.toBeInTheDocument();
   });
   it("shows the completeness checklist with each gap's fix", async () => {

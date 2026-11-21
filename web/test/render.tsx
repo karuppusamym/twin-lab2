@@ -23,3 +23,12 @@ export function recordRequests() {
   });
   return seen;
 }
+
+/** Chooses `option` in the searchable list labelled `label` (a Combobox): types part of it and clicks it. */
+export async function choose(user: ReturnType<typeof userEvent.setup>, label: string, option: string) {
+  const { screen } = await import("@testing-library/react");
+  const box = await screen.findByRole("combobox", { name: label });
+  await user.clear(box);
+  await user.type(box, option.slice(0, 4));
+  await user.click(await screen.findByRole("option", { name: option }));
+}

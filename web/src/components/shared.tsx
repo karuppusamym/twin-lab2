@@ -1,6 +1,7 @@
 // Pieces several pages show: the journey, recorded steps, package files, the tested release.
 import { Link } from "react-router-dom";
 import type { Schemas } from "../api/client";
+import { releaseName } from "../lib/format";
 import { Badge } from "./ui";
 
 /** A journey href is a web-app path, possibly with a #section. */
@@ -105,10 +106,11 @@ export function DeploymentBadge({ deployment }: { deployment: Schemas["Deploymen
 }
 
 /** An application's latest Tested or Published release (catalog card). */
-export function TestedReleaseLine({ release }: { release: Schemas["TestedRelease"] }) {
+export function TestedReleaseLine({ release, app }: { release: Schemas["TestedRelease"]; app?: string }) {
+  const name = releaseName(app, release);
   return (
     <div className="tested-release">
-      <span>Tested release <Link to={`/releases/${release.id}`}>{release.version}</Link></span>
+      <span>Tested release <Link to={`/releases/${release.id}`} aria-label={`Release ${name}`}>{releaseName(null, release)}</Link></span>
       <Badge kind={release.state}>{release.state.charAt(0).toUpperCase() + release.state.slice(1)}</Badge>
       <span className="muted">{release.counts.pass} pass · {release.counts.fail} fail · {release.counts["not-run"]} not run · {release.platform}</span>
       <span className="actions">
@@ -118,7 +120,7 @@ export function TestedReleaseLine({ release }: { release: Schemas["TestedRelease
             <DeploymentBadge deployment={release.deployment} />
           </>
         )}
-        <a className="button secondary" href={`/api/v1/releases/${release.id}/download`}>Download tested release</a>
+        <a className="button secondary" href={`/api/v1/releases/${release.id}/download`} aria-label={`Download the tested release ${name}`}>Download tested release</a>
       </span>
     </div>
   );

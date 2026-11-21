@@ -19,7 +19,7 @@ export function PackagePage() {
         <>
           <Crumbs><Link to={`/apps/${appId}`}>{p.app.name}</Link></Crumbs>
           <h1>Builder package revision {p.rev}</h1>
-          <p><a className="button" href={`/api/v1/apps/${appId}/packages/${p.rev}/download`}>Download revision {p.rev}</a></p>
+          <p><a className="button" href={`/api/v1/apps/${appId}/packages/${p.rev}/download`} aria-label={`Download revision ${p.rev} of ${p.app.name}`}>Download revision {p.rev}</a></p>
           <dl className="release-details">
             <dt>Approved by</dt><dd id="approved-by">{p.approved_by}</dd>
             <dt>Approved at</dt><dd>{p.approved_at}</dd>

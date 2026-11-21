@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, data, type Schemas } from "../api/client";
 import { Badge, Crumbs, ErrorText, QueryView, useAction, useTitle } from "../components/ui";
-import { amount, capitalize, short } from "../lib/format";
+import { amount, capitalize, releaseName, short } from "../lib/format";
 import { useCan } from "../session";
 import { useAppId } from "./AppPage";
 
@@ -50,7 +50,7 @@ function CompareView({ comparison }: { comparison: Schemas["Comparison"] }) {
                     <td>{b.cost !== null && `${amount(b.cost)} ${b.cost_unit}`}</td>
                     <td>{r.checks.length ? r.checks.map((c) => <Badge key={c.name} kind={c.conclusion}>{c.name}: {c.conclusion}</Badge>) : <span className="muted">not fetched</span>}</td>
                     <td>{r.release ? (
-                      <><Link to={`/releases/${r.release.id}`}>release {r.release.version}</Link>: <Badge kind={r.release.state}>{capitalize(r.release.state)}</Badge>
+                      <><Link to={`/releases/${r.release.id}`}>release {releaseName(null, r.release)}</Link>: <Badge kind={r.release.state}>{capitalize(r.release.state)}</Badge>
                         {r.reasons.map((reason) => <span key={reason}><br /><span className="muted">{reason}</span></span>)}</>
                     ) : <span className="muted">not verified yet</span>}</td>
                     <td>{r.scenarios.length ? r.scenarios.map((s) => <span key={s.name}>{s.name}: {s.result}<br /></span>) : <span className="muted">none recorded</span>}</td>
