@@ -135,17 +135,49 @@ def seed(app, world, ctx, database):
     def events_of(app_id):
         return [s["event_id"] for a in detail["refs"]["apps"] if a["app_id"] == app_id for s in a["steps"]]
 
-    def prepare(app_id, scenarios, summary):
+    def typed(app_id):
+        return [s["event_id"] for a in detail["refs"]["apps"] if a["app_id"] == app_id for s in a["steps"]
+                if s.get("action") in ("type", "select")]
+
+    def prepare(app_id, scenarios, summary, before_freeze=None):
         events = events_of(app_id)
         check(alice.put(f"/api/v1/recordings/{recording}/assignments/{app_id}",
                         json={"events": events, "notes": "Month-end close, as recorded"}))
         for number, scenario in enumerate(scenarios):
             linked = events[number::len(scenarios)] or events
+            field = scenario.pop("bind", None)  # the example field each linked typing step is bound to
+            bindings = [{"event": f"{recording}#{e}", "field": field} for e in linked if e in typed(app_id)] if field else []
             check(alice.post(f"/api/v1/apps/{app_id}/scenarios",
-                             json={**scenario, "events": [f"{recording}#{e}" for e in linked]}))
+                             json={**scenario, "events": [f"{recording}#{e}" for e in linked], "bindings": bindings}))
+        if before_freeze:
+            before_freeze()
         draft = check(alice.get(f"/api/v1/apps/{app_id}/package-draft"))
         return check(alice.post(f"/api/v1/apps/{app_id}/packages",
                                 json={"sha256": draft["sha256"], "approve": True, "summary": summary}))
+
+    # Orders (discovered in the recording) creates the order whose number Billing types: its
+    # events and a scenario, so the interface contract between the two can name the producer
+    orders = next(a["app_id"] for a in detail["refs"]["apps"]
+                  if any("orders.example.test" in str(s.get("screen") or "") for s in a["steps"]))
+    check(alice.put(f"/api/v1/recordings/{recording}/assignments/{orders}",
+                    json={"events": events_of(orders), "notes": "Month-end close, as recorded"}))
+    check(alice.post(f"/api/v1/apps/{orders}/scenarios", json={
+        "name": "An order is created", "starting": "Signed in as a clerk.", "actions": "Create an order, search for it.",
+        "expected": "The order is listed with its number.", "failures": "", "examples": "Order number: 1001 (synthetic)",
+        "events": [f"{recording}#{e}" for e in events_of(orders)]}))
+
+    def orders_produce_the_order_number():
+        contract = check(alice.get(f"/api/v1/apps/{billing}/interfaces"))["contracts"][0]
+        doc = contract["doc"]
+        for ident in doc["identifiers"]:
+            if ident["name"] == "order-number":
+                ident.update(producer=orders, consumers=[billing])
+        doc["relationships"] = [r for r in doc["relationships"] if r.get("identifier") != "order-number"] + [
+            {"kind": "identifier", "identifier": "order-number", "producer": orders, "consumer": billing,
+             "when_down": "Billing shows “Orders is not available” and keeps the invoice draft."}]
+        doc["launch_order"] = [orders] + [a for a in doc["launch_order"] if a != orders]
+        doc["reset_order"] = list(reversed(doc["launch_order"]))
+        check(alice.put(f"/api/v1/apps/{billing}/interfaces/{recording}", json={"doc": doc, "expected_revision": 0}))
 
     package = prepare(billing, [
         {"name": "An invoice is created and sent",
@@ -153,15 +185,16 @@ def seed(app, world, ctx, database):
          "actions": "Open the invoice list, create an invoice for the order, save it, send it.",
          "expected": "The invoice has its number, status Sent, and appears at the top of the list.",
          "failures": "Saving without a customer is refused with a message; the invoice is not created.",
-         "examples": "Customer: Example GmbH; amount 1,250.00 EUR (synthetic)."},
+         "examples": "Order number: 1001\nCustomer: Example GmbH; Amount: 1,250.00 EUR (synthetic).",
+         "bind": "Order number"},
         {"name": "A sent invoice is corrected",
          "starting": "A sent invoice.",
          "actions": "Open the invoice, choose Correct, change the amount, save.",
          "expected": "A correction invoice is created and linked; the original keeps its number.",
          "failures": "A paid invoice cannot be corrected: the Correct button is disabled.",
-         "examples": "Amount: 1,180.00 EUR (synthetic correction)",
+         "examples": "Order number: 1001\nAmount: 1,180.00 EUR (synthetic correction)", "bind": "Order number",
          "questions": "Does a correction need a second approver above 10,000 EUR?"},
-    ], "First package: invoice creation and correction")
+    ], "First package: invoice creation and correction", before_freeze=orders_produce_the_order_number)
     prepare(receivable, [
         {"name": "An overdue item gets a dunning letter",
          "starting": "An open item 30 days past due.",
