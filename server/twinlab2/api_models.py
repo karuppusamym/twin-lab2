@@ -18,6 +18,9 @@ class Model(BaseModel):
 ErrorCode = Literal['invalid_request', 'idempotency_key_mismatch', 'signed_out', 'wrong_credentials', 'forbidden', 'csrf', 'role', 'restricted', 'not_found', 'method_not_allowed', 'conflict', 'state_conflict', 'draft_changed', 'unchanged', 'incomplete_package', 'plan_changed', 'publish_locked', 'idempotency_in_progress', 'too_large', 'unsupported_media_type', 'idempotency_key_reused', 'internal', 'bad_gateway', 'unavailable', 'error']
 
 
+Role = Literal['viewer', 'builder', 'owner']
+
+
 class Problem_ErrorsItem(Model):
     field: str
     message: str
@@ -33,6 +36,8 @@ class Problem(Model):
     code: ErrorCode | None = None
     request_id: str | None = None
     owners: list[str] | None = None
+    app_id: int | None = None
+    requested_role: Role | None = None
     errors: list[Problem_ErrorsItem] | None = None
     current: dict[str, Any] | None = None
 
@@ -46,9 +51,6 @@ class Page(Model):
 
 
 Revision = int
-
-
-Role = Literal['viewer', 'builder', 'owner']
 
 
 AppStatus = Literal['known', 'discovered', 'not_replicated']
@@ -1127,6 +1129,9 @@ class NewCaptureSession(Model):
     targets: list[NewCaptureSession_TargetsItem]
 
 
+AgentScope = Literal['record', 'upload']
+
+
 class Machine(Model):
     id: int
     name: str
@@ -1136,6 +1141,7 @@ class Machine(Model):
     recorder: str
     contract_version: str | None
     revoked_at: str | None
+    scopes: list[AgentScope]
 
 
 class MachineList(Model):
@@ -1148,6 +1154,11 @@ class PairingCode(Model):
     display: str
     minutes: int
     expires_at: Timestamp
+    scopes: list[AgentScope]
+
+
+class PairingCodeInput(Model):
+    scopes: list[AgentScope] | None = None
 
 
 class Automation(Model):
@@ -1583,6 +1594,45 @@ class TriageDecisions(Model):
     decisions: list[TriageDecision]
 
 
+class AccessRequestInput(Model):
+    role: Role
+    reason: str
+
+
+class AccessRequestSent(Model):
+    state: Literal['pending']
+    role: Role
+    message: str
+
+
+AccessRequestState = Literal['pending', 'approved', 'declined']
+
+
+class AccessRequest(Model):
+    id: int
+    app_id: int
+    app_name: str | None
+    user: str
+    role: Role
+    reason: str
+    state: AccessRequestState
+    created_at: str
+    decided_by: str | None
+    decided_at: str | None
+    note: str
+
+
+class AccessRequestList(Model):
+    mine: list[AccessRequest]
+    to_decide: list[AccessRequest]
+
+
+class AccessDecision(Model):
+    decision: Literal['approve', 'decline']
+    role: Role | None = None
+    note: str | None = None
+
+
 class TriageOutcome_AppsItem(Model):
     id: int
     name: str
@@ -1657,6 +1707,11 @@ class ReleaseRegistered(Model):
     next: str
 
 
+AccessDecision.model_rebuild()
+AccessRequest.model_rebuild()
+AccessRequestInput.model_rebuild()
+AccessRequestList.model_rebuild()
+AccessRequestSent.model_rebuild()
 AgentMessage.model_rebuild()
 AnswerInput.model_rebuild()
 AnswerResult.model_rebuild()
@@ -1746,6 +1801,7 @@ PackageRevision.model_rebuild()
 PackageRevisionSummary.model_rebuild()
 Page.model_rebuild()
 PairingCode.model_rebuild()
+PairingCodeInput.model_rebuild()
 Preflight.model_rebuild()
 Problem.model_rebuild()
 Provider.model_rebuild()
