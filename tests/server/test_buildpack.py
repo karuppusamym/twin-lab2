@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from zipfile import ZipFile
 
-from support import Client, freeze
+from support import Client, freeze, preview
 from twinlab2.portal import create_app
 from twinlab2 import scenarios
 from support import connect, new_database
@@ -119,7 +119,7 @@ class BuildPackTest(unittest.TestCase):
     def test_preview_shows_exactly_what_the_download_contains(self):
         desk, _ = self.record()
         self.scenario(desk, notes="Use <b>bold</b> & ampersands as text.")
-        page = self.client.get(f"/api/v1/apps/{desk}/package-draft")
+        page, _ = preview(self.client, desk)  # the draft freezing stores (with its known gaps, if any)
         self.assertEqual(page.status_code, 200)
         draft = page.json()
         package, files = self.download(desk)

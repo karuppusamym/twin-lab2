@@ -31,7 +31,7 @@ from twinlab2.portal import VERSION_PATH, create_app
 from twinlab2 import artifacts, auth, buildpack, packages, recording_export, redact, registry, scenarios
 from twinlab2_recorder import main as agent_main
 from twinlab2_contract import recorder_contract as contract
-from support import Client, connect, new_database
+from support import Client, connect, freeze_draft, new_database
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 sys.path.insert(0, str(FIXTURES / "ten-app-session"))
@@ -60,6 +60,8 @@ EXPECTED = {
     "payroll": ("web", "Payroll"),
 }
 CATALOG_TAGS = ("billing", "admin", "meter", "invoice", "ledger", "receivable", "payroll")  # ids 1-7
+# the critical completeness gaps of the TN3270 host's package (recorded at level steps)
+MAINFRAME_GAPS = {"screens.structure", "screens.referenced", "mainframe.layout"}
 
 
 def surface_of(app):
@@ -196,10 +198,20 @@ class TenAppRecordingTest(unittest.TestCase):
                             "VALUES (?, ?, 'Acceptance', '.md', ?, ?, 'synthetic', ?)",
                             (app_id, f"{name} acceptance", b"", ref.id, OWNER))
 
-    def freeze(self, app_id):
+    def freeze(self, app_id, reason=None):
+        """Freeze the draft. Every application recorded at level full has a complete package; the
+        TN3270 host, recorded at level steps, has no screen structure: it is frozen over those
+        critical gaps with a reason (pack_validator)."""
         draft = buildpack.draft(self.db, app_id, VERSION_PATH)
+        override = None
+        if not draft.validation["passed"]:
+            gaps = {g["item"] for g in draft.validation["gaps"] if g["severity"] == "critical"}
+            if reason is None:
+                self.assertEqual((draft.validation["surface"], gaps), ("mainframe", MAINFRAME_GAPS))
+            override = reason or "The host was recorded at level steps: no screen layout."
+            draft = buildpack.draft(self.db, app_id, VERSION_PATH, known_gaps=override)
         with self.db:
-            rev = packages.freeze(self.db, app_id, OWNER, draft.sha256, "", VERSION_PATH)
+            rev = packages.freeze(self.db, app_id, OWNER, draft.sha256, "", VERSION_PATH, override=override)
         return packages.get(self.db, app_id, rev)
 
     # -- the test -------------------------------------------------------------------------------------
@@ -619,10 +631,7 @@ class RecordingNameTest(TenAppRecordingTest):
                 self.db.execute("INSERT INTO attachments(app_id, title, kind, extension, content, artifact_id, share, "
                                 "added_by) VALUES (?, 'Acceptance notes', 'Acceptance', '.md', ?, ?, 'synthetic', ?)",
                                 (app_id, b"", ref.id, OWNER))
-            draft = buildpack.draft(self.db, app_id, VERSION_PATH)
-            with self.db:
-                rev = packages.freeze(self.db, app_id, OWNER, draft.sha256, "", VERSION_PATH)
-            packs[name] = packages.get(self.db, app_id, rev)
+            packs[name] = packages.get(self.db, app_id, freeze_draft(self.db, app_id, OWNER, VERSION_PATH))
 
         def scan(data, own, where):
             """Every file name and file of a package ZIP, case-insensitively."""

@@ -446,6 +446,10 @@ MIGRATIONS = [
     # conditional updates of owner-edited rows (revisions.py): +1 on every change
     (10, "edit revisions", EDIT_REVISIONS),
     (11, "sessions and verified scope", AUTH_SESSIONS),
+    # the completeness of a frozen package (pack_validator) and the owner's written reason when it
+    # was frozen over critical gaps: JSON text, '' for revisions frozen before this
+    (12, "package completeness", [add_columns([("builder_packages", "completeness", "TEXT NOT NULL DEFAULT ''"),
+                                               ("builder_packages", "known_gaps", "TEXT NOT NULL DEFAULT ''")])]),
 ]
 
 

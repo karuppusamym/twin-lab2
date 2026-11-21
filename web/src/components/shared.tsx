@@ -118,3 +118,45 @@ export function TestedReleaseLine({ release }: { release: Schemas["TestedRelease
     </div>
   );
 }
+
+const SEVERITY_BADGE: Record<string, string> = { critical: "failed", important: "discovered", nice: "packaged" };
+
+/** A package's completeness against the spec (docs/PACKAGE-COMPLETENESS.md): the score per
+ * section, then every gap with why it matters and the page and action that fix it. */
+export function CompletenessChecklist({ completeness, fixLinks }: { completeness: Schemas["PackageCompleteness"]; fixLinks?: boolean }) {
+  const c = completeness;
+  const { critical, important, nice } = c.counts;
+  return (
+    <>
+      <p id="completeness-summary">
+        <Badge kind={c.passed ? "pass" : "failed"}>{c.passed ? "Complete" : "Critical items missing"}</Badge>{" "}
+        <strong>{c.score}%</strong> of what a builder needs for a {c.surface} application
+        {c.gaps.length ? ` · missing: ${critical} critical, ${important} important, ${nice} nice to have` : " · nothing missing"}.
+      </p>
+      <div className="scroll">
+        <table className="flow" aria-label="Completeness by section">
+          <thead><tr><th scope="col">Section</th><th scope="col">Score</th><th scope="col">Present</th><th scope="col">Missing</th></tr></thead>
+          <tbody>{c.sections.filter((s) => s.present.length + s.missing.length > 0).map((s) => (
+            <tr key={s.id}><td>{s.title}</td><td>{s.score}%</td><td>{s.present.length}</td><td>{s.missing.length}</td></tr>
+          ))}</tbody>
+        </table>
+      </div>
+      <p id="completeness-dimensions">By verification dimension:{" "}
+        {c.dimensions.map((d, i) => <span key={d.id}>{i ? "; " : ""}<span title={d.title}>{d.id}</span> {d.score}%</span>)}.</p>
+      {c.gaps.length > 0 && (
+        <ul className="checks" id="completeness-gaps" aria-label="Missing items">
+          {c.gaps.map((g) => (
+            <li key={g.item} className={g.severity === "critical" ? "failed" : undefined} data-item={g.item}>
+              <Badge kind={SEVERITY_BADGE[g.severity]}>{g.severity}</Badge> <strong>{g.title}</strong>. {g.why}
+              {g.details.length > 0 && <ul>{g.details.map((d) => <li key={d}>{d}</li>)}</ul>}
+              <div>
+                Fix: {fixLinks ? <Link to={g.fix.href}>{g.fix.page}</Link> : g.fix.page}: {g.fix.action}
+                {g.capture_gap && <span className="muted"> (Not recorded today: {g.capture_gap})</span>}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}

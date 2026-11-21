@@ -510,12 +510,69 @@ class ReportEntry(Model):
     reasons: list[str]
 
 
+class CompletenessSection(Model):
+    id: str
+    title: str
+    score: int
+    present: list[str]
+    missing: list[str]
+    not_applicable: list[str]
+
+
+class CompletenessFix(Model):
+    page: str
+    href: str
+    action: str
+
+
+class CompletenessGap(Model):
+    item: str
+    title: str
+    section: str
+    dimension: Literal['behavioural', 'structural', 'visual', 'deployment']
+    severity: Literal['critical', 'important', 'nice']
+    why: str
+    fix: CompletenessFix
+    details: list[str]
+    capture_gap: str | None = None
+
+
+class CompletenessCounts(Model):
+    critical: int
+    important: int
+    nice: int
+
+
+class PackageCompleteness(Model):
+    """A package checked against the package completeness spec (server/twinlab2/pack_validator.py)."""
+    spec_version: int
+    surface: Literal['web', 'desktop', 'mainframe']
+    passed: bool
+    score: int
+    sections: list[CompletenessSection]
+    dimensions: list[CompletenessSection]
+    gaps: list[CompletenessGap]
+    counts: CompletenessCounts
+
+
+class KnownGap(Model):
+    item: str
+    title: str
+
+
+class KnownGaps(Model):
+    reason: str
+    gaps: list[KnownGap]
+
+
 class PackageRevision(PackageRevisionSummary):
     app: AppRef
     summary: str
     diff: str
     files: list[PackageFile]
     report: list[ReportEntry] | Any
+    completeness: PackageCompleteness | Any
+    known_gaps: KnownGaps | Any
 
 
 class PackageList(Model):
@@ -534,12 +591,15 @@ class PackageDraft(Model):
     latest: PackageRevisionSummary | Any
     unchanged: bool
     next_rev: int
+    completeness: PackageCompleteness
+    known_gaps: KnownGaps | Any
 
 
 class FreezeInput(Model):
     sha256: Sha256
     summary: str | None = None
     approve: bool
+    override_reason: str | None = None
 
 
 class ApprovedPack(PackageRevisionSummary):
@@ -1278,6 +1338,10 @@ Choice.model_rebuild()
 CompareInput.model_rebuild()
 Comparison.model_rebuild()
 Completeness.model_rebuild()
+CompletenessCounts.model_rebuild()
+CompletenessFix.model_rebuild()
+CompletenessGap.model_rebuild()
+CompletenessSection.model_rebuild()
 ConnectionCheck.model_rebuild()
 DataBackend.model_rebuild()
 DataBackendInput.model_rebuild()
@@ -1297,6 +1361,8 @@ IdentityInput.model_rebuild()
 Job.model_rebuild()
 Journey.model_rebuild()
 JourneyStep.model_rebuild()
+KnownGap.model_rebuild()
+KnownGaps.model_rebuild()
 Lane.model_rebuild()
 LocalUser.model_rebuild()
 Machine.model_rebuild()
@@ -1308,6 +1374,7 @@ NewApp.model_rebuild()
 NewAutomation.model_rebuild()
 NewBuild.model_rebuild()
 NewCaptureSession.model_rebuild()
+PackageCompleteness.model_rebuild()
 PackageDraft.model_rebuild()
 PackageFile.model_rebuild()
 PackageList.model_rebuild()

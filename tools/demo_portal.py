@@ -145,6 +145,7 @@ def seed(app, world, ctx, database):
          "actions": "Open the invoice, choose Correct, change the amount, save.",
          "expected": "A correction invoice is created and linked; the original keeps its number.",
          "failures": "A paid invoice cannot be corrected: the Correct button is disabled.",
+         "examples": "Amount: 1,180.00 EUR (synthetic correction)",
          "questions": "Does a correction need a second approver above 10,000 EUR?"},
     ], "First package: invoice creation and correction")
     prepare(receivable, [

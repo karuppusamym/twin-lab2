@@ -119,7 +119,7 @@ class RecordingExportTest(ten.TenAppRecordingTest):
         entry = next(e for e in result.manifest["applications"] if e["app_id"] == app_id)
         self.assertEqual(entry["package_revision"], 1)
         self.assertNotIn(b"Not yet approved", unzip(result.data)[0][entry["path"]])
-        second = self.freeze(app_id)
+        second = self.freeze(app_id, reason="The draft-only scenario has no recorded event yet.")
         entry = next(e for e in recording_export.export(self.db, RECORDING, OWNER).manifest["applications"]
                      if e["app_id"] == app_id)
         self.assertEqual((entry["package_revision"], entry["sha256"]), (2, second["sha256"]))

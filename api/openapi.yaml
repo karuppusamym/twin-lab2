@@ -780,6 +780,14 @@ paths:
         `sha256` must be the SHA-256 of the current draft from `GET .../package-draft`. If the
         draft changed since the preview, or nothing changed since the latest revision, 409
         (`code: draft_changed` / `unchanged`). Needs a business scenario (400). Audited as `package.freeze`.
+
+        A draft with critical completeness gaps (`completeness.passed: false` on the preview) is
+        refused with 409 `code: incomplete_package` (one `errors` entry per critical gap: `field`
+        is the spec item) unless `override_reason` gives a written reason (at least 10
+        characters). The package then carries the reason and those gaps ("Known gaps" in
+        BUILD_TASK.md, `known_gaps` in evidence.json and on the revision), so `sha256` must be that
+        of the draft previewed with the same `override_reason`. Audited as
+        `package.freeze_override`.
       x-twinlab-role: owner
       requestBody:
         required: true
@@ -799,13 +807,22 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
-          description: The draft changed since the preview (or is unchanged since the latest revision).
+          description: The draft changed since the preview, is unchanged since the latest revision, or misses critical items without an override reason.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
               examples:
                 changed:
                   value: { type: about:blank, title: Conflict, status: 409, detail: The package changed since you previewed it. Preview it again before approving., code: draft_changed }
+                incomplete:
+                  value:
+                    type: about:blank
+                    title: Conflict
+                    status: 409
+                    detail: "The package misses 1 critical item: Expected result of each scenario. Add them, or freeze it anyway with a written reason (at least 10 characters)."
+                    code: incomplete_package
+                    errors:
+                      - { field: scenario.expected, message: "Expected result of each scenario. Scenario \"Invoice an order\" does not state its expected result." }
 
   /api/v1/apps/{app_id}/package-draft:
     parameters: [{ $ref: "#/components/parameters/AppId" }]
@@ -815,9 +832,16 @@ paths:
       summary: The draft package exactly as freezing would store it
       description: |
         Owner. Every file with its size and SHA-256 (text files in full), the archive's SHA-256 to
-        approve, and the pre-freeze report (what was excluded or redacted, and why). 400 without a
-        business scenario.
+        approve, the pre-freeze report (what was excluded or redacted, and why) and the
+        completeness of the draft against the package completeness spec
+        (docs/PACKAGE-COMPLETENESS.md): a score per section and every gap with the page and action
+        that fix it. 400 without a business scenario.
+
+        With `override_reason` (at least 10 characters) and critical gaps, the draft carries the
+        reason and those gaps as "Known gaps": the bytes a freeze with that reason stores.
       x-twinlab-role: owner
+      parameters:
+        - { name: override_reason, in: query, required: false, schema: { type: string, maxLength: 2000 }, description: "The owner's reason to freeze over critical gaps." }
       responses:
         "200":
           description: The draft.
@@ -2178,7 +2202,7 @@ components:
           description: |
             A stable machine-readable reason where the web app acts on it: `signed_out`,
             `wrong_credentials`, `csrf`, `role`, `restricted`, `draft_changed`, `unchanged`,
-            `plan_changed`, `publish_locked`, `conflict` (a stale conditional update).
+            `incomplete_package`, `plan_changed`, `publish_locked`, `conflict` (a stale conditional update).
         errors:
           type: array
           description: Per-field problems of a request body.
@@ -2748,7 +2772,7 @@ components:
       allOf:
         - { $ref: "#/components/schemas/PackageRevisionSummary" }
         - type: object
-          required: [app, summary, diff, files, report]
+          required: [app, summary, diff, files, report, completeness, known_gaps]
           properties:
             app: { $ref: "#/components/schemas/AppRef" }
             summary: { type: string, description: "The change summary." }
@@ -2757,6 +2781,77 @@ components:
             report:
               description: The pre-freeze report; null unless the caller is an owner.
               oneOf: [{ type: array, items: { $ref: "#/components/schemas/ReportEntry" } }, { type: "null" }]
+            completeness:
+              description: The completeness of the frozen package; null for a revision frozen before it was checked.
+              oneOf: [{ $ref: "#/components/schemas/PackageCompleteness" }, { type: "null" }]
+            known_gaps:
+              description: The owner's reason for freezing over critical gaps, and those gaps; null when none were overridden.
+              oneOf: [{ $ref: "#/components/schemas/KnownGaps" }, { type: "null" }]
+    CompletenessFix:
+      type: object
+      required: [page, href, action]
+      properties:
+        page: { type: string, description: "The page (and section) where the owner fixes it." }
+        href: { type: string, description: "The web app's path of that page." }
+        action: { type: string, description: "What to do there." }
+    CompletenessGap:
+      type: object
+      required: [item, title, section, dimension, severity, why, fix, details]
+      properties:
+        item: { type: string, description: "The spec item, e.g. scenario.expected." }
+        title: { type: string }
+        section: { type: string }
+        dimension: { type: string, enum: [behavioural, structural, visual, deployment], description: "The verification dimension the item serves." }
+        severity: { type: string, enum: [critical, important, nice] }
+        why: { type: string, description: "Why the builder or the replay needs it." }
+        fix: { $ref: "#/components/schemas/CompletenessFix" }
+        details: { type: array, items: { type: string }, description: "Which scenario, screen or event lacks it." }
+        capture_gap: { type: string, description: "Set when today's recorder or pack builder cannot produce the item at all." }
+    CompletenessSection:
+      type: object
+      required: [id, title, score, present, missing, not_applicable]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        present: { type: array, items: { type: string } }
+        missing: { type: array, items: { type: string } }
+        not_applicable: { type: array, items: { type: string } }
+    CompletenessCounts:
+      type: object
+      required: [critical, important, nice]
+      properties:
+        critical: { type: integer }
+        important: { type: integer }
+        nice: { type: integer }
+    PackageCompleteness:
+      type: object
+      description: A package checked against the package completeness spec (server/twinlab2/pack_validator.py).
+      required: [spec_version, surface, passed, score, sections, dimensions, gaps, counts]
+      properties:
+        spec_version: { type: integer }
+        surface: { type: string, enum: [web, desktop, mainframe] }
+        passed: { type: boolean, description: "No critical item is missing." }
+        score: { type: integer, minimum: 0, maximum: 100, description: "Present items weighted by severity (critical 3, important 2, nice 1)." }
+        sections: { type: array, items: { $ref: "#/components/schemas/CompletenessSection" } }
+        dimensions:
+          type: array
+          description: "The same items scored per verification dimension: behavioural, structural, visual, deployment."
+          items: { $ref: "#/components/schemas/CompletenessSection" }
+        gaps: { type: array, items: { $ref: "#/components/schemas/CompletenessGap" }, description: "Most severe first." }
+        counts: { $ref: "#/components/schemas/CompletenessCounts" }
+    KnownGap:
+      type: object
+      required: [item, title]
+      properties:
+        item: { type: string }
+        title: { type: string }
+    KnownGaps:
+      type: object
+      required: [reason, gaps]
+      properties:
+        reason: { type: string }
+        gaps: { type: array, items: { $ref: "#/components/schemas/KnownGap" } }
     PackageList:
       type: object
       required: [app, packages]
@@ -2765,7 +2860,7 @@ components:
         packages: { type: array, items: { $ref: "#/components/schemas/PackageRevisionSummary" } }
     PackageDraft:
       type: object
-      required: [app, revision, sha256, size, files, report, summary, latest, unchanged, next_rev]
+      required: [app, revision, sha256, size, files, report, summary, latest, unchanged, next_rev, completeness, known_gaps]
       properties:
         app: { $ref: "#/components/schemas/AppRef" }
         revision: { type: string }
@@ -2777,6 +2872,10 @@ components:
         latest: { oneOf: [{ $ref: "#/components/schemas/PackageRevisionSummary" }, { type: "null" }] }
         unchanged: { type: boolean, description: "The draft is the latest revision's bytes; nothing to freeze." }
         next_rev: { type: integer }
+        completeness: { $ref: "#/components/schemas/PackageCompleteness" }
+        known_gaps:
+          description: The reason and gaps this draft carries (previewed with `override_reason` over critical gaps); else null.
+          oneOf: [{ $ref: "#/components/schemas/KnownGaps" }, { type: "null" }]
     FreezeInput:
       type: object
       required: [sha256, approve]
@@ -2784,6 +2883,7 @@ components:
         sha256: { $ref: "#/components/schemas/Sha256" }
         summary: { type: string, description: "What changed and why." }
         approve: { type: boolean, const: true, description: "The owner approves exactly these bytes." }
+        override_reason: { type: string, description: "Freeze despite critical completeness gaps, for this reason (at least 10 characters; audited and carried by the package). The same reason the draft was previewed with." }
 
     # -- builds -----------------------------------------------------------------------------------
     ApprovedPack:
@@ -4052,6 +4152,35 @@ components:
         latest: { rev: 2, revision: 5d1e2f3a4b5c6d7e8f901a2b3c4d5e6f7a8b9c0d, sha256: 1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c, size: 18432, approved_by: ana, approved_at: "2026-11-18T09:30:00+00:00" }
         unchanged: false
         next_rev: 3
+        completeness: &complete-web
+          spec_version: 1
+          surface: web
+          passed: true
+          score: 92
+          counts: { critical: 0, important: 1, nice: 0 }
+          sections:
+            - { id: scenarios, title: Scenarios, score: 100, present: [scenario.present, scenario.events, scenario.links_current, scenario.expected, scenario.starting, scenario.actions, scenario.failures, scenario.messages], missing: [], not_applicable: [] }
+            - { id: screens, title: Screens and controls, score: 100, present: [screens.structure, screens.referenced, screens.controls, screens.states, screens.targets, screens.grids], missing: [], not_applicable: [] }
+            - { id: navigation, title: Navigation, score: 100, present: [navigation.entry, navigation.transitions], missing: [], not_applicable: [] }
+            - { id: data, title: Data, score: 70, present: [data.examples, data.shapes, data.backend], missing: [data.model], not_applicable: [] }
+            - { id: access, title: Roles and sign-in, score: 100, present: [], missing: [], not_applicable: [access.signin] }
+            - { id: surface, title: Surface specifics, score: 100, present: [web.routes, web.api], missing: [], not_applicable: [] }
+            - { id: visuals, title: Visuals and deployment, score: 100, present: [visuals.screens, deploy.target, deploy.version, deploy.repository], missing: [], not_applicable: [] }
+          dimensions:
+            - { id: behavioural, title: "Behavioural (scenarios, outcomes, failure paths)", score: 100, present: [scenario.present, scenario.events, scenario.expected], missing: [], not_applicable: [] }
+            - { id: structural, title: "Structural (screens, controls, states, navigation)", score: 100, present: [screens.structure, screens.referenced, screens.controls], missing: [], not_applicable: [] }
+            - { id: visual, title: Visual (appearance against approved baselines), score: 100, present: [visuals.screens], missing: [], not_applicable: [] }
+            - { id: deployment, title: "Deployment (data, target, version endpoint)", score: 78, present: [data.backend, deploy.target, deploy.version], missing: [data.model], not_applicable: [] }
+          gaps:
+            - item: data.model
+              title: Data model (DDL)
+              section: data
+              dimension: deployment
+              severity: important
+              why: Without DDL the builder infers tables from the screens, and the names will differ from the original.
+              fix: { page: Uploaded evidence, href: "/apps/1#examples", action: "Attach the DDL (.sql, kind Database) and mark it reviewed or synthetic." }
+              details: ["No reviewed DDL is attached: the builder infers the tables."]
+        known_gaps: null
     PackageRevision2:
       value:
         app: { id: 1, name: Billing Desk }
@@ -4066,6 +4195,8 @@ components:
         files:
           - { path: BRIEF.md, size: 1100, sha256: aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66 }
         report: null
+        completeness: null
+        known_gaps: null
     PackageRevision3:
       value:
         app: { id: 1, name: Billing Desk }
@@ -4082,6 +4213,8 @@ components:
           - { path: evidence/invoice.png, size: 18672, sha256: bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66ee77 }
         report:
           - { item: Invoice screen, outcome: excluded, reasons: ["restricted evidence: the owner has not marked this screenshot reviewed or synthetic"] }
+        completeness: *complete-web
+        known_gaps: null
 
     BuildSummary7:
       value: &build7

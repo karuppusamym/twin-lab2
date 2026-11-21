@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { api, data } from "../api/client";
-import { PackageFiles } from "../components/shared";
+import { CompletenessChecklist, PackageFiles } from "../components/shared";
 import { Crumbs, QueryView, useTitle } from "../components/ui";
 import { useAppId } from "./AppPage";
 
@@ -32,6 +32,20 @@ export function PackagePage() {
             <h2 id="summary-h">Change summary</h2>
             <pre className="notes">{p.summary}</pre>
           </section>
+          {p.known_gaps && (
+            <section aria-labelledby="known-gaps-h" className="warning" id="known-gaps">
+              <h2 id="known-gaps-h">Known gaps</h2>
+              <p>Frozen with {p.known_gaps.gaps.length} critical item{p.known_gaps.gaps.length === 1 ? "" : "s"} missing, for this reason:</p>
+              <blockquote>{p.known_gaps.reason}</blockquote>
+              <ul>{p.known_gaps.gaps.map((g) => <li key={g.item}>{g.title}</li>)}</ul>
+            </section>
+          )}
+          {p.completeness && (
+            <section aria-labelledby="completeness-h">
+              <h2 id="completeness-h">Completeness</h2>
+              <CompletenessChecklist completeness={p.completeness} />
+            </section>
+          )}
           <section aria-labelledby="files-h">
             <h2 id="files-h">Files</h2>
             <PackageFiles files={p.files} />

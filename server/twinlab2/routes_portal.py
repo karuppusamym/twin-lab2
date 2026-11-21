@@ -31,6 +31,7 @@ from twinlab2 import builds
 from twinlab2 import completeness
 from twinlab2 import event_ids
 from twinlab2 import journey
+from twinlab2 import pack_validator
 from twinlab2 import packages
 from twinlab2 import portal
 from twinlab2 import recording_export
@@ -938,11 +939,11 @@ def file_list(files, text=True):
             for path, content in files.items()]
 
 
-def current_draft(app_id):
+def current_draft(app_id, override_reason=""):
     get_app(app_id)
     if not scenarios.load(db(), app_id):
         fail(400, "Add a business scenario before freezing a builder package.")
-    return buildpack.draft(db(), app_id, VERSION_PATH)
+    return buildpack.draft(db(), app_id, VERSION_PATH, known_gaps=packages.override_reason(override_reason) or None)
 
 
 def frozen(app_id, rev):
@@ -960,8 +961,10 @@ def report_entries(report):
 def package_view(app_id, rev):
     row = frozen(app_id, rev)
     files = buildpack.read(packages.open_package(db(), row["storage_ref"]))
+    validation, known = packages.completeness_of(row)
     return dict(shapes.package_summary(row), app=shapes.ref(get_app(app_id)), summary=row["summary"] or "",
-                diff=row["diff"] or "", files=file_list(files, text=False),
+                diff=row["diff"] or "", files=file_list(files, text=False), completeness=validation,
+                known_gaps=known,
                 report=report_entries(json.loads(row["report"])) if auth.can("owner", app_id=app_id) else None)
 
 
@@ -997,16 +1000,19 @@ def build_pack(app_id: int):
 
 
 @routes.get(V1 + "/apps/{app_id:int}/package-draft", require_role("owner"), response_model=m.PackageDraft)
-def preview_pack(app_id: int):
+def preview_pack(app_id: int, override_reason: str = ""):
     """The draft package exactly as freezing would store it: every file, its size and SHA-256,
-    text files in full, and the pre-freeze report (what was excluded or redacted, and why)."""
-    d = current_draft(app_id)
+    text files in full, the pre-freeze report (what was excluded or redacted, and why) and its
+    completeness. With `override_reason` (and critical gaps), the draft that carries the reason
+    as "Known gaps": the one a freeze with that reason stores."""
+    d = current_draft(app_id, override_reason[:2000])
     latest = packages.latest(db(), app_id)
     return {"app": shapes.ref(get_app(app_id)), "revision": d.revision, "sha256": d.sha256,
             "size": len(d.package), "files": file_list(d.files), "report": report_entries(d.report),
             "summary": d.summary(), "latest": shapes.package_summary(latest) if latest else None,
             "unchanged": latest is not None and latest["sha256"] == d.sha256,
-            "next_rev": (latest["rev"] if latest else 0) + 1}
+            "next_rev": (latest["rev"] if latest else 0) + 1, "completeness": d.validation,
+            "known_gaps": json.loads(d.manifest).get("known_gaps")}
 
 
 @routes.post(V1 + "/apps/{app_id:int}/packages", require_role("owner"), response_model=m.PackageRevision, status_code=201)
@@ -1021,9 +1027,14 @@ def freeze_package(app_id: int, body: m.FreezeInput):
     sha = data.get("sha256") if isinstance(data.get("sha256"), str) else ""
     try:
         with db():
-            rev = packages.freeze(db(), app_id, g.user, sha, text(data, "summary", 2000), VERSION_PATH)
+            rev = packages.freeze(db(), app_id, g.user, sha, text(data, "summary", 2000), VERSION_PATH,
+                                  override=text(data, "override_reason", 2000))
     except packages.Unchanged as error:
         fail(409, str(error), "unchanged")
+    except packages.Incomplete as error:
+        fail(409, str(error), "incomplete_package",
+             errors=[{"field": gap["item"], "message": " ".join([gap["title"] + ".", *gap["details"][:3]])}
+                     for gap in pack_validator.critical(error.validation)])
     except ValueError as error:
         fail(409, str(error), "draft_changed")
     return package_view(app_id, rev)

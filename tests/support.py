@@ -167,13 +167,43 @@ class Server:
 # -- shared test steps ------------------------------------------------------------------------------
 
 
-def freeze(client, app_id, summary=""):
-    """Preview the draft, approve its SHA-256 and freeze it (a draft identical to the latest
-    revision is not frozen again: 409 unchanged), then download the latest builder package."""
+# Most test fixtures were recorded before screen structure (recorder contract 1.3), so their
+# packages miss critical completeness items (pack_validator); tests that are not about
+# completeness freeze them over those gaps with this reason. tests/server/test_pack_validator.py
+# checks the refusal and the override themselves.
+FIXTURE_GAPS = "Test fixture recorded before screen structure (contract 1.3)."
+
+
+def preview(client, app_id, reason=FIXTURE_GAPS):
+    """(the package-draft response, the freeze body's override): a draft that misses critical
+    items is previewed again with `reason`, the bytes a freeze with that reason stores."""
     draft = client.get(f"/api/v1/apps/{app_id}/package-draft")
+    if draft.status_code != 200 or draft.json()["completeness"]["passed"] or not reason:
+        return draft, {}
+    again = client.get(f"/api/v1/apps/{app_id}/package-draft", params={"override_reason": reason})
+    return again, {"override_reason": reason}
+
+
+def freeze_draft(db, app_id, user, version_path, reason=FIXTURE_GAPS):
+    """Freeze the application's draft through the domain module, over its critical gaps with
+    `reason` when it has any; returns the revision number."""
+    from twinlab2 import buildpack, packages
+
+    draft = buildpack.draft(db, app_id, version_path)
+    if not draft.validation["passed"]:
+        draft = buildpack.draft(db, app_id, version_path, known_gaps=reason)
+    with db:
+        return packages.freeze(db, app_id, user, draft.sha256, "", version_path, override=reason)
+
+
+def freeze(client, app_id, summary="", override=FIXTURE_GAPS):
+    """Preview the draft, approve its SHA-256 and freeze it (a draft identical to the latest
+    revision is not frozen again: 409 unchanged), then download the latest builder package.
+    A draft with critical completeness gaps is frozen over them with `override` as the reason."""
+    draft, extra = preview(client, app_id, override)
     if draft.status_code != 200:
         return draft
     response = client.post(f"/api/v1/apps/{app_id}/packages",
-                           json={"approve": True, "sha256": draft.json()["sha256"], "summary": summary})
+                           json={"approve": True, "sha256": draft.json()["sha256"], "summary": summary, **extra})
     assert response.status_code in (201, 409), response.text
     return client.get(f"/api/v1/apps/{app_id}/build-pack")
