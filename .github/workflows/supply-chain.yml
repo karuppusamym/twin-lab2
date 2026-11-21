@@ -1,0 +1,139 @@
+name: supply-chain
+
+# SBOMs (CycloneDX) of what ships, and the vulnerability gate over them:
+# - python: the portal's environment (contract + server[serve], as in the image) and the
+#   recorder's build environment (contract + recorder[build]); pip-audit and Trivy.
+# - web: the npm dependency tree of web/; npm audit.
+# - image: deploy/Dockerfile as built; Trivy (OS packages and Python packages in the image).
+# - dependency-review: on pull requests, a dependency a PR adds with a known high/critical advisory.
+# tools/vuln_gate.py fails on a high or critical finding not in security/allowlist.toml
+# (docs/security-supply-chain.md). Weekly too, so new advisories against unchanged code surface.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Trivy as a container pinned by digest (no third-party action)
+  TRIVY: aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
+
+jobs:
+  python:
+    name: supply-chain (python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12" # the image's Python
+      - name: The scanners (tools/supply-chain/requirements.txt), in their own environment
+        run: |
+          python -m venv /tmp/tools
+          /tmp/tools/bin/python -m pip install -q --upgrade pip
+          /tmp/tools/bin/python -m pip install -q -r tools/supply-chain/requirements.txt
+      - name: The environments that ship
+        run: |
+          python -m venv /tmp/portal
+          /tmp/portal/bin/python -m pip install -q --upgrade pip
+          /tmp/portal/bin/python -m pip install -q ./contract "./server[serve]"
+          python -m venv /tmp/recorder
+          /tmp/recorder/bin/python -m pip install -q --upgrade pip
+          /tmp/recorder/bin/python -m pip install -q ./contract "./recorder[build]"
+      - name: SBOMs (CycloneDX JSON)
+        run: |
+          mkdir -p sbom
+          /tmp/tools/bin/cyclonedx-py environment --of JSON -o sbom/python-portal.cdx.json --pyproject server/pyproject.toml /tmp/portal/bin/python
+          /tmp/tools/bin/cyclonedx-py environment --of JSON -o sbom/python-recorder.cdx.json --pyproject recorder/pyproject.toml /tmp/recorder/bin/python
+      - name: pip-audit and Trivy
+        run: |
+          mkdir -p scan
+          for env in portal recorder; do
+            site=$(/tmp/$env/bin/python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+            /tmp/tools/bin/pip-audit --format json --path "$site" -o scan/$env.pip-audit.json || true
+            docker run --rm -v "$PWD:/work" -w /work "$TRIVY" sbom --quiet --format json -o scan/$env.trivy.json sbom/python-$env.cdx.json
+          done
+      - name: Gate
+        run: |
+          python tools/vuln_gate.py --title "Python (portal and recorder)" --summary "$GITHUB_STEP_SUMMARY" \
+            --trivy scan/portal.trivy.json --trivy scan/recorder.trivy.json \
+            --pip-audit scan/portal.pip-audit.json --pip-audit scan/recorder.pip-audit.json
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-python
+          path: |
+            sbom/
+            scan/
+          if-no-files-found: ignore
+
+  web:
+    name: supply-chain (web)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: SBOM (CycloneDX JSON) and npm audit
+        run: |
+          mkdir -p ../sbom ../scan
+          npm sbom --sbom-format cyclonedx --sbom-type application > ../sbom/web.cdx.json
+          npm audit --json > ../scan/web.npm-audit.json || true
+      - name: Gate
+        working-directory: .
+        run: python3 tools/vuln_gate.py --title "Web (npm)" --summary "$GITHUB_STEP_SUMMARY" --npm-audit scan/web.npm-audit.json
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-web
+          path: |
+            sbom/
+            scan/
+          if-no-files-found: ignore
+
+  image:
+    name: supply-chain (image)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: docker build -f deploy/Dockerfile -t twinlab2-portal:scan .
+      - name: SBOM (CycloneDX JSON) and Trivy
+        run: |
+          mkdir -p sbom scan
+          trivy() { docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/work" -w /work -v trivy-cache:/root/.cache "$TRIVY" "$@"; }
+          trivy image --quiet --scanners vuln --format json -o scan/image.trivy.json twinlab2-portal:scan
+          trivy image --quiet --format cyclonedx -o sbom/image.cdx.json twinlab2-portal:scan
+      - name: Gate (a high or critical finding without a released fix is listed, not blocking)
+        run: python3 tools/vuln_gate.py --title "Container image" --summary "$GITHUB_STEP_SUMMARY" --fixable-only --trivy scan/image.trivy.json
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-image
+          path: |
+            sbom/
+            scan/
+          if-no-files-found: ignore
+
+  dependency-review:
+    name: supply-chain (dependency review)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: never

@@ -1,0 +1,222 @@
+name: release
+
+# A release tag (vMAJOR.MINOR.PATCH[-pre], docs/releasing.md) makes a release:
+#   1. image: the portal image built, scanned (fails on a fixable high/critical), pushed to GHCR
+#      as ghcr.io/<owner>/twinlab2-portal:<version>, with build provenance (attest-build-provenance)
+#   2. recorder: TwinLabRecorder built on Windows, signed when the office's certificate is
+#      configured (skipped otherwise), zipped with its SHA-256 and attested
+#   3. release: a GitHub release with CHANGELOG.md's section, the recorder, checksums and SBOMs
+# Pull requests that touch the release path run 1 and 2 as a dry run: nothing is pushed,
+# attested or released.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - tools/release.py
+      - CHANGELOG.md
+      - deploy/Dockerfile
+      - recorder/**
+      - contract/**
+      - requirements-recorder.txt
+  workflow_dispatch: # a dry run on any branch
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RELEASING: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+  TRIVY: aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
+
+jobs:
+  image:
+    name: release (image)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+      id-token: write # sign the provenance (Sigstore)
+      attestations: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      image: ${{ steps.push.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Version (the tag must match the packages' version and CHANGELOG.md)
+        id: version
+        run: |
+          if [ "$RELEASING" = "true" ]; then
+            version=$(python3 tools/release.py check "$GITHUB_REF_NAME")
+          else
+            version=$(python3 tools/release.py check --unreleased)-dryrun.${GITHUB_RUN_NUMBER}
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version: $version" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build the image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          docker build -f deploy/Dockerfile -t twinlab2-portal:release \
+            --label org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.licenses=Apache-2.0 .
+      - name: Scan and SBOM
+        run: |
+          mkdir -p out
+          trivy() { docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/work" -w /work "$TRIVY" "$@"; }
+          trivy image --quiet --scanners vuln --format json -o out/image.trivy.json twinlab2-portal:release
+          trivy image --quiet --format cyclonedx -o out/twinlab2-portal.cdx.json twinlab2-portal:release
+          python3 tools/vuln_gate.py --title "Release image" --summary "$GITHUB_STEP_SUMMARY" --fixable-only --trivy out/image.trivy.json
+      - name: Push to GHCR
+        id: push
+        if: env.RELEASING == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/twinlab2-portal"
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag twinlab2-portal:release "$image:$VERSION"
+          docker push "$image:$VERSION"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$image:$VERSION" | cut -d@ -f2)
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Pushed $image:$VERSION@$digest" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build provenance (pushed to the registry beside the image)
+        if: env.RELEASING == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-image
+          path: out/
+
+  recorder:
+    name: release (recorder)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      signed: ${{ steps.sign.outputs.signed || 'false' }}
+    env:
+      # Code signing is the office's: a PFX (base64) and its password as repository secrets.
+      # Without them this step is skipped and the release says the recorder is unsigned.
+      HAS_SIGNING: ${{ secrets.TWINLAB_SIGN_PFX_BASE64 != '' && secrets.TWINLAB_SIGN_PFX_PASSWORD != '' }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements-recorder.txt
+            contract/pyproject.toml
+            recorder/pyproject.toml
+      - name: Version
+        id: version
+        run: |
+          if ($env:RELEASING -eq "true") { $v = python tools/release.py check $env:GITHUB_REF_NAME }
+          else { $v = "$(python tools/release.py check --unreleased)-dryrun.$env:GITHUB_RUN_NUMBER" }
+          if ($LASTEXITCODE) { exit 1 }
+          "version=$v" >> $env:GITHUB_OUTPUT
+      - run: python -m pip install -r requirements-recorder.txt
+      - name: Code signing certificate (placeholder; skipped without the office's secrets)
+        id: sign
+        if: env.HAS_SIGNING == 'true'
+        env:
+          PFX_BASE64: ${{ secrets.TWINLAB_SIGN_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.TWINLAB_SIGN_PFX_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+          $password = ConvertTo-SecureString $env:PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx
+          # recorder/build.py signs with signtool when TWINLAB_SIGN_CERT names the certificate
+          "TWINLAB_SIGN_CERT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+          $signtool.DirectoryName >> $env:GITHUB_PATH
+          "signed=true" >> $env:GITHUB_OUTPUT
+      - if: env.HAS_SIGNING != 'true'
+        run: |
+          Write-Output "::notice::Code signing skipped: TWINLAB_SIGN_PFX_BASE64 / TWINLAB_SIGN_PFX_PASSWORD are not configured (docs/releasing.md). The recorder is unsigned."
+      - name: Build TwinLabRecorder (recorder/build.py)
+        env:
+          TWINLAB_DIST: ${{ github.workspace }}\dist
+        run: python recorder/build.py
+      - name: Zip and checksum
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $zip = "TwinLabRecorder-$env:VERSION-win-x64.zip"
+          Compress-Archive -Path dist\TwinLabRecorder -DestinationPath "out\$zip"
+          $hash = (Get-FileHash "out\$zip" -Algorithm SHA256).Hash.ToLower()
+          # sha256sum format: `sha256sum -c TwinLabRecorder-<version>-win-x64.zip.sha256`
+          [IO.File]::WriteAllText("out\$zip.sha256", "$hash  $zip`n")
+          "SHA-256 of ${zip}: $hash" >> $env:GITHUB_STEP_SUMMARY
+      - name: Build provenance of the zip
+        if: env.RELEASING == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/TwinLabRecorder-*.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-recorder
+          path: out/
+
+  release:
+    name: release (GitHub release)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [image, recorder]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Release notes (CHANGELOG.md's section) and the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.image.outputs.version }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+          SIGNED: ${{ needs.recorder.outputs.signed }}
+        run: |
+          python3 tools/release.py notes "$VERSION" > notes.md
+          {
+            echo
+            echo "## Artifacts"
+            echo
+            echo "- Portal image: \`$IMAGE:$VERSION\` (\`$DIGEST\`). Verify its provenance:"
+            echo "  \`gh attestation verify oci://$IMAGE@$DIGEST -R $GITHUB_REPOSITORY\`"
+            echo "- Recorder: \`TwinLabRecorder-$VERSION-win-x64.zip\`, checksum in the \`.sha256\` file beside it;"
+            echo "  provenance: \`gh attestation verify TwinLabRecorder-$VERSION-win-x64.zip -R $GITHUB_REPOSITORY\`."
+            if [ "$SIGNED" != "true" ]; then
+              echo "  **Not code-signed**: managed PCs may block it until the office's certificate is configured (docs/releasing.md)."
+            fi
+            echo "- SBOMs (CycloneDX): \`twinlab2-portal.cdx.json\` (image)."
+          } >> notes.md
+          prerelease=""
+          case "$VERSION" in *-*) prerelease="--prerelease";; esac
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "TwinLab2 $VERSION" --notes-file notes.md $prerelease \
+            assets/TwinLabRecorder-*.zip assets/TwinLabRecorder-*.zip.sha256 assets/twinlab2-portal.cdx.json

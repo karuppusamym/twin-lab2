@@ -96,6 +96,8 @@ Windows PC, pair a machine under **Setup** and follow the
 | [docs/VERIFICATION.md](docs/VERIFICATION.md) | test results and their limits |
 | [docs/PACKAGE-COMPLETENESS.md](docs/PACKAGE-COMPLETENESS.md) | what a builder package must contain |
 | [docs/api-versioning.md](docs/api-versioning.md) | how the APIs are versioned |
+| [docs/releasing.md](docs/releasing.md) | versions, CHANGELOG, cutting a release, code signing |
+| [docs/security-supply-chain.md](docs/security-supply-chain.md) | SBOMs, vulnerability gate and allowlist, pinning, provenance |
 | [docs/ACCESS-REQUESTS.md](docs/ACCESS-REQUESTS.md) | requesting a role on an application, and the owners' decisions |
 | [docs/AGENT-API-SECURITY.md](docs/AGENT-API-SECURITY.md) | the recorder API's credentials, token scopes and rate limit |
 | [docs/deploying-on-openshift.md](docs/deploying-on-openshift.md) | running the portal on OpenShift (not yet run on a cluster) |
